@@ -1,0 +1,149 @@
+# Cursor Rules - ytb2bili-cli
+
+## Project Context
+
+You are working on ytb2bili-cli, a YouTube → Bilibili video transfer tool written in Go.
+
+## Project Location
+
+- **Code**: `/home/ubuntu/ytb2bili-cli`
+- **Binary**: `/home/ubuntu/ytb2bili-cli/ytb2bili`
+- **Alias**: `y2b` (configured in ~/.bashrc)
+- **Repository**: https://github.com/difyz9/ytb2bili-cli
+
+## Environment Setup
+
+```bash
+export DEEPSEEK_API_KEY=*** export YOUTUBE_COOKIES="/home/ubuntu/ytb2bili-cli/cookies/youtube_cookies.txt"
+export PATH="/home/ubuntu/.deno/bin:$PATH"
+
+# Alias (recommended)
+alias y2b="ytb2bili"
+```
+
+## Build & Run
+
+```bash
+# Build
+cd /home/ubuntu/ytb2bili-cli && go build -o ytb2bili .
+
+# Using alias y2b
+y2b search "Flutter tutorial"
+y2b search --sort view_count --duration long "AI tutorial"
+y2b submit "https://www.youtube.com/watch?v=VIDEO_ID"
+y2b submit --dry-run "https://www.youtube.com/watch?v=VIDEO_ID"
+y2b submit --skip-translate "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+## Code Structure
+
+### Key Packages
+
+| Package | Purpose |
+|---------|---------|
+| `internal/command` | CLI commands and workflow |
+| `internal/search` | YouTube search (InnerTube API) |
+| `internal/download` | YouTube video download (yt-dlp) |
+| `internal/transcriber` | Speech-to-text (Bcut ASR) |
+| `internal/translator` | Batch subtitle translation (LLM) |
+| `internal/metadata` | AI-generated metadata |
+| `internal/bili` | Bilibili API integration |
+| `internal/channel` | YouTube channel monitoring |
+
+### Workflow
+
+```
+0. Search video (InnerTube API, optional)
+   ↓
+1. Download video (yt-dlp + cookies)
+   ↓
+2. Extract audio (ffmpeg)
+   ↓
+3. Transcribe (Bcut ASR API)
+   ↓  → subtitle.srt
+4. Translate (DeepSeek LLM)
+   ↓  → subtitle.zh.srt
+5. Generate metadata (AI)
+   ↓
+6. Upload to Bilibili
+   ↓
+7. [Async] Watch review status → Upload subtitle
+```
+
+## Search Module
+
+The search module uses YouTube's InnerTube API for reliable, fast searches without API keys.
+
+### Search Filters
+
+```go
+filter := &search.SearchFilter{
+    SortBy:     "view_count",    // relevance, upload_date, view_count, rating
+    UploadDate: "this_week",     // last_hour, today, this_week, this_month, this_year
+    Duration:   "long",          // short (<4m), medium (4-20m), long (>20m)
+    Type:       "video",         // video, channel, playlist, movie
+    Features:   []string{"4k"},  // live, 4k, hd, subtitles, cc
+}
+```
+
+### CLI Options
+
+```bash
+--sort      Sort order (relevance, upload_date, view_count, rating)
+--date      Upload date filter (last_hour, today, this_week, this_month, this_year)
+--duration  Duration filter (short, medium, long)
+--type      Content type (video, channel, playlist, movie)
+--features  Feature filter (live, 4k, hd, subtitles, cc)
+```
+
+## Common Tasks
+
+### Add New CLI Flag
+
+1. Edit `internal/command/command.go`
+2. Add flag to the command
+3. Use `c.Bool("flag-name")` or `c.String("flag-name")`
+
+### Modify Search Logic
+
+1. Edit `internal/search/search.go` for main logic
+2. Edit `internal/search/innertube.go` for API constants and protobuf encoding
+
+### Modify Translation Logic
+
+1. Edit `internal/translator/translator.go`
+2. Main function: `TranslateSRTFile()`
+3. Batch processing: `TranslateTexts()`
+
+### Change Bcut ASR API
+
+1. Edit `internal/transcriber/transcriber.go`
+2. API endpoints defined as constants
+3. Upload flow: `requestUpload()` → `uploadParts()` → `commitUpload()`
+
+## Testing
+
+```bash
+# Test search
+y2b search --max 3 "test query"
+
+# Test transcription
+go test -v -run TestBcutASR ./internal/transcriber/ -timeout 3m
+
+# Test translation
+DEEPSEEK_API_KEY=*** go test -v -run TestTranslateSRT ./internal/translator/ -timeout 2m
+```
+
+## API References
+
+- **YouTube InnerTube**: `https://www.youtube.com/youtubei/v1/search`
+- **Bcut ASR**: `https://member.bilibili.com/x/bcut/rubick-interface`
+- **DeepSeek**: `https://api.deepseek.com`
+- **Bilibili SDK**: `github.com/difyz9/bilibili-go-sdk`
+
+## Conventions
+
+1. Use `context.Context` for timeout/cancellation
+2. Return meaningful error messages
+3. Add User-Agent headers for API calls
+4. Chunk large file uploads

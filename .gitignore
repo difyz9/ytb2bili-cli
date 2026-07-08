@@ -1,0 +1,7 @@
+.env
+.envrc
+data/
+DEEPSEEK_API_KEY
+*.log
+.DS_Store
+ytb2bili

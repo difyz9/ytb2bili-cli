@@ -1,0 +1,521 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/difyz9/ytb2bili-cli/internal/config"
+	"github.com/difyz9/ytb2bili-cli/internal/download"
+	"github.com/difyz9/ytb2bili-cli/internal/storage"
+	"github.com/difyz9/ytb2bili-cli/internal/transcriber"
+	"github.com/difyz9/ytb2bili-cli/internal/translator"
+)
+
+// Server HTTP 服务器
+type Server struct {
+	cfg      *config.Config
+	history  *storage.HistoryStore
+	server   *http.Server
+	Feishu   *FeishuBot
+	taskChan chan *VideoTask
+	mu       sync.Mutex
+}
+
+// VideoTask 视频处理任务
+type VideoTask struct {
+	ID          string          `json:"id"`
+	URL         string          `json:"url"`
+	Title       string          `json:"title"`
+	Description string          `json:"description,omitempty"`
+	Subtitles   []SubtitleEntry `json:"subtitles,omitempty"`
+	Cookies     string          `json:"cookies,omitempty"`
+	Status      string          `json:"status"`
+	CreatedAt   string          `json:"created_at"`
+	UpdatedAt   string          `json:"updated_at"`
+	BVID        string          `json:"bvid,omitempty"`
+	Error       string          `json:"error,omitempty"`
+}
+
+// SubtitleEntry 字幕条目
+type SubtitleEntry struct {
+	Text     string  `json:"text"`
+	Duration float64 `json:"duration"`
+	Offset   float64 `json:"offset"`
+	Lang     string  `json:"lang"`
+}
+
+// SubmitRequest 提交请求
+type SubmitRequest struct {
+	URL         string          `json:"url"`
+	Title       string          `json:"title"`
+	Description string          `json:"description,omitempty"`
+	Operation   string          `json:"operationType,omitempty"`
+	Subtitles   []SubtitleEntry `json:"subtitles,omitempty"`
+	PlaylistID  string          `json:"playlistId,omitempty"`
+	Timestamp   string          `json:"timestamp,omitempty"`
+	Meta        string          `json:"meta,omitempty"` // 加密的 cookies
+}
+
+// SubmitResponse 提交响应
+type SubmitResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	TaskID  string `json:"task_id,omitempty"`
+}
+
+// VideoSubmitData Chrome 插件提交的视频数据
+type VideoSubmitData struct {
+	Type string `json:"type"`
+	Data struct {
+		URL       string `json:"url"`
+		Title     string `json:"title"`
+		Channel   string `json:"channel"`
+		VideoID   string `json:"video_id"`
+		Cookies   string `json:"cookies"`
+		Subtitles []struct {
+			Text     string  `json:"text"`
+			Duration float64 `json:"duration"`
+			Offset   float64 `json:"offset"`
+		} `json:"subtitles"`
+	} `json:"data"`
+}
+
+// New 创建服务器
+func New(cfg *config.Config) *Server {
+	historyDir := cfg.DataDir + "/history"
+	h := storage.NewHistoryStore(historyDir)
+
+	s := &Server{
+		cfg:      cfg,
+		history:  h,
+		taskChan: make(chan *VideoTask, 100),
+	}
+
+	// 启动任务处理器
+	go s.processTasks()
+
+	return s
+}
+
+// Start 启动服务器
+func (s *Server) Start(addr string) error {
+	mux := http.NewServeMux()
+
+	// API 路由
+	mux.HandleFunc("/api/v1/submit", s.handleSubmit)
+	mux.HandleFunc("/api/v1/tasks", s.handleListTasks)
+	mux.HandleFunc("/api/v1/tasks/", s.handleGetTask)
+	mux.HandleFunc("/api/v1/history", s.handleHistory)
+	mux.HandleFunc("/health", s.handleHealth)
+
+	// 飞书机器人路由
+	mux.HandleFunc("/feishu/webhook", s.feishuWebhook)
+
+	s.server = &http.Server{
+		Addr:    addr,
+		Handler: mux,
+	}
+
+	log.Printf("🚀 服务器启动在 %s", addr)
+	log.Printf("   API: http://%s/api/v1/submit", addr)
+	log.Printf("   健康检查: http://%s/health", addr)
+
+	// 启动飞书机器人
+	if s.Feishu != nil {
+		go func() {
+			ctx := context.Background()
+			if err := s.Feishu.Start(ctx); err != nil {
+				log.Printf("❌ 飞书机器人启动失败: %v", err)
+			}
+		}()
+
+		// 处理飞书消息
+		go s.handleFeishuMessages()
+	}
+
+	return s.server.ListenAndServe()
+}
+
+// handleFeishuMessages 处理飞书消息
+func (s *Server) handleFeishuMessages() {
+	for msg := range s.Feishu.GetMessageChan() {
+		go s.processFeishuMessage(msg)
+	}
+}
+
+// processFeishuMessage 处理单条飞书消息
+func (s *Server) processFeishuMessage(msg *FeishuMessage) {
+	content := strings.TrimSpace(msg.Content)
+
+	// 尝试解析 JSON 数据（来自 Chrome 插件）
+	if strings.HasPrefix(content, "{") && strings.HasSuffix(content, "}") {
+		var submitData VideoSubmitData
+		if err := json.Unmarshal([]byte(content), &submitData); err == nil && submitData.Type == "video_submit" {
+			s.handleVideoSubmitFromExtension(msg, &submitData)
+			return
+		}
+	}
+
+	// 解析命令
+	switch {
+	case content == "help" || content == "帮助":
+		s.Feishu.ReplyCard(context.Background(), msg, CreateHelpCard())
+
+	case content == "history" || content == "历史":
+		videos, _ := s.history.List()
+		var videoList []map[string]string
+		for _, v := range videos {
+			videoList = append(videoList, map[string]string{
+				"title":         v.Title,
+				"youtube_url":   fmt.Sprintf("https://www.youtube.com/watch?v=%s", v.YouTubeID),
+				"bilibili_url":  fmt.Sprintf("https://www.bilibili.com/video/%s", v.BVID),
+			})
+		}
+		s.Feishu.ReplyCard(context.Background(), msg, CreateHistoryCard(videoList))
+
+	case content == "status" || content == "状态":
+		videos, _ := s.history.List()
+		s.Feishu.ReplyCard(context.Background(), msg, CreateStatusCard(0, len(videos)))
+
+	default:
+		// 尝试解析 YouTube URL
+		if youtubeURL := ParseYouTubeURL(content); youtubeURL != "" {
+			s.handleYouTubeSubmission(msg, youtubeURL, "")
+		} else {
+			s.Feishu.ReplyMarkdown(context.Background(), msg, "发送 YouTube 视频链接即可自动处理\n\n输入 `help` 查看帮助")
+		}
+	}
+}
+
+// handleVideoSubmitFromExtension 处理来自 Chrome 插件的视频提交
+func (s *Server) handleVideoSubmitFromExtension(msg *FeishuMessage, data *VideoSubmitData) {
+	youtubeURL := data.Data.URL
+	videoID := data.Data.VideoID
+	title := data.Data.Title
+	cookies := data.Data.Cookies
+
+	log.Printf("📥 收到 Chrome 插件提交: %s - %s", title, youtubeURL)
+
+	// 检查是否已提交
+	if s.history.IsSubmitted(videoID) {
+		submitted := s.history.GetSubmitted(videoID)
+		s.Feishu.ReplyMarkdown(context.Background(), msg, fmt.Sprintf("⚠️ 该视频已提交过\n\nB站链接: https://www.bilibili.com/video/%s\n提交时间: %s", submitted.BVID, submitted.SubmittedAt[:19]))
+		return
+	}
+
+	// 发送处理中卡片
+	card := CreateTaskCard("pending", "正在处理...", "processing", "")
+	s.Feishu.ReplyCard(context.Background(), msg, card)
+
+	// 创建任务
+	task := &VideoTask{
+		ID:        generateTaskID(),
+		URL:       youtubeURL,
+		Title:     title,
+		Cookies:   cookies,
+		Status:    "pending",
+		CreatedAt: time.Now().Format(time.RFC3339),
+		UpdatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	// 发送到任务队列
+	select {
+	case s.taskChan <- task:
+		log.Printf("📥 新任务: %s - %s", task.ID, task.URL)
+	default:
+		s.Feishu.ReplyMessage(context.Background(), msg, "❌ 任务队列已满，请稍后重试")
+	}
+}
+
+// handleYouTubeSubmission 处理 YouTube 提交
+func (s *Server) handleYouTubeSubmission(msg *FeishuMessage, youtubeURL string, cookies string) {
+	// 提取视频 ID
+	videoID := extractVideoID(youtubeURL)
+	if videoID == "" {
+		s.Feishu.ReplyMessage(context.Background(), msg, "❌ 无效的 YouTube URL")
+		return
+	}
+
+	// 检查是否已提交
+	if s.history.IsSubmitted(videoID) {
+		submitted := s.history.GetSubmitted(videoID)
+		s.Feishu.ReplyMarkdown(context.Background(), msg, fmt.Sprintf("⚠️ 该视频已提交过\n\nB站链接: https://www.bilibili.com/video/%s\n提交时间: %s", submitted.BVID, submitted.SubmittedAt[:19]))
+		return
+	}
+
+	// 发送处理中卡片
+	card := CreateTaskCard("pending", "正在处理...", "processing", "")
+	s.Feishu.ReplyCard(context.Background(), msg, card)
+
+	// 创建任务
+	task := &VideoTask{
+		ID:        generateTaskID(),
+		URL:       youtubeURL,
+		Title:     "待处理",
+		Cookies:   cookies,
+		Status:    "pending",
+		CreatedAt: time.Now().Format(time.RFC3339),
+		UpdatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	// 发送到任务队列
+	select {
+	case s.taskChan <- task:
+		log.Printf("📥 新任务: %s - %s", task.ID, task.URL)
+	default:
+		s.Feishu.ReplyMessage(context.Background(), msg, "❌ 任务队列已满，请稍后重试")
+	}
+}
+
+// processTasks 处理任务队列
+func (s *Server) processTasks() {
+	for task := range s.taskChan {
+		s.processVideoTask(task)
+	}
+}
+
+// processVideoTask 处理单个视频任务
+func (s *Server) processVideoTask(task *VideoTask) {
+	log.Printf("🎬 开始处理任务: %s - %s", task.ID, task.URL)
+
+	// 更新任务状态
+	task.Status = "downloading"
+	task.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	// 下载视频
+	outputDir := s.cfg.DataDir + "/downloads/" + task.ID
+	cookiesPath := ""
+	if task.Cookies != "" {
+		// 保存 cookies 到临时文件
+		cookiesPath = outputDir + "/cookies.txt"
+		// TODO: 解析 cookies 并保存
+	}
+
+	result, err := download.Video(task.URL, outputDir, "en", cookiesPath)
+	if err != nil {
+		log.Printf("❌ 下载失败: %v", err)
+		task.Status = "failed"
+		task.Error = err.Error()
+		return
+	}
+
+	log.Printf("✅ 下载完成: %s", result.VideoPath)
+
+	// 更新任务状态
+	task.Status = "transcribing"
+	task.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	// 转录
+	srtPath, err := transcriber.BcutASR(result.VideoPath, outputDir)
+	if err != nil {
+		log.Printf("❌ 转录失败: %v", err)
+		task.Status = "failed"
+		task.Error = err.Error()
+		return
+	}
+
+	log.Printf("✅ 转录完成: %s", srtPath)
+
+	// 更新任务状态
+	task.Status = "translating"
+	task.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	// 翻译
+	translator := translator.New(translator.Config{
+		APIKey:     s.cfg.LLMAPIKey,
+		BaseURL:    s.cfg.LLMBaseURL,
+		Model:      s.cfg.LLMModel,
+		SourceLang: "en",
+		TargetLang: "zh",
+		BatchSize:  25,
+		MaxWorkers: 3,
+	})
+
+	zhSrtPath := outputDir + "/subtitle.zh.srt"
+	err = translator.TranslateSRTFile(context.Background(), srtPath, zhSrtPath)
+	if err != nil {
+		log.Printf("❌ 翻译失败: %v", err)
+		task.Status = "failed"
+		task.Error = err.Error()
+		return
+	}
+
+	log.Printf("✅ 翻译完成: %s", zhSrtPath)
+
+	// 更新任务状态
+	task.Status = "completed"
+	task.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	log.Printf("✅ 任务完成: %s", task.ID)
+}
+
+// Stop 停止服务器
+func (s *Server) Stop(ctx context.Context) error {
+	if s.Feishu != nil {
+		s.Feishu.Stop(ctx)
+	}
+	if s.server != nil {
+		return s.server.Shutdown(ctx)
+	}
+	return nil
+}
+
+// handleSubmit 处理视频提交
+func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		s.jsonError(w, "读取请求失败", http.StatusBadRequest)
+		return
+	}
+
+	var req SubmitRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		s.jsonError(w, "解析请求失败", http.StatusBadRequest)
+		return
+	}
+
+	// 验证 URL
+	if req.URL == "" {
+		s.jsonError(w, "URL 不能为空", http.StatusBadRequest)
+		return
+	}
+
+	// 提取视频 ID
+	videoID := extractVideoID(req.URL)
+	if videoID == "" {
+		s.jsonError(w, "无效的 YouTube URL", http.StatusBadRequest)
+		return
+	}
+
+	// 检查是否已提交
+	if s.history.IsSubmitted(videoID) {
+		s.jsonError(w, "该视频已提交过", http.StatusConflict)
+		return
+	}
+
+	// 创建任务
+	task := &VideoTask{
+		ID:          generateTaskID(),
+		URL:         req.URL,
+		Title:       req.Title,
+		Description: req.Description,
+		Subtitles:   req.Subtitles,
+		Cookies:     req.Meta,
+		Status:      "pending",
+		CreatedAt:   time.Now().Format(time.RFC3339),
+		UpdatedAt:   time.Now().Format(time.RFC3339),
+	}
+
+	// 发送到任务队列
+	select {
+	case s.taskChan <- task:
+		s.jsonResponse(w, SubmitResponse{
+			Success: true,
+			Message: "任务已提交",
+			TaskID:  task.ID,
+		})
+	default:
+		s.jsonError(w, "任务队列已满", http.StatusServiceUnavailable)
+	}
+}
+
+// handleListTasks 处理任务列表
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	// TODO: 实现任务列表
+	s.jsonResponse(w, []VideoTask{})
+}
+
+// handleGetTask 处理获取任务
+func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	// TODO: 实现获取任务
+	s.jsonError(w, "Not implemented", http.StatusNotImplemented)
+}
+
+// handleHistory 处理历史记录
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	videos, err := s.history.List()
+	if err != nil {
+		s.jsonError(w, "获取历史记录失败", http.StatusInternalServerError)
+		return
+	}
+	s.jsonResponse(w, videos)
+}
+
+// handleHealth 处理健康检查
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	s.jsonResponse(w, map[string]string{"status": "ok"})
+}
+
+// feishuWebhook 处理飞书 Webhook
+func (s *Server) feishuWebhook(w http.ResponseWriter, r *http.Request) {
+	// TODO: 实现飞书 Webhook
+	s.jsonResponse(w, map[string]string{"status": "ok"})
+}
+
+// jsonResponse 返回 JSON 响应
+func (s *Server) jsonResponse(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(data)
+}
+
+// jsonError 返回 JSON 错误响应
+func (s *Server) jsonError(w http.ResponseWriter, message string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// generateTaskID 生成任务 ID
+func generateTaskID() string {
+	return fmt.Sprintf("task_%d", time.Now().UnixNano())
+}
+
+// extractVideoID 提取视频 ID
+func extractVideoID(url string) string {
+	// youtube.com/watch?v=xxx
+	if strings.Contains(url, "youtube.com/watch?v=") {
+		parts := strings.Split(url, "v=")
+		if len(parts) > 1 {
+			id := strings.Split(parts[1], "&")[0]
+			if len(id) == 11 {
+				return id
+			}
+		}
+	}
+
+	// youtu.be/xxx
+	if strings.Contains(url, "youtu.be/") {
+		parts := strings.Split(url, "youtu.be/")
+		if len(parts) > 1 {
+			id := strings.Split(parts[1], "?")[0]
+			if len(id) == 11 {
+				return id
+			}
+		}
+	}
+
+	// youtube.com/shorts/xxx
+	if strings.Contains(url, "youtube.com/shorts/") {
+		parts := strings.Split(url, "shorts/")
+		if len(parts) > 1 {
+			id := strings.Split(parts[1], "?")[0]
+			if len(id) == 11 {
+				return id
+			}
+		}
+	}
+
+	return ""
+}
