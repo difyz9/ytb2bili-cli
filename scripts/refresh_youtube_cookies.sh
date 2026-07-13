@@ -5,12 +5,12 @@
 OUTPUT="${1:-$HOME/guan/code/ytb2bili-go/data/cookies/youtube_cookies.txt}"
 mkdir -p "$(dirname "$OUTPUT")"
 
-python3 << 'PYEOF'
+python3 - "$OUTPUT" << 'PYEOF'
 import http.client
 import json
 import sys
 
-output_path = """${OUTPUT}"""
+output_path = sys.argv[1]
 
 try:
     conn = http.client.HTTPConnection('127.0.0.1', 9222, timeout=5)
