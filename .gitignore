@@ -7,4 +7,5 @@ DEEPSEEK_API_KEY
 ytb2bili
 
 # generated output files
-\${OUTPUT}
+${OUTPUT}
+ytb
