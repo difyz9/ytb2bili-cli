@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/difyz9/ytb2bili-cli/internal/config"
-	"github.com/difyz9/ytb2bili-cli/internal/download"
-	"github.com/difyz9/ytb2bili-cli/internal/feishu"
-	"github.com/difyz9/ytb2bili-cli/internal/storage"
-	"github.com/difyz9/ytb2bili-cli/internal/transcriber"
-	"github.com/difyz9/ytb2bili-cli/internal/translator"
+	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/download"
+	"github.com/zolagz/ytb2bili-go/internal/feishu"
+	"github.com/zolagz/ytb2bili-go/internal/storage"
+	"github.com/zolagz/ytb2bili-go/internal/transcriber"
+	"github.com/zolagz/ytb2bili-go/internal/translator"
 )
 
 // BitableProcessor 多维表格任务处理器

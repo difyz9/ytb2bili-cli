@@ -1,4 +1,4 @@
-# ytb2bili-cli
+# ytb2bili-go
 
 YouTube → Bilibili 视频搬运工具 (Go 版本)
 
@@ -22,14 +22,14 @@ YouTube → Bilibili 视频搬运工具 (Go 版本)
 
 ```bash
 # 克隆项目
-git clone https://github.com/difyz9/ytb2bili-cli.git
-cd ytb2bili-cli
+git clone https://gitee.com/difyz/ytb2bili-go.git
+cd ytb2bili-go
 
 # 编译
 go build -o ytb2bili .
 
 # 添加到环境变量 (推荐)
-echo 'export PATH="/home/ubuntu/ytb2bili-cli:$PATH"' >> ~/.bashrc
+echo 'export PATH="/home/ubuntu/ytb2bili-go:$PATH"' >> ~/.bashrc
 echo 'alias y2b="ytb2bili"' >> ~/.bashrc
 source ~/.bashrc
 
@@ -160,7 +160,7 @@ y2b channel stats
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ytb2bili-cli 完整流程                       │
+│                    ytb2bili-go 完整流程                       │
 └─────────────────────────────────────────────────────────────┘
 
 Step 0: 搜索视频
@@ -208,7 +208,7 @@ Step 7: 审核通过后投稿字幕
 ## 项目结构
 
 ```
-ytb2bili-cli/
+ytb2bili-go/
 ├── main.go                    # 入口
 ├── go.mod
 ├── internal/

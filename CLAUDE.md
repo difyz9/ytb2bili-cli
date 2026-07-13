@@ -2,14 +2,14 @@
 
 ## 项目概述
 
-ytb2bili-cli 是一个 YouTube → Bilibili 视频搬运工具，支持搜索、下载、转录、翻译、投稿完整流水线。
+ytb2bili-go 是一个 YouTube → Bilibili 视频搬运工具，支持搜索、下载、转录、翻译、投稿完整流水线。
 
 ## 项目位置
 
-- **代码目录**: `/home/ubuntu/ytb2bili-cli`
-- **可执行文件**: `/home/ubuntu/ytb2bili-cli/ytb2bili`
+- **代码目录**: `/home/ubuntu/ytb2bili-go`
+- **可执行文件**: `/home/ubuntu/ytb2bili-go/ytb2bili`
 - **别名**: `y2b` (已配置到 ~/.bashrc)
-- **Gitee 仓库**: https://github.com/difyz9/ytb2bili-cli
+- **Gitee 仓库**: https://gitee.com/difyz/ytb2bili-go
 
 ## 环境配置
 
@@ -29,7 +29,7 @@ alias y2b="ytb2bili"
 ### 编译项目
 
 ```bash
-cd /home/ubuntu/ytb2bili-cli
+cd /home/ubuntu/ytb2bili-go
 go build -o ytb2bili .
 ```
 
@@ -91,7 +91,7 @@ y2b channel videos
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ytb2bili-cli 完整流程                       │
+│                    ytb2bili-go 完整流程                       │
 └─────────────────────────────────────────────────────────────┘
 
 Step 0: 搜索视频
@@ -139,7 +139,7 @@ Step 7: 审核通过后投稿字幕
 ## 项目结构
 
 ```
-ytb2bili-cli/
+ytb2bili-go/
 ├── main.go                    # 入口
 ├── internal/
 │   ├── command/              # CLI 命令

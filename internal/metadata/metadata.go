@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/difyz9/ytb2bili-cli/internal/config"
-	"github.com/difyz9/ytb2bili-cli/internal/download"
-	"github.com/difyz9/ytb2bili-cli/internal/translator"
+	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/download"
+	"github.com/zolagz/ytb2bili-go/internal/translator"
 )
 
 type VideoMeta struct {

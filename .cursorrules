@@ -1,15 +1,15 @@
-# Cursor Rules - ytb2bili-cli
+# Cursor Rules - ytb2bili-go
 
 ## Project Context
 
-You are working on ytb2bili-cli, a YouTube → Bilibili video transfer tool written in Go.
+You are working on ytb2bili-go, a YouTube → Bilibili video transfer tool written in Go.
 
 ## Project Location
 
-- **Code**: `/home/ubuntu/ytb2bili-cli`
-- **Binary**: `/home/ubuntu/ytb2bili-cli/ytb2bili`
+- **Code**: `/home/ubuntu/ytb2bili-go`
+- **Binary**: `/home/ubuntu/ytb2bili-go/ytb2bili`
 - **Alias**: `y2b` (configured in ~/.bashrc)
-- **Repository**: https://github.com/difyz9/ytb2bili-cli
+- **Repository**: https://gitee.com/difyz/ytb2bili-go
 
 ## Environment Setup
 
@@ -25,7 +25,7 @@ alias y2b="ytb2bili"
 
 ```bash
 # Build
-cd /home/ubuntu/ytb2bili-cli && go build -o ytb2bili .
+cd /home/ubuntu/ytb2bili-go && go build -o ytb2bili .
 
 # Using alias y2b
 y2b search "Flutter tutorial"

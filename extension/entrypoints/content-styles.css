@@ -1,0 +1,42 @@
+/* Content Script 样式 - 不导入 base 层以避免重置页面样式 */
+@tailwind components;
+@tailwind utilities;
+
+/* 为扩展创建独立的样式作用域 */
+#bili-extension-root,
+#bili-extension-notifications {
+  /* 重置扩展容器，使其不受页面样式影响 */
+  all: initial;
+  position: fixed !important;
+  z-index: 2147483647 !important; /* 使用最大z-index确保在最上层 */
+  pointer-events: none !important; /* 默认不拦截事件 */
+}
+
+#bili-extension-root > *,
+#bili-extension-notifications > * {
+  pointer-events: auto !important; /* 恢复子元素的事件响应 */
+  box-sizing: border-box !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif !important;
+}
+
+/* 自定义样式 */
+@layer components {
+  .bili-extension-notification {
+    @apply fixed z-[9999] px-4 py-3 rounded-lg shadow-lg transition-all duration-300;
+    /* 确保基本显示属性 */
+    display: block !important;
+    box-sizing: border-box !important;
+  }
+  
+  .bili-extension-notification.success {
+    @apply bg-green-500 text-white;
+  }
+  
+  .bili-extension-notification.error {
+    @apply bg-red-500 text-white;
+  }
+  
+  .bili-extension-notification.info {
+    @apply bg-blue-500 text-white;
+  }
+}

@@ -5,8 +5,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/difyz9/ytb2bili-cli/internal/config"
-	"github.com/difyz9/ytb2bili-cli/internal/command"
+	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/command"
 )
 
 var Version = "dev"

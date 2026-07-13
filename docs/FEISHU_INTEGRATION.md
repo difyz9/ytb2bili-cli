@@ -4,7 +4,7 @@
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Chrome 插件    │ ──► │  飞书机器人     │ ──► │  ytb2bili-cli    │
+│  Chrome 插件    │ ──► │  飞书机器人     │ ──► │  ytb2bili-go    │
 │  (视频+cookies) │     │  (Webhook/WS)   │     │  (处理+上传)    │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
 ```
@@ -26,7 +26,7 @@
 4. 启用机器人能力
 5. 配置事件订阅 (接收消息)
 
-### 2. 配置 ytb2bili-cli
+### 2. 配置 ytb2bili-go
 
 ```bash
 y2b server --feishu-app-id APP_ID --feishu-app-secret APP_SECRET

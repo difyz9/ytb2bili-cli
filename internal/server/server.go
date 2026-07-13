@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/difyz9/ytb2bili-cli/internal/config"
-	"github.com/difyz9/ytb2bili-cli/internal/download"
-	"github.com/difyz9/ytb2bili-cli/internal/storage"
-	"github.com/difyz9/ytb2bili-cli/internal/transcriber"
-	"github.com/difyz9/ytb2bili-cli/internal/translator"
+	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/download"
+	"github.com/zolagz/ytb2bili-go/internal/storage"
+	"github.com/zolagz/ytb2bili-go/internal/transcriber"
+	"github.com/zolagz/ytb2bili-go/internal/translator"
 )
 
 // Server HTTP 服务器
@@ -120,7 +120,7 @@ func (s *Server) Start(addr string) error {
 
 	s.server = &http.Server{
 		Addr:    addr,
-		Handler: mux,
+		Handler: corsMiddleware(mux),
 	}
 
 	log.Printf("🚀 服务器启动在 %s", addr)
@@ -285,12 +285,21 @@ func (s *Server) processTasks() {
 func (s *Server) processVideoTask(task *VideoTask) {
 	log.Printf("🎬 开始处理任务: %s - %s", task.ID, task.URL)
 
+	// 提取视频 ID 作为文件夹名
+	videoID := extractVideoID(task.URL)
+	if videoID == "" {
+		log.Printf("❌ 无法提取视频 ID")
+		task.Status = "failed"
+		task.Error = "无法提取视频 ID"
+		return
+	}
+
 	// 更新任务状态
 	task.Status = "downloading"
 	task.UpdatedAt = time.Now().Format(time.RFC3339)
 
-	// 下载视频
-	outputDir := s.cfg.DataDir + "/downloads/" + task.ID
+	// 下载视频（使用视频 ID 作为保存文件夹）
+	outputDir := s.cfg.DataDir + "/downloads/" + videoID
 	cookiesPath := ""
 	if task.Cookies != "" {
 		// 保存 cookies 到临时文件
@@ -518,4 +527,21 @@ func extractVideoID(url string) string {
 	}
 
 	return ""
+}
+
+// corsMiddleware 添加 CORS 头，允许 Chrome 扩展内容脚本跨域请求
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+		// 处理 OPTIONS 预检请求
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }

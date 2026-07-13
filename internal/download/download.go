@@ -1,6 +1,7 @@
 package download
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -35,7 +36,10 @@ func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) 
 
 	// Ensure deno is in PATH for yt-dlp YouTube JS challenges
 	env := os.Environ()
-	denoPath := "/home/ubuntu/.deno/bin"
+	denoPath := os.Getenv("DENO_PATH")
+	if denoPath == "" {
+		denoPath = filepath.Join(os.Getenv("HOME"), ".deno", "bin")
+	}
 	if runtime.GOOS != "windows" {
 		pathExists := false
 		for _, p := range strings.Split(os.Getenv("PATH"), ":") {
@@ -58,7 +62,7 @@ func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) 
 	if cookiesFile == "" || !hasValidCookies(cookiesFile) {
 		globalCookies := os.Getenv("YOUTUBE_COOKIES")
 		if globalCookies == "" {
-			globalCookies = "/home/ubuntu/ytb2bili-cli/cookies/youtube_cookies.txt"
+			globalCookies = filepath.Join(os.Getenv("HOME"), "guan", "code", "ytb2bili-go", "data", "cookies", "youtube_cookies.txt")
 		}
 		if _, err := os.Stat(globalCookies); err == nil {
 			cookiesFile = globalCookies
@@ -66,18 +70,29 @@ func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) 
 	}
 
 	// Build base args
-	baseArgs := []string{}
+	baseArgs := []string{"--impersonate", "chrome"}
 	if cookiesFile != "" {
 		baseArgs = append(baseArgs, "--cookies", cookiesFile)
 	}
 
 	// Get video info first
-	infoArgs := append(baseArgs, "--dump-json", "--no-download", url)
+	infoArgs := append(baseArgs, "--dump-json", "--no-download", "--remote-components", "ejs:github", url)
 	infoCmd := exec.Command("yt-dlp", infoArgs...)
 	infoCmd.Env = env
+	var infoStderr bytes.Buffer
+	infoCmd.Stderr = &infoStderr
 	infoOut, err := infoCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("获取视频信息失败: %w", err)
+		stderrStr := strings.TrimSpace(infoStderr.String())
+		// Extract the most relevant error line (first ERROR: line)
+		errMsg := err.Error()
+		for _, line := range strings.Split(stderrStr, "\n") {
+			if strings.HasPrefix(line, "ERROR:") {
+				errMsg = strings.TrimSpace(line)
+				break
+			}
+		}
+		return nil, fmt.Errorf("获取视频信息失败: %s", errMsg)
 	}
 
 	var info VideoInfo
@@ -98,6 +113,11 @@ func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) 
 		"--write-auto-sub", "--sub-langs", subLangs,
 		"--convert-subs", "srt",
 		"--embed-metadata",
+		"--ignore-errors",
+		"--remote-components", "ejs:github",
+		"--retries", "5",
+		"--extractor-retries", "5",
+		"--retry-sleep", "exp=2:5",
 		"-o", template,
 		"--print", "after_move:video_path:{filepath}",
 		url,

@@ -1,0 +1,367 @@
+// 辅助函数：解析版本号
+@NonCPS
+def parseVersion(String tag) {
+    def matcher = tag =~ /^v?(\d+)\.(\d+)\.(\d+)(-.*)?$/
+    if (matcher.matches()) {
+        return [
+            major: matcher[0][1].toInteger(),
+            minor: matcher[0][2].toInteger(),
+            patch: matcher[0][3].toInteger(),
+            suffix: matcher[0][4] ?: ''
+        ]
+    }
+    return [major: 0, minor: 0, patch: 0, suffix: '']
+}
+
+pipeline {
+    agent any
+    
+    parameters {
+        booleanParam(name: 'CREATE_RELEASE', defaultValue: true, description: 'Create GitHub release')
+        booleanParam(name: 'PRERELEASE', defaultValue: false, description: 'Mark as pre-release')
+    }
+
+    
+    environment {
+        PATH = "/opt/homebrew/bin:${env.PATH}"  // 使用系统安装的 Node.js
+        GITHUB_REPO = 'difyz9/ytb2bili-extension'  // 推送 releases 的目标 GitHub 仓库
+        GITHUB_TOKEN = credentials('github-token')  // 需要在 Jenkins 中配置 GitHub Token
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                script {
+                    echo "Checking out code..."
+                    checkout scm
+                    
+                    // 自动获取最新 tag 并递增版本
+                    sh "git fetch --tags"
+                    def latestTag = sh(script: 'git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"', returnStdout: true).trim()
+                    echo "Latest tag from Gitee: ${latestTag}"
+                    
+                    // 解析并递增版本号 (v1.0.1 -> v1.0.2)
+                    def versionParts = parseVersion(latestTag)
+                    env.BUILD_TAG = "v${versionParts.major}.${versionParts.minor}.${versionParts.patch + 1}${versionParts.suffix}"
+                    echo "Auto-incremented version: ${env.BUILD_TAG}"
+                    
+                    // 检查 GitHub 上是否已存在该 tag，如果存在则继续递增
+                    def maxAttempts = 100
+                    def attempts = 0
+                    
+                    while (attempts < maxAttempts) {
+                        def checkResult = sh(
+                            script: """
+                                export GH_TOKEN="${env.GITHUB_TOKEN}"
+                                if command -v gh &> /dev/null; then
+                                    gh release view ${env.BUILD_TAG} --repo ${env.GITHUB_REPO} &> /dev/null && echo 'exists' || echo 'not_exists'
+                                else
+                                    echo 'not_exists'
+                                fi
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        
+                        if (checkResult == 'exists') {
+                            echo "Tag ${env.BUILD_TAG} already exists on GitHub, incrementing..."
+                            // 递增版本号
+                            def currentParts = parseVersion(env.BUILD_TAG)
+                            env.BUILD_TAG = "v${currentParts.major}.${currentParts.minor}.${currentParts.patch + 1}${currentParts.suffix}"
+                            attempts++
+                        } else {
+                            echo "Tag ${env.BUILD_TAG} is available"
+                            break
+                        }
+                    }
+                    
+                    if (attempts >= maxAttempts) {
+                        error("Reached maximum attempts to find an available tag")
+                    }
+                    
+                    env.VERSION = env.BUILD_TAG.replaceAll('^v', '')
+                    echo "Final version: ${env.VERSION}"
+                    echo "Final tag: ${env.BUILD_TAG}"
+                }
+            }
+        }
+        
+        stage('Setup Node.js') {
+            steps {
+                script {
+                    echo "Checking Node.js environment..."
+                    
+                    sh """
+                        echo "✅ Node.js version:"
+                        node --version
+                        
+                        echo "✅ npm version:"
+                        npm --version
+                        
+                        echo "✅ yarn version:"
+                        yarn --version
+                    """
+                }
+            }
+        }
+        
+        stage('Update Version') {
+            steps {
+                script {
+                    echo "Updating version to ${env.VERSION}..."
+                    
+                    // 更新 package.json 版本
+                    sh "npm version ${env.VERSION} --no-git-tag-version --allow-same-version"
+                    
+                    // 更新 wxt.config.ts 版本
+                    sh "sed -i.bak \"s/version: '[^']*'/version: '${env.VERSION}'/\" wxt.config.ts"
+                    
+                    // 验证版本更新
+                    sh "cat package.json | grep version"
+                    sh "cat wxt.config.ts | grep version"
+                    
+                    // 提交版本更新
+                    sh """
+                        git config user.email "jenkins@example.com"
+                        git config user.name "Jenkins Build"
+                        git add package.json wxt.config.ts
+                        git commit -m "Release ${env.BUILD_TAG}"
+                    """
+                }
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                script {
+                    echo "Installing dependencies..."
+                    sh "yarn cache clean"
+                    sh "rm -rf node_modules"
+                    sh "yarn install --network-timeout 100000"
+                }
+            }
+        }
+        
+        stage('Build Extensions') {
+            parallel {
+                stage('Build Chrome') {
+                    steps {
+                        script {
+                            echo "Building Chrome extension..."
+                            // 清理旧的构建产物
+                            sh "rm -rf dist/*"
+                            sh "yarn build"
+                            echo "Chrome build completed"
+                        }
+                    }
+                }
+                
+                stage('Build Firefox') {
+                    steps {
+                        script {
+                            echo "Building Firefox extension..."
+                            sh "yarn build:firefox"
+                            echo "Firefox build completed"
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Create Zip Files') {
+            steps {
+                script {
+                    echo "Creating zip files..."
+                    
+                    // 创建 Chrome zip
+                    sh "yarn zip"
+                    echo "Chrome zip created"
+                    
+                    // 创建 Firefox zip
+                    sh "yarn zip:firefox"
+                    echo "Firefox zip created"
+                    
+                    // 列出生成的文件
+                    sh """
+                        echo "Generated files:"
+                        ls -lh dist/*.zip
+                    """
+                }
+            }
+        }
+        
+        stage('Archive Artifacts') {
+            steps {
+                script {
+                    echo "Archiving build artifacts..."
+                    archiveArtifacts artifacts: 'dist/*.zip', fingerprint: true
+                }
+            }
+        }
+        
+        stage('Create GitHub Release') {
+            when {
+                expression { params.CREATE_RELEASE == true }
+            }
+            steps {
+                script {
+                    echo "Creating GitHub release for ${env.BUILD_TAG}..."
+                    
+                    def releaseBody = """## 🚀 YTB2BILI Extension ${env.BUILD_TAG}
+
+### ✨ 功能特性
+- 🎬 支持 YouTube 和 Bilibili 视频信息保存
+- 📝 自动获取视频字幕和元数据
+- 🔄 实时同步到后端服务
+- 🎯 智能视频检测和处理
+
+### 📦 安装包说明
+- **Chrome 版本**: 兼容 Chromium 内核浏览器 (Chrome, Edge, 等)
+- **Firefox 版本**: 专为 Firefox 浏览器优化
+
+### 🛠 安装方法
+
+#### Chrome/Edge 安装
+1. 下载 `ytb2bili-extension-${env.VERSION}-chrome.zip`
+2. 解压缩文件
+3. 打开浏览器扩展管理页面
+4. 启用"开发者模式"
+5. 点击"加载已解压的扩展程序"，选择解压后的文件夹
+
+#### Firefox 安装
+1. 下载 `ytb2bili-extension-${env.VERSION}-firefox.zip`
+2. 打开 Firefox，访问 `about:debugging`
+3. 点击"此 Firefox"
+4. 点击"临时载入附加组件"
+5. 选择下载的 zip 文件
+
+### 📋 构建信息
+- 版本号: ${env.VERSION}
+- 构建编号: ${env.BUILD_NUMBER}
+- 构建时间: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
+"""
+                    
+                    // 使用 GitHub CLI 创建 release
+                    sh """
+                        export GH_TOKEN="${GITHUB_TOKEN}"
+                        
+                        # 安装 GitHub CLI (如果未安装)
+                        if ! command -v gh &> /dev/null; then
+                            echo "Installing GitHub CLI..."
+                            # macOS
+                            if command -v brew &> /dev/null; then
+                                brew install gh
+                            # Linux
+                            elif command -v apt-get &> /dev/null; then
+                                type -p curl >/dev/null || sudo apt install curl -y
+                                curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+                                sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+                                echo "deb [arch=\$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+                                sudo apt update
+                                sudo apt install gh -y
+                            fi
+                        fi
+
+                        # 初始化目标 GitHub 仓库（如果为空）
+                        echo "Checking GitHub repository status..."
+                        
+                        # 检查仓库是否为空
+                        if ! gh api repos/${GITHUB_REPO} --jq '.size' > /dev/null 2>&1 || [ "\$(gh api repos/${GITHUB_REPO} --jq '.size')" = "0" ]; then
+                            echo "Repository is empty, initializing with README..."
+                            
+                            # 创建一个临时目录用于初始化仓库
+                            INIT_DIR=\$(mktemp -d)
+                            cd "\$INIT_DIR"
+                            
+                            # 初始化 git 仓库
+                            git init
+                            git config user.email "jenkins@example.com"
+                            git config user.name "Jenkins Build"
+                            
+                            # 创建 README
+                            echo "# YTB2BILI Extension" > README.md
+                            echo "" >> README.md
+                            echo "Browser extension for saving YouTube and Bilibili video information." >> README.md
+                            echo "" >> README.md
+                            echo "## Download" >> README.md
+                            echo "Check the [Releases](https://github.com/${GITHUB_REPO}/releases) page for the latest version." >> README.md
+                            
+                            # 提交并推送
+                            git add README.md
+                            git commit -m "Initial commit"
+                            git remote add origin "https://${GITHUB_TOKEN}@github.com/${GITHUB_REPO}.git"
+                            git branch -M main
+                            git push -u origin main --force
+                            
+                            # 返回工作目录
+                            cd -
+                            rm -rf "\$INIT_DIR"
+                            
+                            echo "Repository initialized successfully"
+                        else
+                            echo "Repository already initialized"
+                        fi
+
+                        # 创建 GitHub Release
+                        echo "Creating GitHub release ${env.BUILD_TAG}..."
+                        
+                        # 检查 release 是否已存在
+                        if gh release view ${env.BUILD_TAG} --repo "${env.GITHUB_REPO}" &> /dev/null; then
+                            echo "Release ${env.BUILD_TAG} already exists, deleting..."
+                            gh release delete ${env.BUILD_TAG} --repo "${env.GITHUB_REPO}" --yes
+                            echo "Old release deleted"
+                        fi
+                        
+                        # 使用 --target 参数指定一个已存在的 commit（main 分支的 HEAD）
+                        # 获取远程 main 分支的最新 commit
+                        REMOTE_COMMIT=\$(gh api repos/${GITHUB_REPO}/git/ref/heads/main --jq '.object.sha' 2>/dev/null || echo "")
+                        
+                        if [ -z "\$REMOTE_COMMIT" ]; then
+                            echo "Warning: Could not get remote commit, release will use generated source archive"
+                            # 创建 release（不指定 target，GitHub 会自动生成源码）
+                            gh release create ${env.BUILD_TAG} \
+                                --repo "${env.GITHUB_REPO}" \
+                                --title "Release ${env.BUILD_TAG}" \
+                                --notes '${releaseBody}' \
+                                ${params.PRERELEASE ? '--prerelease' : ''} \
+                                "dist/ytb2bili-extension-${env.VERSION}-chrome.zip" \
+                                "dist/ytb2bili-extension-${env.VERSION}-firefox.zip" \
+                                "dist/ytb2bili-extension-${env.VERSION}-sources.zip"
+                        else
+                            echo "Creating release targeting commit: \$REMOTE_COMMIT"
+                            # 创建 release，指定 target 为远程已有的 commit
+                            gh release create ${env.BUILD_TAG} \
+                                --repo "${env.GITHUB_REPO}" \
+                                --title "Release ${env.BUILD_TAG}" \
+                                --notes '${releaseBody}' \
+                                --target "\$REMOTE_COMMIT" \
+                                ${params.PRERELEASE ? '--prerelease' : ''} \
+                                "dist/ytb2bili-extension-${env.VERSION}-chrome.zip" \
+                                "dist/ytb2bili-extension-${env.VERSION}-firefox.zip" \
+                                "dist/ytb2bili-extension-${env.VERSION}-sources.zip"
+                        fi
+                    """
+                    
+                    echo "GitHub release created successfully!"
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "✅ Build and release completed successfully!"
+            echo "Version: ${env.VERSION}"
+            echo "Tag: ${env.BUILD_TAG}"
+        }
+        
+        failure {
+            echo "❌ Build or release failed!"
+        }
+        
+        always {
+            // 清理工作空间（可选）
+            // cleanWs()
+            echo "Pipeline execution completed"
+        }
+    }
+}
