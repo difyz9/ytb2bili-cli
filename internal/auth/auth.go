@@ -163,7 +163,12 @@ func extractLoginInfo(result map[string]interface{}) (*LoginInfo, error) {
 		for _, c := range raw {
 			if cm, ok := c.(map[string]interface{}); ok {
 				name, _ := cm["name"].(string)
-				val, _ := cm["value"].(string)
+				rawVal, _ := cm["value"].(string)
+				// URL 解码 cookie 值（B站 API 返回的是 URL 编码的）
+				val, err := url.QueryUnescape(rawVal)
+				if err != nil {
+					val = rawVal
+				}
 				cookies[name] = val
 				if name == "bili_jct" {
 					biliJCT = val

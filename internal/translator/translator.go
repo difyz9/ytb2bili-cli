@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/difyz9/ytb2bili-cli/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/config"
 )
 
 const (

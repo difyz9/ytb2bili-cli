@@ -2,9 +2,11 @@
 
 本文档供所有 AI 智能体（Codex、Claude Code、Hermes Agent、Cursor 等）使用。
 
+> **首次安装项目？** 请先阅读 [INSTALL_AGENT.md](./INSTALL_AGENT.md) 获取完整的逐步骤安装指南（含依赖安装、编译、配置）。
+
 ## 项目概述
 
-**ytb2bili-cli** 是一个 YouTube → Bilibili 视频搬运工具，使用 Go 语言编写。
+**ytb2bili-go** 是一个 YouTube → Bilibili 视频搬运工具，使用 Go 语言编写。
 
 ### 核心功能
 
@@ -36,17 +38,17 @@ alias y2b="ytb2bili"
 
 ## 项目位置
 
-- **代码目录**: `/home/ubuntu/ytb2bili-cli`
-- **可执行文件**: `/home/ubuntu/ytb2bili-cli/ytb2bili`
+- **代码目录**: `/home/ubuntu/ytb2bili-go`
+- **可执行文件**: `/home/ubuntu/ytb2bili-go/ytb2bili`
 - **别名**: `y2b`
-- **Gitee 仓库**: https://github.com/difyz9/ytb2bili-cli
+- **Gitee 仓库**: https://gitee.com/difyz/ytb2bili-go
 
 ## 快速命令
 
 ### 编译
 
 ```bash
-cd /home/ubuntu/ytb2bili-cli && go build -o ytb2bili .
+cd /home/ubuntu/ytb2bili-go && go build -o ytb2bili .
 ```
 
 ### 搜索视频
@@ -86,6 +88,40 @@ y2b submit --dry-run "https://www.youtube.com/watch?v=VIDEO_ID"
 y2b submit --skip-translate "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
+### 字幕管理
+
+```bash
+# 查看所有视频的字幕上传状态
+y2b subtitle status
+
+# 查看特定视频的字幕状态 (按 videoID 或 BVID)
+y2b subtitle status BV1xx123
+
+# 重试上传字幕 (审核通过后，按 videoID 或 BVID)
+y2b subtitle retry BV1xx123
+```
+
+### 🤖 自主模式（批量自动搬运）
+
+```bash
+# 自动搜索本周高价值视频（按观看数排序）并提交前3个
+y2b auto "AI tutorial" "programming" "tech news"
+
+# 仅查看搜索结果，不上传
+y2b auto --dry-run --max-videos 5 "python tutorial"
+
+# 自定义过滤条件
+y2b auto --min-views 5000 --max-duration 600 --date this_month "flutter tutorial"
+
+# 搜索多个关键词，自动去重排序
+y2b auto "machine learning" "deep learning" "neural network"
+
+# 跳过翻译（保留原声英文字幕）
+y2b auto --skip-translate "music production"
+```
+
+字幕采用**异步监听**机制：投稿后立即返回，后台 goroutine 每 30 秒检查一次审核状态，最多等待 24 小时。审核通过后自动用 `SubtitleUploader`（获取 CID → 转换 SRT → 保存草稿）上传字幕。上传状态持久化在 `data/subtitles/` 目录中，重启不丢失。
+
 ### 频道监控
 
 ```bash
@@ -109,7 +145,7 @@ y2b login
 ## 项目结构
 
 ```
-ytb2bili-cli/
+ytb2bili-go/
 ├── main.go                    # 入口
 ├── internal/
 │   ├── command/              # CLI 命令
@@ -143,7 +179,7 @@ ytb2bili-cli/
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    ytb2bili-cli 完整流程                       │
+│                    ytb2bili-go 完整流程                       │
 └─────────────────────────────────────────────────────────────┘
 
 Step 0: 搜索视频
@@ -282,11 +318,14 @@ err := trans.TranslateSRTFile(ctx, inputPath, outputPath)
 // 上传视频
 bvid, err := bili.Upload(&cred, &params)
 
-// 上传字幕
-err := client.UploadSubtitle(sdkLogin, bvid, subtitlePath, lang)
+// 上传字幕（使用 SubtitleUploader：获取CID → 转换SRT → 保存草稿）
+err := bili.UploadSubtitle(cred, bvid, subtitlePath, "zh")
 
-// 等待审核通过
-status, err := client.WaitForVideoReviewPassed(bvid, cookies, interval, timeout)
+// 检查审核状态
+status, err := bili.CheckReviewStatus(cred, bvid)
+
+// 等待审核通过（30秒轮询，最长24小时）
+status, err := bili.WaitForReviewPassed(cred, bvid)
 ```
 
 ## API 端点参考
@@ -345,7 +384,8 @@ DEEPSEEK_API_KEY=*** go test -v -run TestTranslateSRT ./internal/translator/ -ti
 2. 检查 `data/downloads/` 查看下载文件
 3. 查看 `data/tasks/` 的任务状态
 4. 查看 `data/history/` 的提交历史
-5. 日志输出到 stderr
+5. 查看 `data/subtitles/` 的字幕上传状态（持久化，重启不丢失）
+6. 日志输出到 stderr
 
 ## 依赖工具
 

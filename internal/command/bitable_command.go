@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/urfave/cli/v2"
-	"github.com/difyz9/ytb2bili-cli/internal/config"
-	"github.com/difyz9/ytb2bili-cli/internal/feishu"
-	"github.com/difyz9/ytb2bili-cli/internal/server"
+	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/feishu"
+	"github.com/zolagz/ytb2bili-go/internal/server"
 )
 
 // bitableCommand 多维表格任务命令

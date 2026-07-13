@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/difyz9/ytb2bili-cli/internal/storage"
+	"github.com/zolagz/ytb2bili-go/internal/storage"
 )
 
 // ─── Data Structures ──────────────────────────────────────────────────────────

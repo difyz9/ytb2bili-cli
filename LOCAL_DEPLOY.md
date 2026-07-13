@@ -1,4 +1,4 @@
-# ytb2bili-cli 本地部署指南
+# ytb2bili-go 本地部署指南
 
 ## 前置条件
 
@@ -34,8 +34,8 @@ deno --version
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/difyz9/ytb2bili-cli.git
-cd ytb2bili-cli
+git clone https://gitee.com/difyz/ytb2bili-go.git
+cd ytb2bili-go
 ```
 
 ### 2. 编译
@@ -48,12 +48,12 @@ go build -o ytb2bili .
 
 ```bash
 # 飞书应用配置（从你的服务器复制）
-export FEISHU_APP_ID="x"
-export FEISHU_APP_SECRET="xxxxxxx"
+export FEISHU_APP_ID="cli_aaa921692978dce6"
+export FEISHU_APP_SECRET="x6wwyDmSVlbubdcGpO5nKhdwxniTB7ka"
 
 # 多维表格配置
-export BITABLE_APP_TOKEN="xZ"
-export BITABLE_TABLE_ID="tblxxxxx"
+export BITABLE_APP_TOKEN="MEG6bQc6CaXNwbsM1vZc0jBon0Z"
+export BITABLE_TABLE_ID="tblkMgbUbScdevlr"
 
 # DeepSeek API（用于字幕翻译）
 export DEEPSEEK_API_KEY="你的 DeepSeek API Key"
@@ -82,7 +82,7 @@ nohup ./ytb2bili bitable > bitable.log 2>&1 &
 1. Chrome 扩展提交任务到飞书多维表格
    └── 视频 URL + Cookies（包含 .google.com 域的 cookies）
 
-2. 本地 ytb2bili-cli 轮询多维表格
+2. 本地 ytb2bili-go 轮询多维表格
    └── 每 30 秒检查一次
 
 3. 处理任务
@@ -152,7 +152,7 @@ export http_proxy=http://your-proxy:port
 ## 数据目录结构
 
 ```
-ytb2bili-cli/
+ytb2bili-go/
 ├── data/
 │   ├── downloads/           # 下载的视频
 │   │   └── <video_id>/

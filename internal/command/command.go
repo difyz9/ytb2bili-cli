@@ -4,24 +4,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"syscall"
 	"time"
 
-	"github.com/difyz9/bilibili-go-sdk/bilibili"
 	"github.com/urfave/cli/v2"
 
-	"github.com/difyz9/ytb2bili-cli/internal/auth"
-	"github.com/difyz9/ytb2bili-cli/internal/bili"
-	"github.com/difyz9/ytb2bili-cli/internal/channel"
-	"github.com/difyz9/ytb2bili-cli/internal/config"
-	"github.com/difyz9/ytb2bili-cli/internal/download"
-	"github.com/difyz9/ytb2bili-cli/internal/metadata"
-	"github.com/difyz9/ytb2bili-cli/internal/search"
-	"github.com/difyz9/ytb2bili-cli/internal/server"
-	"github.com/difyz9/ytb2bili-cli/internal/storage"
-	"github.com/difyz9/ytb2bili-cli/internal/transcriber"
-	"github.com/difyz9/ytb2bili-cli/internal/translator"
+	"github.com/zolagz/ytb2bili-go/internal/auth"
+	"github.com/zolagz/ytb2bili-go/internal/bili"
+	"github.com/zolagz/ytb2bili-go/internal/cdp"
+	"github.com/zolagz/ytb2bili-go/internal/channel"
+	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/download"
+	"github.com/zolagz/ytb2bili-go/internal/metadata"
+	"github.com/zolagz/ytb2bili-go/internal/search"
+	"github.com/zolagz/ytb2bili-go/internal/server"
+	"github.com/zolagz/ytb2bili-go/internal/storage"
+	"github.com/zolagz/ytb2bili-go/internal/transcriber"
+	"github.com/zolagz/ytb2bili-go/internal/translator"
 )
 
 func NewApp(cfg *config.Config) *cli.App {
@@ -35,14 +38,20 @@ func NewApp(cfg *config.Config) *cli.App {
 
 func commands(cfg *config.Config) []*cli.Command {
 	return []*cli.Command{
+		startCommand(cfg),
+		stopCommand(cfg),
+		restartCommand(cfg),
+		statusCommand(cfg),
 		loginCommand(cfg),
 		searchCommand(cfg),
 		submitCommand(cfg),
 		taskCommand(cfg),
 		channelCommand(cfg),
-		serverCommand(cfg),
+		serverCommand(cfg), // 保留但 Hidden=true
 		debugCommand(cfg),
-		bitableCommand(cfg),
+		subtitleCommand(cfg),
+		autoCommand(cfg),
+		cookiesCommand(cfg),
 	}
 }
 
@@ -202,11 +211,10 @@ func searchCommand(cfg *config.Config) *cli.Command {
 				ts.UpdateStep(id, "transcribe", "completed")
 
 				// Step 3: Translate
-				translatedSrt := srtPath
 				if !c.Bool("skip-translate") {
 					ts.UpdateStep(id, "translate", "running")
 					fmt.Printf("🌐 [3/5] AI 翻译 (en→zh)... ")
-					translatedSrt, err = translator.SRT(srtPath, "en", "zh", cfg)
+					_, err = translator.SRT(srtPath, "en", "zh", cfg)
 					if err != nil {
 						ts.UpdateStep(id, "translate", "failed", err.Error())
 						return fmt.Errorf("翻译失败: %w", err)
@@ -262,6 +270,8 @@ func searchCommand(cfg *config.Config) *cli.Command {
 
 				task.BVID = bvid
 				task.Status = "completed"
+				ts.SetBVID(id, bvid)
+				ts.SetCompleted(id)
 				fmt.Printf("✅ https://www.bilibili.com/video/%s\n", bvid)
 
 				// 记录到历史
@@ -272,9 +282,18 @@ func searchCommand(cfg *config.Config) *cli.Command {
 					Channel:   video.Channel,
 				})
 
-				// 异步监听审核状态
-				if translatedSrt != "" {
-					go watchAndUploadSubtitle(bvid, translatedSrt, &cred, cfg)
+				// 同步字幕追踪状态
+				subStore := storage.NewSubtitleStore(filepath.Join(cfg.DataDir, "subtitles"))
+				tracks, _ := subStore.SyncFromDownload(id, bvid, dlDir)
+				pendingCount := 0
+				for _, t := range tracks {
+					if t.Status == storage.SubtitleStatusPending {
+						pendingCount++
+					}
+				}
+				if pendingCount > 0 {
+					fmt.Printf("  📝 找到 %d 个字幕文件待上传\n", pendingCount)
+					fmt.Printf("  💡 审核通过后执行: ytb subtitle retry %s\n", bvid)
 				}
 
 				elapsed := time.Since(totalStart).Seconds()
@@ -286,16 +305,258 @@ func searchCommand(cfg *config.Config) *cli.Command {
 	}
 }
 
+// ─── Server helpers ──────────────────────────────────────────────────────────
+
+// startServer exec 自身以 server 子命令后台运行
+func startServer(cfg *config.Config, addr string, port int) error {
+	if port != 8096 {
+		addr = fmt.Sprintf(":%d", port)
+	}
+
+	pidFile := filepath.Join(cfg.DataDir, "server.pid")
+	logFile := filepath.Join(cfg.DataDir, "server.log")
+
+	// 检查是否已在运行
+	if pidData, err := os.ReadFile(pidFile); err == nil {
+		var oldPid int
+		fmt.Sscanf(string(pidData), "%d", &oldPid)
+		if proc, err := os.FindProcess(oldPid); err == nil {
+			if err := proc.Signal(syscall.Signal(0)); err == nil {
+				return fmt.Errorf("⚠️  服务已在运行 (PID: %d)\n  查看日志: tail -f %s\n  停止服务: %s stop", oldPid, logFile, os.Args[0])
+			}
+		}
+	}
+
+	os.MkdirAll(cfg.DataDir, 0755)
+
+	selfPath, _ := os.Executable()
+	cmd := exec.Command(selfPath, "server", "--addr", addr)
+	cmd.Env = os.Environ()
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	logF, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("无法创建日志文件: %w", err)
+	}
+	defer logF.Close()
+	cmd.Stderr = logF
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("启动失败: %w", err)
+	}
+
+	pid := cmd.Process.Pid
+	os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", pid)), 0644)
+
+	fmt.Printf("🚀 ytb2bili HTTP 服务已启动\n")
+	fmt.Printf("   地址: http://localhost%s\n", addr)
+	fmt.Printf("   PID: %d\n", pid)
+	fmt.Printf("   日志: %s\n", logFile)
+	fmt.Printf("\n📡 可用命令:\n")
+	fmt.Printf("   tail -f %s  查看实时日志\n", logFile)
+	fmt.Printf("   %s stop              停止服务\n", filepath.Base(selfPath))
+
+	return nil
+}
+
+// stopServer 停止后台服务，返回 PID
+func stopServer(cfg *config.Config) (int, error) {
+	pidFile := filepath.Join(cfg.DataDir, "server.pid")
+	pidData, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0, fmt.Errorf("未找到运行中的服务 (PID 文件不存在)")
+	}
+
+	var pid int
+	fmt.Sscanf(string(pidData), "%d", &pid)
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		os.Remove(pidFile)
+		return 0, fmt.Errorf("无法找到进程 %d (可能已结束)", pid)
+	}
+
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		os.Remove(pidFile)
+		return 0, fmt.Errorf("停止失败: %w", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	os.Remove(pidFile)
+	return pid, nil
+}
+
+// serverStatus 检查服务运行状态
+func serverStatus(cfg *config.Config) (pid int, running bool, logFile string) {
+	pidFile := filepath.Join(cfg.DataDir, "server.pid")
+	logFile = filepath.Join(cfg.DataDir, "server.log")
+
+	pidData, err := os.ReadFile(pidFile)
+	if err != nil {
+		return 0, false, logFile
+	}
+
+	fmt.Sscanf(string(pidData), "%d", &pid)
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return pid, false, logFile
+	}
+
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return pid, false, logFile
+	}
+
+	return pid, true, logFile
+}
+
+// ─── Start ──────────────────────────────────────────────────────────────────
+
+func startCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:  "start",
+		Usage: "以后台守护进程方式启动 HTTP API 服务器",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "addr", Value: ":8096", Usage: "监听地址"},
+			&cli.IntFlag{Name: "port", Value: 8096, Usage: "监听端口 (覆盖 addr)"},
+		},
+		Action: func(c *cli.Context) error {
+			return startServer(cfg, c.String("addr"), c.Int("port"))
+		},
+	}
+}
+
+// ─── Stop ───────────────────────────────────────────────────────────────────
+
+func stopCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:  "stop",
+		Usage: "停止后台 HTTP API 服务器",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "force", Aliases: []string{"f"}, Usage: "强制终止"},
+		},
+		Action: func(c *cli.Context) error {
+			if c.Bool("force") {
+				// 强制终止：读 PID 文件直接 kill
+				pidFile := filepath.Join(cfg.DataDir, "server.pid")
+				pidData, err := os.ReadFile(pidFile)
+				if err != nil {
+					return fmt.Errorf("❌ 未找到运行中的服务 (PID 文件不存在)")
+				}
+				var pid int
+				fmt.Sscanf(string(pidData), "%d", &pid)
+				proc, err := os.FindProcess(pid)
+				if err != nil {
+					os.Remove(pidFile)
+					return fmt.Errorf("❌ 无法找到进程 %d (可能已结束)", pid)
+				}
+				if err := proc.Signal(syscall.SIGKILL); err != nil {
+					os.Remove(pidFile)
+					return fmt.Errorf("❌ 强制停止失败: %w", err)
+				}
+				time.Sleep(500 * time.Millisecond)
+				os.Remove(pidFile)
+				fmt.Printf("✅ 服务已强制终止 (PID: %d)\n", pid)
+				return nil
+			}
+
+			pid, err := stopServer(cfg)
+			if err != nil {
+				return fmt.Errorf("❌ %v", err)
+			}
+			fmt.Printf("✅ 服务已停止 (PID: %d)\n", pid)
+			return nil
+		},
+	}
+}
+
+// ─── Restart ─────────────────────────────────────────────────────────────────
+
+func restartCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:  "restart",
+		Usage: "重启 HTTP API 服务器",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "addr", Value: ":8096", Usage: "监听地址"},
+			&cli.IntFlag{Name: "port", Value: 8096, Usage: "监听端口 (覆盖 addr)"},
+		},
+		Action: func(c *cli.Context) error {
+			// 先停止（存在则停，不存在则跳过）
+			if pid, err := stopServer(cfg); err == nil {
+				fmt.Printf("✅ 服务已停止 (PID: %d)\n", pid)
+			} else {
+				fmt.Printf("ℹ️  %v\n", err)
+			}
+			fmt.Println()
+			// 再启动
+			return startServer(cfg, c.String("addr"), c.Int("port"))
+		},
+	}
+}
+
+// ─── Status ──────────────────────────────────────────────────────────────────
+
+func statusCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:  "status",
+		Usage: "查看 HTTP API 服务器运行状态",
+		Action: func(c *cli.Context) error {
+			pid, running, logFile := serverStatus(cfg)
+			if !running {
+				if pid > 0 {
+					fmt.Printf("❌ 服务未运行 (PID 文件残留: %d)\n", pid)
+					fmt.Printf("   执行 %s stop 清理\n", os.Args[0])
+				} else {
+					fmt.Println("❌ 服务未运行")
+				}
+				return nil
+			}
+
+			// 获取进程信息
+			proc, _ := os.FindProcess(pid)
+			_ = proc
+
+			fmt.Println("✅ 服务正在运行")
+			fmt.Printf("   PID:   %d\n", pid)
+			fmt.Printf("   日志:  %s\n", logFile)
+
+			// 读取日志尾部
+			if data, err := os.ReadFile(logFile); err == nil {
+				lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+				n := len(lines)
+				if n > 5 {
+					lines = lines[n-5:]
+				}
+				fmt.Printf("\n📋 最近 %d 行日志:\n", len(lines))
+				for _, l := range lines {
+					if l != "" {
+						fmt.Printf("   %s\n", l)
+					}
+				}
+			}
+
+			fmt.Printf("\n💡 命令提示:\n")
+			fmt.Printf("   tail -f %s     查看实时日志\n", logFile)
+			fmt.Printf("   %s stop                   停止服务\n", filepath.Base(os.Args[0]))
+			fmt.Printf("   %s restart                重启服务\n", filepath.Base(os.Args[0]))
+			return nil
+		},
+	}
+}
+
 // ─── Login ──────────────────────────────────────────────────────────────────
 
 func loginCommand(cfg *config.Config) *cli.Command {
 	return &cli.Command{
 		Name:  "login",
-		Usage: "B站扫码登录",
+		Usage: "B站扫码登录（默认 CDP 驱动 Chrome）",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "password", Usage: "使用密码登录"},
 			&cli.StringFlag{Name: "username", Usage: "B站账号"},
 			&cli.StringFlag{Name: "password-val", Usage: "B站密码"},
+			&cli.BoolFlag{Name: "no-browser", Usage: "不打开浏览器（仅保存二维码文件）"},
+			&cli.IntFlag{Name: "cdp-port", Value: 9222, Usage: "CDP 调试端口"},
 		},
 		Action: func(c *cli.Context) error {
 			credDir := filepath.Join(cfg.DataDir, "cookies")
@@ -307,7 +568,6 @@ func loginCommand(cfg *config.Config) *cli.Command {
 				if user == "" || pass == "" {
 					return fmt.Errorf("密码登录需要 --username 和 --password-val")
 				}
-				// TODO: password login via bilibili-go-sdk
 				return fmt.Errorf("密码登录待实现")
 			}
 
@@ -318,10 +578,52 @@ func loginCommand(cfg *config.Config) *cli.Command {
 				return err
 			}
 
-			// Generate QR code image
+			// Generate QR code image + terminal display
 			qrPath := filepath.Join(credDir, "bilibili_qrcode.png")
 			if err := SaveQRCode(qr.URL, qrPath); err != nil {
 				fmt.Fprintf(os.Stderr, "⚠ 无法生成二维码图片: %v\n", err)
+			}
+			// 终端二维码（兼容 Hermes+飞书：飞书忽略 ANSI，终端显示二维码）
+			PrintQRCodeTerminal(qr.URL)
+
+			// ── CDP 默认集成 — CDP → 系统打开 → 图片查看器 ──
+			browserOpened := false
+			cdpPort := c.Int("cdp-port")
+
+			if !c.Bool("no-browser") {
+				// 方式1: CDP — Connect() 自动处理已有/启动 Chrome
+				cm := cdp.NewChromeManager(
+					cdp.WithPort(cdpPort),
+					cdp.WithUserDataDir(filepath.Join(cfg.DataDir, "browser_data")),
+				)
+				cdp.RegisterCleanup(cm)
+				if ctx, cancel, err := cm.Connect(); err == nil {
+					defer cancel()
+					if err := cdp.OpenURL(ctx, qr.URL); err == nil {
+						fmt.Fprintf(os.Stderr, "🌐 已在 Chrome 中打开扫码页面\n")
+						browserOpened = true
+					}
+				}
+
+				// 方式2: 系统命令打开浏览器
+				if !browserOpened {
+					if err := cdp.OpenURLSystem(qr.URL); err == nil {
+						browserOpened = true
+						fmt.Fprintf(os.Stderr, "🌐 已在浏览器中打开二维码页面\n")
+					}
+				}
+
+				// 方式3: 系统图片查看器
+				if !browserOpened {
+					if err := cdp.ShowImageSystem(qrPath); err == nil {
+						browserOpened = true
+						fmt.Fprintf(os.Stderr, "🖼️ 已打开二维码图片\n")
+					}
+				}
+
+				if !browserOpened {
+					fmt.Fprintf(os.Stderr, "💡 请手动打开二维码图片: %s\n", qrPath)
+				}
 			}
 
 			// Output paths for Hermes detection (stderr avoids pipe buffering)
@@ -370,6 +672,20 @@ func submitCommand(cfg *config.Config) *cli.Command {
 				return fmt.Errorf("请输入 YouTube URL")
 			}
 
+			// 去重检查
+			videoID := extractYouTubeID(url)
+			history := storage.NewHistoryStore(filepath.Join(cfg.DataDir, "history"))
+			if videoID != "" && history.IsSubmitted(videoID) {
+				submitted := history.GetSubmitted(videoID)
+				msg := fmt.Sprintf("⚠️  该视频已提交过\n   B站链接: https://www.bilibili.com/video/%s\n   提交时间: %s",
+					submitted.BVID, submitted.SubmittedAt[:19])
+				if submitted.Title != "" {
+					msg = fmt.Sprintf("⚠️  该视频已提交过: %s\n   B站链接: https://www.bilibili.com/video/%s\n   提交时间: %s",
+						submitted.Title, submitted.BVID, submitted.SubmittedAt[:19])
+				}
+				return fmt.Errorf(msg)
+			}
+
 			taskDir := filepath.Join(cfg.DataDir, "tasks")
 			credDir := filepath.Join(cfg.DataDir, "cookies")
 			ts := storage.NewTaskStore(taskDir)
@@ -414,11 +730,10 @@ func submitCommand(cfg *config.Config) *cli.Command {
 			ts.UpdateStep(id, "transcribe", "completed")
 
 			// Step 3: Translate
-			translatedSrt := srtPath
 			if !c.Bool("skip-translate") {
 				ts.UpdateStep(id, "translate", "running")
 				fmt.Printf("🌐 [3/5] AI 翻译 (%s→%s)... ", c.String("source-lang"), c.String("target-lang"))
-				translatedSrt, err = translator.SRT(srtPath, c.String("source-lang"), c.String("target-lang"), cfg)
+				_, err = translator.SRT(srtPath, c.String("source-lang"), c.String("target-lang"), cfg)
 				if err != nil {
 					ts.UpdateStep(id, "translate", "failed", err.Error())
 					return fmt.Errorf("翻译失败: %w", err)
@@ -461,14 +776,13 @@ func submitCommand(cfg *config.Config) *cli.Command {
 			}
 
 			bvid, err := bili.Upload(&cred, &bili.UploadParams{
-				VideoPath:    result.VideoPath,
-				Title:        meta.Title,
-				Desc:         meta.Description,
-				Tags:         meta.Tags,
-				Source:       url,
-				Tid:          c.Int("tid"),
-				CoverPath:    result.CoverPath,
-				// SubtitlePath 暂不上传，等审核通过后再上传
+				VideoPath: result.VideoPath,
+				Title:     meta.Title,
+				Desc:      meta.Description,
+				Tags:      meta.Tags,
+				Source:    url,
+				Tid:       c.Int("tid"),
+				CoverPath: result.CoverPath,
 			})
 			if err != nil {
 				ts.UpdateStep(id, "upload", "failed", err.Error())
@@ -477,11 +791,36 @@ func submitCommand(cfg *config.Config) *cli.Command {
 
 			task.BVID = bvid
 			task.Status = "completed"
+			ts.SetBVID(id, bvid)
+			ts.SetCompleted(id)
+			ts.UpdateStep(id, "upload", "completed")
 			fmt.Printf("✅ https://www.bilibili.com/video/%s\n", bvid)
 
-			// 异步监听审核状态，审核通过后上传字幕
-			if translatedSrt != "" {
-				go watchAndUploadSubtitle(bvid, translatedSrt, &cred, cfg)
+			// 记录到历史
+			history.Add(&storage.SubmittedVideo{
+				YouTubeID: extractYouTubeID(url),
+				BVID:      bvid,
+				Title:     meta.Title,
+				Channel:   "",
+			})
+
+			// 同步字幕追踪状态
+			subStore := storage.NewSubtitleStore(filepath.Join(cfg.DataDir, "subtitles"))
+			tracks, err := subStore.SyncFromDownload(id, bvid, dlDir)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  ⚠ 同步字幕追踪失败: %v\n", err)
+			}
+
+			// 检查找到的字幕并提示
+			pendingCount := 0
+			for _, t := range tracks {
+				if t.Status == storage.SubtitleStatusPending {
+					pendingCount++
+				}
+			}
+			if pendingCount > 0 {
+				fmt.Printf("  📝 找到 %d 个字幕文件待上传\n", pendingCount)
+				fmt.Printf("  💡 审核通过后执行: ytb subtitle retry %s\n", bvid)
 			}
 
 			elapsed := time.Since(totalStart).Seconds()
@@ -491,48 +830,67 @@ func submitCommand(cfg *config.Config) *cli.Command {
 	}
 }
 
-// watchAndUploadSubtitle 异步监听视频审核状态，审核通过后上传字幕
-func watchAndUploadSubtitle(bvid, subtitlePath string, cred *auth.LoginInfo, cfg *config.Config) {
-	fmt.Printf("\n⏳ [字幕] 监听视频 %s 审核状态...\n", bvid)
+// watchAndUploadSubtitle 异步监听B站视频审核状态，审核通过后上传字幕
+// videoID: 任务/下载目录 ID; dlDir: 字幕文件所在目录
+func watchAndUploadSubtitle(bvid, videoID, dlDir string, cred *auth.LoginInfo, cfg *config.Config) {
+	subStore := storage.NewSubtitleStore(filepath.Join(cfg.DataDir, "subtitles"))
 
-	client := bilibili.NewClient()
-	sdkLogin := bili.CredToSDKLogin(cred)
-	cookies := buildCookiesString(cred)
+	// 同步最新状态
+	subStore.SyncFromDownload(videoID, bvid, dlDir)
+	pending := subStore.GetPending(videoID)
+	if len(pending) == 0 {
+		return
+	}
 
-	// 等待审核通过（最多等待 24 小时）
-	interval := 30 * time.Second
-	timeout := 24 * time.Hour
+	fmt.Printf("\n⏳ [字幕] 监听视频 %s 审核状态 (共 %d 个字幕待上传)...\n", bvid, len(pending))
 
-	status, err := client.WaitForVideoReviewPassed(bvid, cookies, interval, timeout)
+	// 等待审核通过
+	status, err := bili.WaitForReviewPassed(cred, bvid)
 	if err != nil {
 		fmt.Printf("❌ [字幕] 等待审核失败: %v\n", err)
 		return
 	}
-
 	if status == nil {
 		fmt.Printf("❌ [字幕] 获取审核状态失败\n")
 		return
 	}
-
 	fmt.Printf("✅ [字幕] 视频审核通过 (state=%d)\n", status.State)
 
-	// 上传字幕
-	lang := bilibili.NormalizeSubtitleLanguage("zh")
-	if err := client.UploadSubtitle(sdkLogin, bvid, subtitlePath, lang); err != nil {
-		fmt.Printf("❌ [字幕] 字幕上传失败: %v\n", err)
+	// 重新同步（字幕文件可能已更新）
+	subStore.SyncFromDownload(videoID, bvid, dlDir)
+	pending = subStore.GetPending(videoID)
+	if len(pending) == 0 {
+		fmt.Printf("ℹ️ [字幕] 没有待上传的字幕文件\n")
 		return
 	}
 
-	fmt.Printf("✅ [字幕] 字幕上传成功: %s\n", subtitlePath)
-}
+	successCount := 0
+	for _, track := range pending {
+		fmt.Printf("  📤 上传字幕: %s (%s)... ", track.FileName, track.Language)
 
-// buildCookiesString 构建 cookies 字符串
-func buildCookiesString(cred *auth.LoginInfo) string {
-	var parts []string
-	for name, val := range cred.Cookies {
-		parts = append(parts, name+"="+val)
+		// 使用 SubtitleUploader 上传字幕
+		err := bili.UploadSubtitle(cred, bvid, track.FilePath, track.Language)
+		if err != nil {
+			fmt.Printf("❌ %v\n", err)
+			subStore.MarkFailed(videoID, track.Language, err.Error())
+			continue
+		}
+
+		subStore.MarkUploaded(videoID, track.Language)
+		fmt.Println("✅")
+		successCount++
 	}
-	return strings.Join(parts, "; ")
+
+	if successCount > 0 {
+		allDone := subStore.AllUploaded(videoID)
+		if allDone {
+			fmt.Printf("✅ [字幕] 全部字幕上传完成! https://www.bilibili.com/video/%s\n", bvid)
+		} else {
+			fmt.Printf("✅ [字幕] 已上传 %d 个字幕文件，部分仍待处理\n", successCount)
+		}
+	} else {
+		fmt.Printf("❌ [字幕] 所有字幕上传均失败，请稍后重试: ytb2bili subtitle retry %s\n", bvid)
+	}
 }
 
 // ─── Task Management ────────────────────────────────────────────────────────
@@ -762,8 +1120,9 @@ func channelCommand(cfg *config.Config) *cli.Command {
 
 func serverCommand(cfg *config.Config) *cli.Command {
 	return &cli.Command{
-		Name:  "server",
-		Usage: "启动 HTTP API 服务器",
+		Name:   "server",
+		Usage:  "启动 HTTP API 服务器（前台运行）",
+		Hidden: true,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "addr", Value: ":8096", Usage: "监听地址"},
 			&cli.StringFlag{Name: "feishu-app-id", Usage: "飞书 App ID"},
@@ -846,4 +1205,531 @@ func debugCommand(cfg *config.Config) *cli.Command {
 			return debugger.Start()
 		},
 	}
+}
+
+// ─── Subtitle Management ─────────────────────────────────────────────────────
+
+func subtitleCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:  "subtitle",
+		Usage: "字幕管理（审核通过后上传）",
+		Subcommands: []*cli.Command{
+			{
+				Name:      "retry",
+				Usage:     "重试上传视频的字幕",
+				ArgsUsage: "<video_id or bvid>",
+				Action: func(c *cli.Context) error {
+					ident := c.Args().First()
+					if ident == "" {
+						return fmt.Errorf("请输入视频ID或BVID")
+					}
+
+					// 尝试从字幕存储或任务存储查找
+					subStore := storage.NewSubtitleStore(filepath.Join(cfg.DataDir, "subtitles"))
+					credDir := filepath.Join(cfg.DataDir, "cookies")
+					cs := storage.NewCredentialStore(credDir)
+
+					var cred auth.LoginInfo
+					if err := cs.Load(&cred); err != nil {
+						return fmt.Errorf("请先登录: %w", err)
+					}
+
+					// 如果输入的是 BVID，扫描所有字幕记录找到匹配的
+					if strings.HasPrefix(strings.ToUpper(ident), "BV") {
+						videoID := ""
+
+						// 先看字幕记录
+						entries, _ := os.ReadDir(filepath.Join(cfg.DataDir, "subtitles"))
+						for _, e := range entries {
+							if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+								continue
+							}
+							data, _ := os.ReadFile(filepath.Join(cfg.DataDir, "subtitles", e.Name()))
+							if data == nil {
+								continue
+							}
+							var tracks []storage.SubtitleTrack
+							if json.Unmarshal(data, &tracks) != nil {
+								continue
+							}
+							for _, t := range tracks {
+								if t.BVID == ident {
+									videoID = t.VideoID
+									break
+								}
+							}
+							if videoID != "" {
+								break
+							}
+						}
+
+						// 再查历史记录
+						if videoID == "" {
+							history := storage.NewHistoryStore(filepath.Join(cfg.DataDir, "history"))
+							videos, _ := history.List()
+							for _, v := range videos {
+								if v.BVID == ident {
+									videoID = v.YouTubeID
+									break
+								}
+							}
+						}
+
+						if videoID == "" {
+							return fmt.Errorf("未找到 BVID %s 的字幕或历史记录", ident)
+						}
+
+						// 查找下载目录（可能是 taskID 或 videoID）
+						dlDir := filepath.Join(cfg.DataDir, "downloads", videoID)
+						if _, err := os.Stat(dlDir); err != nil {
+							// 尝试从任务存储查找 task ID
+							ts := storage.NewTaskStore(filepath.Join(cfg.DataDir, "tasks"))
+							for _, t := range ts.List() {
+								// 匹配 BVID 或 source_url 中包含 videoID
+								if t.BVID == ident || strings.Contains(t.SourceURL, videoID) {
+									dlDir = filepath.Join(cfg.DataDir, "downloads", t.ID)
+									videoID = t.ID
+									break
+								}
+							}
+						}
+
+						fmt.Printf("📝 准备重试视频 %s 的字幕上传 (videoID=%s)...\n", ident, videoID)
+						watchAndUploadSubtitle(ident, videoID, dlDir, &cred, cfg)
+						return nil
+					}
+
+					// 按 videoID 查找
+					dlDir := filepath.Join(cfg.DataDir, "downloads", ident)
+					tracks, allDone := subStore.GetStatus(ident)
+					if tracks == nil || len(tracks) == 0 {
+						// 尝试从下载目录重建
+						fmt.Printf("📝 没有找到 %s 的字幕记录，尝试从下载目录重建...\n", ident)
+						bvid := ""
+						// 从 history 中查找 bvid
+						history := storage.NewHistoryStore(filepath.Join(cfg.DataDir, "history"))
+						videos, _ := history.List()
+						for _, v := range videos {
+							if v.YouTubeID == ident {
+								bvid = v.BVID
+								break
+							}
+						}
+						if bvid == "" {
+							return fmt.Errorf("未找到视频 %s 的BVID，请提供BVID参数", ident)
+						}
+						subStore.SyncFromDownload(ident, bvid, dlDir)
+						tracks, _ = subStore.GetStatus(ident)
+					}
+					if allDone {
+						fmt.Printf("✅ 视频 %s 的字幕已全部上传完成\n", ident)
+						return nil
+					}
+					fmt.Printf("📤 开始上传视频 %s 的待处理字幕...\n", ident)
+					watchAndUploadSubtitle(tracks[0].BVID, ident, dlDir, &cred, cfg)
+					return nil
+				},
+			},
+			{
+				Name:      "status",
+				Usage:     "查看字幕上传状态",
+				ArgsUsage: "<video_id or bvid>",
+				Action: func(c *cli.Context) error {
+					ident := c.Args().First()
+					if ident == "" {
+						// 列出所有字幕记录
+						entries, _ := os.ReadDir(filepath.Join(cfg.DataDir, "subtitles"))
+						if len(entries) == 0 {
+							fmt.Println("📭 暂无字幕上传记录")
+							return nil
+						}
+						fmt.Printf("📋 共 %d 个字幕记录:\n\n", len(entries))
+						for _, e := range entries {
+							if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+								continue
+							}
+							data, _ := os.ReadFile(filepath.Join(cfg.DataDir, "subtitles", e.Name()))
+							if data == nil {
+								continue
+							}
+							var tracks []storage.SubtitleTrack
+							if json.Unmarshal(data, &tracks) != nil {
+								continue
+							}
+							for _, t := range tracks {
+								icon := map[string]string{
+									"pending": "⏳", "uploaded": "✅",
+									"failed": "❌", "missing": "⭕",
+								}[t.Status]
+								if icon == "" {
+									icon = "❓"
+								}
+								fmt.Printf("  %s %s | %s | %s\n", icon, t.FileName, t.BVID, t.Status)
+							}
+						}
+						return nil
+					}
+
+					// 先按 videoID 查找
+					subStore := storage.NewSubtitleStore(filepath.Join(cfg.DataDir, "subtitles"))
+					tracks, allDone := subStore.GetStatus(ident)
+					if tracks != nil {
+						fmt.Printf("\n📝 视频 %s 字幕状态:\n", ident)
+						for _, t := range tracks {
+							icon := map[string]string{
+								"pending": "⏳", "uploaded": "✅",
+								"failed": "❌", "missing": "⭕",
+							}[t.Status]
+							fmt.Printf("  %s %s (%s): %s\n", icon, t.FileName, t.Language, t.Status)
+							if t.Error != "" {
+								fmt.Printf("    错误: %s\n", t.Error)
+							}
+						}
+						if allDone {
+							fmt.Printf("\n✅ 全部已上传完成\n")
+						} else {
+							fmt.Printf("\n💡 重试: ytb2bili subtitle retry %s\n", ident)
+						}
+						return nil
+					}
+
+					// 按 BVID 查找
+					if strings.HasPrefix(strings.ToUpper(ident), "BV") {
+						entries, _ := os.ReadDir(filepath.Join(cfg.DataDir, "subtitles"))
+						for _, e := range entries {
+							if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+								continue
+							}
+							data, _ := os.ReadFile(filepath.Join(cfg.DataDir, "subtitles", e.Name()))
+							if data == nil {
+								continue
+							}
+							var ts []storage.SubtitleTrack
+							if json.Unmarshal(data, &ts) != nil {
+								continue
+							}
+							for _, t := range ts {
+								if t.BVID == ident {
+									fmt.Printf("\n📝 视频 %s 字幕状态:\n", ident)
+									for _, tt := range ts {
+										icon := map[string]string{
+											"pending": "⏳", "uploaded": "✅",
+											"failed": "❌", "missing": "⭕",
+										}[tt.Status]
+										fmt.Printf("  %s %s (%s): %s\n", icon, tt.FileName, tt.Language, tt.Status)
+									}
+									return nil
+								}
+							}
+						}
+					}
+
+					return fmt.Errorf("未找到视频 %s 的字幕记录", ident)
+				},
+			},
+		},
+	}
+}
+
+// extractYouTubeID 从 YouTube URL 中提取视频 ID
+func extractYouTubeID(url string) string {
+	// https://www.youtube.com/watch?v=VIDEO_ID
+	// https://youtu.be/VIDEO_ID
+	// https://www.youtube.com/embed/VIDEO_ID
+	for _, prefix := range []string{"v=", "youtu.be/", "embed/"} {
+		if idx := strings.Index(url, prefix); idx >= 0 {
+			start := idx + len(prefix)
+			end := strings.IndexAny(url[start:], "?&#")
+			if end < 0 {
+				end = len(url) - start
+			}
+			id := url[start : start+end]
+			if len(id) == 11 {
+				return id
+			}
+		}
+	}
+	// 尝试直接使用最后一段路径
+	parts := strings.Split(url, "/")
+	return parts[len(parts)-1]
+}
+
+// ─── Auto (Autonomous Mode) ──────────────────────────────────────────────────
+
+func autoCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:      "auto",
+		Usage:     "🤖 自主模式：自动搜索高价值视频并批量提交到B站",
+		ArgsUsage: "<keyword1> [keyword2 ...]",
+		Flags: []cli.Flag{
+			&cli.IntFlag{Name: "max-videos", Aliases: []string{"n"}, Value: 3, Usage: "最多提交多少个视频"},
+			&cli.IntFlag{Name: "min-views", Value: 1000, Usage: "最低观看次数过滤"},
+			&cli.IntFlag{Name: "max-duration", Value: 1800, Usage: "最长时长（秒，默认30分钟=1800）"},
+			&cli.StringFlag{Name: "date", Value: "this_week", Usage: "上传日期过滤: today, this_week, this_month, this_year"},
+			&cli.BoolFlag{Name: "dry-run", Usage: "仅显示搜索结果，不上传"},
+			&cli.BoolFlag{Name: "skip-translate", Usage: "跳过翻译"},
+			&cli.IntFlag{Name: "tid", Value: cfg.BiliTid, Usage: "B站分区ID"},
+		},
+		Action: func(c *cli.Context) error {
+			keywords := c.Args().Slice()
+			if len(keywords) == 0 {
+				return fmt.Errorf("请提供至少一个搜索关键词")
+			}
+
+			maxVideos := c.Int("max-videos")
+			minViews := int64(c.Int("min-views"))
+			maxDuration := c.Int("max-duration")
+			dateFilter := c.String("date")
+			dryRun := c.Bool("dry-run")
+
+			// ── 阶段1: 搜索 ──
+			fmt.Printf("🤖 自主模式启动\n")
+			fmt.Printf("   关键词: %v\n", keywords)
+			fmt.Printf("   条件: ≥%d views, ≤%ds, %s\n\n", minViews, maxDuration, dateFilter)
+
+			history := storage.NewHistoryStore(filepath.Join(cfg.DataDir, "history"))
+			searcher := search.New(20)
+
+			// 收集所有候选视频
+			type scoredVideo struct {
+				Video search.Video
+				Keyword string
+			}
+			var candidates []scoredVideo
+			seenIDs := make(map[string]bool)
+
+			for _, kw := range keywords {
+				fmt.Printf("🔍 搜索: \"%s\"\n", kw)
+
+				result, err := searcher.SearchWithOptions(kw,
+					search.WithSortBy("view_count"),
+					search.WithUploadDate(dateFilter),
+				)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ⚠ 搜索 \"%s\" 失败: %v\n", kw, err)
+					continue
+				}
+
+				fmt.Printf("   找到 %d 个结果\n", len(result.Videos))
+
+				for _, v := range result.Videos {
+					if seenIDs[v.ID] {
+						continue
+					}
+					seenIDs[v.ID] = true
+
+					// 过滤时长
+					if v.DurationSec > maxDuration && maxDuration > 0 {
+						continue
+					}
+					// 过滤观看数
+					if v.ViewCount < minViews {
+						continue
+					}
+					// 排除已提交
+					if history.IsSubmitted(v.ID) {
+						continue
+					}
+					// 排除直播
+					if v.IsLive {
+						continue
+					}
+
+					candidates = append(candidates, scoredVideo{Video: v, Keyword: kw})
+				}
+			}
+
+			if len(candidates) == 0 {
+				fmt.Println("\n📭 没有找到符合条件的视频")
+				return nil
+			}
+
+			// 按观看数降序排列
+			sort.Slice(candidates, func(i, j int) bool {
+				return candidates[i].Video.ViewCount > candidates[j].Video.ViewCount
+			})
+
+			// 取前 N 个
+			if len(candidates) > maxVideos {
+				candidates = candidates[:maxVideos]
+			}
+
+			fmt.Printf("\n📊 候选视频 (%d 个，取前 %d 个):\n", len(seenIDs), len(candidates))
+			for i, sv := range candidates {
+				v := sv.Video
+				dur := formatDuration(v.DurationSec)
+				fmt.Printf("  %d. [%s] %s\n", i+1, sv.Keyword, v.Title)
+				fmt.Printf("     通道: %s | 时长: %s | 👁 %.0f views | %s\n",
+					v.Channel, dur, float64(v.ViewCount), v.PublishTime)
+				fmt.Printf("     %s\n\n", v.URL)
+			}
+
+			if dryRun {
+				fmt.Println("⏭️ 跳过上传 (--dry-run)")
+				return nil
+			}
+
+			// ── 阶段2: 批量提交 ──
+			credDir := filepath.Join(cfg.DataDir, "cookies")
+			cs := storage.NewCredentialStore(credDir)
+
+			var cred auth.LoginInfo
+			if err := cs.Load(&cred); err != nil {
+				return fmt.Errorf("请先登录: ytb2bili login")
+			}
+
+			successCount := 0
+			failCount := 0
+
+			for i, sv := range candidates {
+				v := sv.Video
+				fmt.Printf("\n═══════════════════════════════════════\n")
+				fmt.Printf("📦 [%d/%d] 开始处理: %s\n", i+1, len(candidates), v.Title)
+				fmt.Printf("═══════════════════════════════════════\n")
+
+				taskDir := filepath.Join(cfg.DataDir, "tasks")
+				ts := storage.NewTaskStore(taskDir)
+				task := ts.Create(v.URL)
+				id := task.ID
+				totalStart := time.Now()
+
+				// Step 1: Download
+				ts.UpdateStep(id, "download", "running")
+				fmt.Print("\n⬇️ [1/5] 下载视频... ")
+				dlDir := filepath.Join(cfg.DataDir, "downloads", id)
+				cookiesPath := cfg.YouTubeCookies
+				if cookiesPath == "" {
+					cookiesPath = filepath.Join(cfg.DataDir, "youtube_cookies.txt")
+				}
+				dlResult, err := download.Video(v.URL, dlDir, "en", cookiesPath)
+				if err != nil {
+					ts.UpdateStep(id, "download", "failed", err.Error())
+					fmt.Printf("❌ %v\n", err)
+					failCount++
+					continue
+				}
+				ts.UpdateStep(id, "download", "completed")
+				fmt.Printf("✅ %s\n", filepath.Base(dlResult.VideoPath))
+
+				// Step 2: Transcribe
+				ts.UpdateStep(id, "transcribe", "running")
+				srtPath := dlResult.SubtitlePath
+				if srtPath == "" {
+					fmt.Print("🎙️ [2/5] Bcut 语音转字幕... ")
+					srtPath, err = transcriber.BcutASR(dlResult.VideoPath, dlDir)
+					if err != nil {
+						ts.UpdateStep(id, "transcribe", "failed", err.Error())
+						fmt.Printf("❌ %v\n", err)
+						failCount++
+						continue
+					}
+					fmt.Println("✅")
+				} else {
+					fmt.Printf("📝 [2/5] 已有字幕: %s\n", filepath.Base(srtPath))
+				}
+				ts.UpdateStep(id, "transcribe", "completed")
+
+				// Step 3: Translate
+				if !c.Bool("skip-translate") {
+					ts.UpdateStep(id, "translate", "running")
+					fmt.Print("🌐 [3/5] AI 翻译 (en→zh)... ")
+					_, err = translator.SRT(srtPath, "en", "zh", cfg)
+					if err != nil {
+						// Non-fatal: continue without translation
+						fmt.Printf("⚠ %v (继续)\n", err)
+					} else {
+						fmt.Println("✅")
+					}
+					ts.UpdateStep(id, "translate", "completed")
+				}
+
+				// Step 4: Metadata
+				ts.UpdateStep(id, "metadata", "running")
+				fmt.Print("🤖 [4/5] AI 生成元数据... ")
+				meta, err := metadata.Generate(dlResult.Info, cfg)
+				if err != nil {
+					meta = &metadata.VideoMeta{Title: dlResult.Info.Title}
+					fmt.Println("⚠ (回退到原始标题)")
+				} else {
+					fmt.Printf("✅ %s\n", meta.Title)
+				}
+				ts.UpdateStep(id, "metadata", "completed")
+				task.Title = meta.Title
+
+				// Step 5: Upload
+				ts.UpdateStep(id, "upload", "running")
+				fmt.Print("📤 [5/5] 上传到 B站... ")
+				bvid, err := bili.Upload(&cred, &bili.UploadParams{
+					VideoPath: dlResult.VideoPath,
+					Title:     meta.Title,
+					Desc:      meta.Description,
+					Tags:      meta.Tags,
+					Source:    v.URL,
+					Tid:       c.Int("tid"),
+					CoverPath: dlResult.CoverPath,
+				})
+				if err != nil {
+					ts.UpdateStep(id, "upload", "failed", err.Error())
+					fmt.Printf("❌ %v\n", err)
+					failCount++
+					continue
+				}
+				ts.UpdateStep(id, "upload", "completed")
+				fmt.Printf("✅ https://www.bilibili.com/video/%s\n", bvid)
+				task.BVID = bvid
+				task.Status = "completed"
+				ts.SetBVID(id, bvid)
+				ts.SetCompleted(id)
+
+				// 记录历史
+				history.Add(&storage.SubmittedVideo{
+					YouTubeID: v.ID,
+					BVID:      bvid,
+					Title:     v.Title,
+					Channel:   v.Channel,
+				})
+
+				// 同步字幕追踪
+				subStore := storage.NewSubtitleStore(filepath.Join(cfg.DataDir, "subtitles"))
+				subTracks, _ := subStore.SyncFromDownload(id, bvid, dlDir)
+				subPending := 0
+				for _, t := range subTracks {
+					if t.Status == storage.SubtitleStatusPending {
+						subPending++
+					}
+				}
+				if subPending > 0 {
+					fmt.Printf("  📝 找到 %d 个字幕文件待上传\n", subPending)
+				}
+
+				elapsed := time.Since(totalStart).Seconds()
+				fmt.Printf("   ⏱ 耗时: %.0fs\n", elapsed)
+				successCount++
+			}
+
+			// 汇总
+			fmt.Printf("\n═══════════════════════════════════════\n")
+			fmt.Printf("📊 批量处理完成\n")
+			fmt.Printf("   ✅ 成功: %d\n", successCount)
+			fmt.Printf("   ❌ 失败: %d\n", failCount)
+			fmt.Printf("   📺 B站主页: https://space.bilibili.com/\n")
+			fmt.Printf("═══════════════════════════════════════\n")
+
+			return nil
+		},
+	}
+}
+
+// formatDuration 将秒数格式化为可读时间
+func formatDuration(seconds int) string {
+	if seconds <= 0 {
+		return "?"
+	}
+	h := seconds / 3600
+	m := (seconds % 3600) / 60
+	s := seconds % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
 }

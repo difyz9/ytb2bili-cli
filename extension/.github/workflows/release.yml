@@ -1,0 +1,145 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '20'
+        cache: 'npm'
+        
+    - name: Debug environment
+      run: |
+        echo "Node.js version: $(node --version)"
+        echo "npm version: $(npm --version)"
+        echo "Current directory: $(pwd)"
+        ls -la
+        
+    - name: Get version from git tag
+      id: get-version
+      run: |
+        git fetch --tags --force
+        latest_tag=$(git describe --tags --abbrev=0)
+        version=${latest_tag#v}
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "Version: $version"
+    
+    - name: Install dependencies
+      run: |
+        npm cache clean --force
+        rm -rf node_modules
+        npm ci
+      
+    - name: Build Chrome extension
+      env:
+        VERSION: ${{ steps.get-version.outputs.version }}
+      run: |
+        npm run build
+        echo "Chrome build completed"
+        
+    - name: Build Firefox extension
+      env:
+        VERSION: ${{ steps.get-version.outputs.version }}
+      run: |
+        npm run build:firefox
+        echo "Firefox build completed"
+        
+    - name: Check build output
+      run: |
+        echo "Checking build output directory:"
+        if [ -d "dist" ]; then
+          echo "dist directory exists"
+          ls -la dist/
+        else
+          echo "dist directory does not exist"
+          echo "Checking for other possible output directories:"
+          find . -maxdepth 2 -type d -name "*dist*" -o -name "*build*" -o -name "*output*"
+        fi
+        
+    - name: Create Chrome zip
+      env:
+        VERSION: ${{ steps.get-version.outputs.version }}
+      run: |
+        npm run zip
+        echo "Chrome zip created"
+        
+    - name: Create Firefox zip
+      env:
+        VERSION: ${{ steps.get-version.outputs.version }}
+      run: |
+        npm run zip:firefox
+        echo "Firefox zip created"
+      
+    - name: List zip files
+      run: |
+        echo "Final output check:"
+        if [ -d "dist" ]; then
+          echo "Contents of dist directory:"
+          ls -la dist/
+          echo "Looking for zip files:"
+          find dist -name "*.zip" -type f
+        else
+          echo "ERROR: dist directory not found!"
+          echo "Searching for zip files in current directory:"
+          find . -name "*.zip" -type f
+        fi
+      
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ github.ref_name }}
+        name: Release ${{ github.ref_name }}
+        body: |
+          ## 🚀 ytb2bili Extension ${{ github.ref_name }}
+          
+          ### ✨ 功能特性
+          - 🎬 支持 YouTube 和 Bilibili 视频信息保存
+          - 📝 自动获取视频字幕和元数据
+          - 🔄 实时同步到后端服务
+          - 🎯 智能视频检测和处理
+          
+          ### 📦 安装包说明
+          - **Chrome 版本**: 兼容 Chromium 内核浏览器 (Chrome, Edge, 等)
+          - **Firefox 版本**: 专为 Firefox 浏览器优化
+          
+          ### 🛠 安装方法
+          
+          #### Chrome/Edge 安装
+          1. 下载 `ytb2bili-extension-*-chrome.zip`
+          2. 解压缩文件
+          3. 打开浏览器扩展管理页面
+          4. 启用"开发者模式"
+          5. 点击"加载已解压的扩展程序"，选择解压后的文件夹
+          
+          #### Firefox 安装
+          1. 下载 `ytb2bili-extension-*-firefox.zip`
+          2. 打开 Firefox，访问 `about:debugging`
+          3. 点击"此 Firefox"
+          4. 点击"临时载入附加组件"
+          5. 选择下载的 zip 文件
+          
+          ### 📋 更新日志
+          - 版本号: ${{ github.ref_name }}
+          - 构建时间: ${{ github.event.head_commit.timestamp }}
+          
+        draft: false
+        prerelease: false
+        files: |
+          dist/*.zip
+        fail_on_unmatched_files: false

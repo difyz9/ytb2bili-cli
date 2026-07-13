@@ -1,8 +1,8 @@
-# GitHub Copilot Instructions - ytb2bili-cli
+# GitHub Copilot Instructions - ytb2bili-go
 
 ## Project Overview
 
-ytb2bili-cli is a Go-based tool for transferring YouTube videos to Bilibili with automatic transcription, translation, and subtitle upload.
+ytb2bili-go is a Go-based tool for transferring YouTube videos to Bilibili with automatic transcription, translation, and subtitle upload.
 
 ## Quick Start
 
@@ -11,7 +11,7 @@ ytb2bili-cli is a Go-based tool for transferring YouTube videos to Bilibili with
 export DEEPSEEK_API_KEY=*** export YOUTUBE_COOKIES="/path/to/youtube_cookies.txt"
 
 # Build & Run
-cd /home/ubuntu/ytb2bili-cli
+cd /home/ubuntu/ytb2bili-go
 go build -o ytb2bili .
 ./ytb2bili submit "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
