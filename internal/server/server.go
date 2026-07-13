@@ -7,12 +7,16 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/zolagz/ytb2bili-go/internal/auth"
+	"github.com/zolagz/ytb2bili-go/internal/bili"
 	"github.com/zolagz/ytb2bili-go/internal/config"
 	"github.com/zolagz/ytb2bili-go/internal/download"
+	"github.com/zolagz/ytb2bili-go/internal/metadata"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
 	"github.com/zolagz/ytb2bili-go/internal/transcriber"
 	"github.com/zolagz/ytb2bili-go/internal/translator"
@@ -358,11 +362,142 @@ func (s *Server) processVideoTask(task *VideoTask) {
 
 	log.Printf("✅ 翻译完成: %s", zhSrtPath)
 
+	// 生成元数据（AI 标题/简介/标签）
+	task.Status = "generating_metadata"
+	task.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	meta, err := metadata.Generate(result.Info, s.cfg)
+	if err != nil {
+		log.Printf("⚠️ 元数据生成失败: %v，回退到原始标题", err)
+		meta = &metadata.VideoMeta{
+			Title:       result.Info.Title,
+			Description: result.Info.Description,
+			Tags:        []string{},
+		}
+	}
+	log.Printf("✅ 元数据生成完成: %s", meta.Title)
+
+	// 加载 B站凭证
+	credDir := filepath.Join(s.cfg.DataDir, "cookies")
+	cs := storage.NewCredentialStore(credDir)
+	var cred auth.LoginInfo
+	if err := cs.Load(&cred); err != nil {
+		log.Printf("❌ 加载 B站凭证失败: %v", err)
+		task.Status = "failed"
+		task.Error = "未登录，请先通过 CLI 执行 ytb2bili login"
+		return
+	}
+
+	// 投稿到 B站
+	task.Status = "uploading"
+	task.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	bvid, err := bili.Upload(&cred, &bili.UploadParams{
+		VideoPath: result.VideoPath,
+		Title:     meta.Title,
+		Desc:      meta.Description,
+		Tags:      meta.Tags,
+		Source:    task.URL,
+		Tid:       s.cfg.BiliTid,
+		CoverPath: result.CoverPath,
+	})
+	if err != nil {
+		log.Printf("❌ 投稿到 B站失败: %v", err)
+		task.Status = "failed"
+		task.Error = err.Error()
+		return
+	}
+
+	task.BVID = bvid
+	log.Printf("✅ 投稿成功: https://www.bilibili.com/video/%s", bvid)
+
+	// 记录到历史
+	s.history.Add(&storage.SubmittedVideo{
+		YouTubeID: videoID,
+		BVID:      bvid,
+		Title:     meta.Title,
+		Channel:   "",
+	})
+
 	// 更新任务状态
 	task.Status = "completed"
 	task.UpdatedAt = time.Now().Format(time.RFC3339)
 
-	log.Printf("✅ 任务完成: %s", task.ID)
+	log.Printf("✅ 任务完成: %s - BVID=%s", task.ID, bvid)
+
+	// 异步监听审核并上传字幕
+	dlDir := filepath.Join(s.cfg.DataDir, "downloads", videoID)
+	go s.watchAndUploadSubtitle(bvid, videoID, dlDir, &cred)
+}
+
+// watchAndUploadSubtitle 异步监听B站视频审核状态，审核通过后上传字幕
+func (s *Server) watchAndUploadSubtitle(bvid, videoID, dlDir string, cred *auth.LoginInfo) {
+	subStore := storage.NewSubtitleStore(filepath.Join(s.cfg.DataDir, "subtitles"))
+
+	// 同步最新字幕追踪状态
+	tracks, err := subStore.SyncFromDownload(videoID, bvid, dlDir)
+	if err != nil {
+		log.Printf("❌ [字幕] 同步字幕追踪失败: %v", err)
+		return
+	}
+
+	pending := 0
+	for _, t := range tracks {
+		if t.Status == storage.SubtitleStatusPending {
+			pending++
+		}
+	}
+	if pending == 0 {
+		log.Printf("ℹ️ [字幕] 没有待上传的字幕文件")
+		return
+	}
+
+	log.Printf("⏳ [字幕] 监听视频 %s 审核状态 (共 %d 个字幕待上传)...", bvid, pending)
+
+	// 等待审核通过
+	status, err := bili.WaitForReviewPassed(cred, bvid)
+	if err != nil {
+		log.Printf("❌ [字幕] 等待审核失败: %v", err)
+		return
+	}
+	if status == nil {
+		log.Printf("❌ [字幕] 获取审核状态失败")
+		return
+	}
+	log.Printf("✅ [字幕] 视频审核通过 (state=%d)", status.State)
+
+	// 重新同步（字幕文件可能已更新）
+	subStore.SyncFromDownload(videoID, bvid, dlDir)
+	pendingTracks := subStore.GetPending(videoID)
+	if len(pendingTracks) == 0 {
+		log.Printf("ℹ️ [字幕] 没有待上传的字幕文件")
+		return
+	}
+
+	successCount := 0
+	for _, track := range pendingTracks {
+		log.Printf("  📤 上传字幕: %s (%s)...", track.FileName, track.Language)
+		err := bili.UploadSubtitle(cred, bvid, track.FilePath, track.Language)
+		if err != nil {
+			log.Printf("  ❌ 字幕上传失败: %v", err)
+			subStore.MarkFailed(videoID, track.Language, err.Error())
+			continue
+		}
+		subStore.MarkUploaded(videoID, track.Language)
+		log.Printf("  ✅ 字幕上传完成: %s", track.FileName)
+		successCount++
+	}
+
+	if successCount > 0 {
+		allDone := subStore.AllUploaded(videoID)
+		if allDone {
+			log.Printf("✅ [字幕] 全部字幕上传完成! https://www.bilibili.com/video/%s", bvid)
+		} else {
+			log.Printf("✅ [字幕] 已上传 %d 个字幕文件，部分仍待处理", successCount)
+		}
+	} else {
+		log.Printf("❌ [字幕] 所有字幕上传均失败，请稍后重试")
+	}
 }
 
 // Stop 停止服务器
