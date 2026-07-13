@@ -306,9 +306,13 @@ func (s *Server) processVideoTask(task *VideoTask) {
 	outputDir := s.cfg.DataDir + "/downloads/" + videoID
 	cookiesPath := ""
 	if task.Cookies != "" {
-		// 保存 cookies 到临时文件
-		cookiesPath = outputDir + "/cookies.txt"
-		// TODO: 解析 cookies 并保存
+		// 解密 meta 加密的 cookies → 转为 Netscape 格式 → 保存到本地文件
+		if path, err := download.SaveCookiesFromMeta(task.Cookies, s.cfg.DataDir ); err == nil {
+			cookiesPath = path
+			log.Printf("🍪 已从 meta 解密并保存 cookies: %s", path)
+		} else {
+			log.Printf("⚠️ 解析 meta cookies 失败: %v，将使用全局 cookies", err)
+		}
 	}
 
 	result, err := download.Video(task.URL, outputDir, "en", cookiesPath)
