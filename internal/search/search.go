@@ -580,3 +580,187 @@ func WithContinuation(token string) SearchOption {
 func WithMaxResults(max int) SearchOption {
 	return func(c *searchConfig) { c.maxResults = max }
 }
+
+// ─── Content Safety Filter ─────────────────────────────────────────────────────
+
+// NegativeSuffix 搜索负向屏蔽词（自动追加到每条 query 末尾）
+// 排除政治、色情、暴力、新闻、无关杂项
+const NegativeSuffix = "-politics -political -election -government -war -military -news -documentary -protest -conflict -adult -nsfw -violence -crime -religion -debate -history -documentary -celebrity -sports -gaming -reaction -prank -meme"
+
+// BlocklistWords 标题/简介黑名单关键词（命中任一即丢弃）
+var BlocklistWords = []string{
+	// 政治/敏感
+	"election", "president", "policy debate", "government",
+	"protest", "war", "military", "political", "politics",
+	"documentary", "country conflict",
+
+	// 色情/暴力
+	"nsfw", "adult", "gore", "murder", "violent", "18+",
+
+	// 无关杂项
+	"celebrity", "movie review", "sports", "podcast debate",
+	"daily vlog", "reaction video", "prank", "challenge",
+	"mukbang", "gaming", "gameplay", "music video",
+	"trailer", "review movie", "tiktok", "shorts compilation",
+	"funny moments", "best moments", "highlights",
+	"vine", "meme compilation",
+}
+
+// FilterByContent 通过标题/简介过滤视频
+// 返回 true = 丢弃（命中黑名单），false = 保留
+func FilterByContent(v Video) bool {
+	title := strings.ToLower(v.Title)
+	desc := strings.ToLower(v.Description)
+	combined := title + " " + desc
+
+	for _, banned := range BlocklistWords {
+		if strings.Contains(combined, strings.ToLower(banned)) {
+			return true
+		}
+	}
+	return false
+}
+
+// ApplySafeSearch 对搜索结果应用安全过滤
+// 返回过滤后的视频列表（去重 + 黑名单 + 时长合理性）
+func ApplySafeSearch(videos []Video, minViews int64, maxDurationSec int) []Video {
+	seen := make(map[string]bool)
+	var result []Video
+
+	for _, v := range videos {
+		// 去重
+		if seen[v.ID] {
+			continue
+		}
+		seen[v.ID] = true
+
+		// 排除直播
+		if v.IsLive {
+			continue
+		}
+
+		// 内容黑名单
+		if FilterByContent(v) {
+			continue
+		}
+
+		// 观看数过滤
+		if v.ViewCount < minViews {
+			continue
+		}
+
+		// 时长过滤
+		if maxDurationSec > 0 && v.DurationSec > maxDurationSec {
+			continue
+		}
+		if v.DurationSec > 0 && v.DurationSec < 120 {
+			continue // 排除 <2分钟短视频
+		}
+
+		result = append(result, v)
+	}
+	return result
+}
+
+// ─── Standardized Keyword Library ─────────────────────────────────────────────
+
+// KeywordCategory 关键词分类
+type KeywordCategory struct {
+	Category string   // 分类名: ai-agent, web-dev, llm-tech, media-agent
+	Keywords []string // 关键词列表
+}
+
+// StandardKeywords 标准化搜索关键词库（四大类）
+var StandardKeywords = []KeywordCategory{
+	{
+		Category: "ai-agent",
+		Keywords: []string{
+			"Hermes Agent OS Obsidian memory workflow tutorial",
+			"Multi-agent orchestration kanban task system",
+			"AI Agent DAG workflow editor React Flow",
+			"AutoGen CrewAI LangGraph agent collaboration",
+			"Model Context Protocol MCP agent skill development",
+			"Local open source AI agent deployment",
+			"Agent memory layer long term retrieval Obsidian",
+			"AI video generation agent pipeline workflow",
+			"build autonomous AI agent from scratch",
+			"multi-agent task decomposition system design",
+			"agent kanban task scheduling open source",
+			"AI agent persistent memory implementation",
+		},
+	},
+	{
+		Category: "web-dev",
+		Keywords: []string{
+			"Next.js React Flow workflow editor App Router",
+			"xyflow react drag drop agent dashboard development",
+			"FastAPI backend agent API design tutorial",
+			"TypeScript AI workflow frontend architecture",
+			"Docker Hermes agent deployment guide",
+			"Full stack AI media generation pipeline",
+			"Tailwind CSS agent UI design tutorial",
+			"Python async agent backend architecture",
+		},
+	},
+	{
+		Category: "llm-tech",
+		Keywords: []string{
+			"Grok agent coding benchmark comparison",
+			"GPT agent system architecture deep dive",
+			"Local LLM agent Ollama integration",
+			"RAG multi-agent knowledge base implementation",
+			"Open source agent engine performance optimization",
+			"fine tuning LLM for tool calling",
+			"open source LLM deployment tutorial",
+			"AI model inference optimization",
+		},
+	},
+	{
+		Category: "media-agent",
+		Keywords: []string{
+			"AI video agent workflow intermediate asset management",
+			"Multi-step media generation agent pipeline",
+			"AI script storyboard voice synthesis agent",
+			"Automated video production agent orchestration",
+			"ComfyUI agent workflow automation",
+			"AI image generation pipeline API tutorial",
+		},
+	},
+}
+
+// ExpandKeyword 展开关键词 ID 为完整搜索字符串
+// 支持短 ID 格式: "ai-3", "web-1", "llm-2" 等
+// 也支持直接传入原始关键词
+func ExpandKeyword(keyword string) string {
+	// 检查短 ID 格式 (category-N)
+	parts := strings.SplitN(keyword, "-", 2)
+	if len(parts) == 2 {
+		categoryShort := parts[0]
+		var idx int
+		if _, err := fmt.Sscanf(parts[1], "%d", &idx); err == nil && idx >= 1 {
+			// 分类简写映射
+			catMap := map[string]string{
+				"ai":    "ai-agent",
+				"web":   "web-dev",
+				"llm":   "llm-tech",
+				"media": "media-agent",
+			}
+			if fullCat, ok := catMap[categoryShort]; ok {
+				for _, cat := range StandardKeywords {
+					if cat.Category == fullCat {
+						if idx-1 < len(cat.Keywords) {
+							return cat.Keywords[idx-1]
+						}
+					}
+				}
+			}
+		}
+	}
+	// 直接返回原始关键词
+	return keyword
+}
+
+// BuildSearchQuery 构建安全的搜索查询（追加负向屏蔽词）
+func BuildSearchQuery(keyword string) string {
+	return ExpandKeyword(keyword) + " " + NegativeSuffix
+}

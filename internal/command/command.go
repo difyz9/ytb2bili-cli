@@ -1499,7 +1499,9 @@ func autoCommand(cfg *config.Config) *cli.Command {
 			seenIDs := make(map[string]bool)
 
 			for _, kw := range keywords {
-				fmt.Printf("🔍 搜索: \"%s\"\n", kw)
+				// 展开短 ID + 追加负向屏蔽词
+				safeQuery := search.BuildSearchQuery(kw)
+				fmt.Printf("🔍 搜索: \"%s\"\n", safeQuery[:min(len(safeQuery), 100)]+"...")
 
 				result, err := searcher.SearchWithOptions(kw,
 					search.WithSortBy("view_count"),
@@ -1510,28 +1512,18 @@ func autoCommand(cfg *config.Config) *cli.Command {
 					continue
 				}
 
-				fmt.Printf("   找到 %d 个结果\n", len(result.Videos))
+				// 内容安全过滤（黑名单 + 时长 + 观看数）
+				filtered := search.ApplySafeSearch(result.Videos, minViews, maxDuration)
+				fmt.Printf("   找到 %d 个结果，过滤后 %d 个\n", len(result.Videos), len(filtered))
 
-				for _, v := range result.Videos {
+				for _, v := range filtered {
 					if seenIDs[v.ID] {
 						continue
 					}
 					seenIDs[v.ID] = true
 
-					// 过滤时长
-					if v.DurationSec > maxDuration && maxDuration > 0 {
-						continue
-					}
-					// 过滤观看数
-					if v.ViewCount < minViews {
-						continue
-					}
 					// 排除已提交
 					if history.IsSubmitted(v.ID) {
-						continue
-					}
-					// 排除直播
-					if v.IsLive {
 						continue
 					}
 
