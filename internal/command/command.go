@@ -199,7 +199,7 @@ func searchCommand(cfg *config.Config) *cli.Command {
 				srtPath := dlResult.SubtitlePath
 				if srtPath == "" {
 					fmt.Print("🎙️ [2/5] Bcut 语音转字幕... ")
-					srtPath, err = transcriber.BcutASR(dlResult.VideoPath, dlDir)
+					srtPath, err = transcriber.BcutASR(dlResult.VideoPath, dlDir, id)
 					if err != nil {
 						ts.UpdateStep(id, "transcribe", "failed", err.Error())
 						return fmt.Errorf("转写失败: %w", err)
@@ -718,7 +718,7 @@ func submitCommand(cfg *config.Config) *cli.Command {
 			srtPath := result.SubtitlePath
 			if srtPath == "" {
 				fmt.Print("🎙️ [2/5] Bcut 语音转字幕... ")
-				srtPath, err = transcriber.BcutASR(result.VideoPath, dlDir)
+				srtPath, err = transcriber.BcutASR(result.VideoPath, dlDir, id)
 				if err != nil {
 					ts.UpdateStep(id, "transcribe", "failed", err.Error())
 					return fmt.Errorf("转写失败: %w", err)
@@ -1616,7 +1616,7 @@ func autoCommand(cfg *config.Config) *cli.Command {
 				srtPath := dlResult.SubtitlePath
 				if srtPath == "" {
 					fmt.Print("🎙️ [2/5] Bcut 语音转字幕... ")
-					srtPath, err = transcriber.BcutASR(dlResult.VideoPath, dlDir)
+					srtPath, err = transcriber.BcutASR(dlResult.VideoPath, dlDir, id)
 					if err != nil {
 						ts.UpdateStep(id, "transcribe", "failed", err.Error())
 						fmt.Printf("❌ %v\n", err)

@@ -337,7 +337,7 @@ func (d *Debugger) processVideo(url, videoID, title, cookiesPath string, msg *Fe
 	fmt.Println("\n🎙️ Step 2: 语音转录...")
 	d.feishu.ReplyMarkdown(context.Background(), msg, "🎙️ 正在进行语音转录...")
 
-	srtPath, err := transcriber.BcutASR(result.VideoPath, outputDir)
+	srtPath, err := transcriber.BcutASR(result.VideoPath, outputDir, videoID)
 	if err != nil {
 		fmt.Printf("   ❌ 转录失败: %v\n", err)
 		d.feishu.ReplyMessage(context.Background(), msg, fmt.Sprintf("❌ 转录失败: %v", err))

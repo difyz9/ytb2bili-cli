@@ -72,7 +72,7 @@ type bcutResult struct {
 	} `json:"utterances"`
 }
 
-func BcutASR(videoPath, outputDir string) (string, error) {
+func BcutASR(videoPath, outputDir, videoID string) (string, error) {
 	ctx := context.Background()
 
 	// Step 1: Extract audio
@@ -132,8 +132,11 @@ func BcutASR(videoPath, outputDir string) (string, error) {
 	}
 	fmt.Printf("OK (%d 条字幕)\n", len(result.Utterances))
 
-	// Step 7: Generate SRT
-	srtPath := filepath.Join(outputDir, "subtitle.srt")
+	// Step 7: Generate SRT — use videoID as filename for BuildSubtitleCandidates compatibility
+	if videoID == "" {
+		videoID = "subtitle"
+	}
+	srtPath := filepath.Join(outputDir, videoID+".srt")
 	if err := generateSRT(result, srtPath); err != nil {
 		return "", err
 	}
