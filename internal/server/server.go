@@ -144,6 +144,9 @@ func (s *Server) Start(addr string) error {
 		go s.handleFeishuMessages()
 	}
 
+	// 恢复上次未完成的字幕监听（重启后继续等待审核）
+	go s.resumePendingSubtitleWatches()
+
 	return s.server.ListenAndServe()
 }
 
@@ -329,8 +332,8 @@ func (s *Server) processVideoTask(task *VideoTask) {
 	task.Status = "transcribing"
 	task.UpdatedAt = time.Now().Format(time.RFC3339)
 
-	// 转录
-	srtPath, err := transcriber.BcutASR(result.VideoPath, outputDir)
+	// 转录 — 使用 videoID 命名 SRT 文件
+	srtPath, err := transcriber.BcutASR(result.VideoPath, outputDir, videoID)
 	if err != nil {
 		log.Printf("❌ 转录失败: %v", err)
 		task.Status = "failed"
@@ -355,7 +358,7 @@ func (s *Server) processVideoTask(task *VideoTask) {
 		MaxWorkers: 3,
 	})
 
-	zhSrtPath := outputDir + "/subtitle.zh.srt"
+	zhSrtPath := outputDir + "/" + videoID + ".zh.srt"
 	err = translator.TranslateSRTFile(context.Background(), srtPath, zhSrtPath)
 	if err != nil {
 		log.Printf("❌ 翻译失败: %v", err)
@@ -513,6 +516,41 @@ func (s *Server) Stop(ctx context.Context) error {
 		return s.server.Shutdown(ctx)
 	}
 	return nil
+}
+
+// resumePendingSubtitleWatches 启动时恢复所有待审核的字幕监听
+func (s *Server) resumePendingSubtitleWatches() {
+	subStore := storage.NewSubtitleStore(filepath.Join(s.cfg.DataDir, "subtitles"))
+	pending := subStore.ListPendingVideos()
+	if len(pending) == 0 {
+		return
+	}
+
+	log.Printf("🔍 检测到 %d 个视频有待上传字幕，恢复监听审核状态...", len(pending))
+
+	// 加载 B站凭证
+	credDir := filepath.Join(s.cfg.DataDir, "cookies")
+	cs := storage.NewCredentialStore(credDir)
+	var cred auth.LoginInfo
+	if err := cs.Load(&cred); err != nil {
+		log.Printf("⚠️ 恢复字幕监听失败：无法加载 B站凭证 (%v)", err)
+		return
+	}
+
+	for _, videoID := range pending {
+		tracks, _ := subStore.GetStatus(videoID)
+		if len(tracks) == 0 {
+			continue
+		}
+		bvid := tracks[0].BVID
+		if bvid == "" {
+			continue
+		}
+		// 提取下载目录（从第一条字幕文件的路径推断）
+		dlDir := filepath.Dir(tracks[0].FilePath)
+		log.Printf("🔄 恢复字幕监听: %s (BVID=%s, %d 个字幕待上传)", videoID, bvid, len(tracks))
+		go s.watchAndUploadSubtitle(bvid, videoID, dlDir, &cred)
+	}
 }
 
 // handleSubmit 处理视频提交

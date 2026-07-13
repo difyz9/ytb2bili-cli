@@ -126,7 +126,12 @@ func (p *BitableProcessor) processTask(ctx context.Context, task *feishu.VideoTa
 
 	// Step 2: 语音转录
 	log.Println("\n🎙️ Step 2: 语音转录...")
-	srtPath, err := transcriber.BcutASR(result.VideoPath, outputDir)
+		// Extract a stable videoID from the URL to align subtitle filenames with BuildSubtitleCandidates
+	videoID := extractVideoID(task.URL)
+	if videoID == "" {
+		videoID = task.RecordID
+	}
+	srtPath, err := transcriber.BcutASR(result.VideoPath, outputDir, videoID)
 	if err != nil {
 		log.Printf("❌ 转录失败: %v", err)
 		p.client.UpdateTaskStatus(p.config, task.RecordID, "failed", "转录失败: "+err.Error(), "")

@@ -13,6 +13,12 @@ import (
 	"github.com/zolagz/ytb2bili-go/internal/auth"
 )
 
+const (
+	// BCCItemLimit 每条 B站 字幕轨道的最大字幕条数限制
+	// B站 对每轨字幕限制约 460~500 条，超过会报 code=79014
+	BCCItemLimit = 450
+)
+
 type UploadParams struct {
 	VideoPath string
 	Title     string
@@ -101,6 +107,7 @@ func Upload(cred *auth.LoginInfo, params *UploadParams) (string, error) {
 
 // UploadSubtitle 上传单个字幕文件到已发布的B站视频
 // 使用 SubtitleUploader（获取 CID → 转换 SRT → 保存草稿）
+// 支持：语言回退（79011错误时尝试替代语言码）、BCC条数限制处理
 func UploadSubtitle(cred *auth.LoginInfo, bvid, subtitlePath, language string) error {
 	if _, err := os.Stat(subtitlePath); err != nil {
 		return fmt.Errorf("字幕文件不存在: %w", err)
@@ -111,22 +118,44 @@ func UploadSubtitle(cred *auth.LoginInfo, bvid, subtitlePath, language string) e
 	uploader := bilibili.NewSubtitleUploader(client, sdkLogin)
 
 	// 1. 获取视频信息（CID）
+	log.Printf("  [字幕] 获取视频 %s 的 CID...", bvid)
 	videoInfo, err := uploader.GetVideoInfo(bvid)
 	if err != nil {
-		return fmt.Errorf("获取视频信息失败: %w", err)
+		return fmt.Errorf("获取视频信息失败 (bvid=%s): %w", bvid, err)
 	}
+	log.Printf("  [字幕] CID=%d, AID=%d", videoInfo.CID, videoInfo.AID)
 
-	// 2. 将 SRT 转换为 BCC JSON
+	// 2. 将 SRT 转换为 BCC JSON，并处理条数限制
 	subtitle, err := bilibili.LoadSRTAsBCC(subtitlePath)
 	if err != nil {
 		return fmt.Errorf("解析字幕文件失败: %w", err)
 	}
 
-	// 3. 直接保存字幕草稿（审核通过后，字幕会立即生效）
+	// BCC 条数限制检查（B站每轨限制 ~460-500 条）
+	if len(subtitle.Body) > BCCItemLimit {
+		log.Printf("  ⚠ [字幕] 字幕条数 %d 超过限制 %d，将截断至 %d 条",
+			len(subtitle.Body), BCCItemLimit, BCCItemLimit)
+		subtitle.Body = subtitle.Body[:BCCItemLimit]
+	}
+
+	// 3. 规范化语言码
 	lang := bilibili.NormalizeSubtitleLanguage(language)
+
+	// 4. 尝试上传，支持语言回退
 	err = uploader.SaveSubtitleDraft(bvid, videoInfo.CID, subtitle, lang)
 	if err != nil {
-		return fmt.Errorf("上传字幕失败 (lang=%s): %w", lang, err)
+		// 检查是否为不合法的语言错误（code=79011）
+		errStr := err.Error()
+		if strings.Contains(errStr, "79011") && lang != "zh" {
+			// 回退到 zh
+			log.Printf("  ⚠ [字幕] 语言 %q 被拒绝 (79011)，回退到 zh", lang)
+			err = uploader.SaveSubtitleDraft(bvid, videoInfo.CID, subtitle, "zh")
+			if err != nil {
+				return fmt.Errorf("上传字幕失败 (bvid=%s, lang=%s→zh): %w", bvid, lang, err)
+			}
+			return nil
+		}
+		return fmt.Errorf("上传字幕失败 (bvid=%s, lang=%s): %w", bvid, lang, err)
 	}
 
 	return nil
@@ -139,11 +168,11 @@ func CheckReviewStatus(cred *auth.LoginInfo, bvid string) (*bilibili.VideoReview
 	return client.GetVideoReviewStatus(bvid, cookies)
 }
 
-// WaitForReviewPassed 等待B站视频审核通过
+// WaitForReviewPassed 等待B站视频审核通过（每3分钟轮询，最长等待24小时）
 func WaitForReviewPassed(cred *auth.LoginInfo, bvid string) (*bilibili.VideoReviewStatus, error) {
 	client := bilibili.NewClient()
 	cookies := BuildCookiesString(cred)
-	return client.WaitForVideoReviewPassed(bvid, cookies, 30, 24*60*60)
+	return client.WaitForVideoReviewPassed(bvid, cookies, 3*time.Minute, 24*time.Hour)
 }
 
 func extractBVID(result *bilibili.ResponseData) string {

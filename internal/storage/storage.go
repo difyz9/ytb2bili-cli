@@ -242,7 +242,8 @@ func (s *SubtitleStore) path(videoID string) string {
 }
 
 // BuildSubtitleCandidates 扫描下载目录中的所有 SRT 字幕文件
-// 自动识别语言后缀，支持：.en.srt, .zh.srt, .zh-Hans.srt, .ja.srt 等
+// 按优先级自动识别语言后缀（优先匹配更具体的后缀）
+// 支持：.en.zh.srt (翻译), .zh-hant.srt, .zh.srt, .en.srt, .ja.srt, .srt (BCut ASR fallback)
 func BuildSubtitleCandidates(videoID, dlDir string) []SubtitleTrack {
 	if dlDir == "" {
 		return nil
@@ -253,15 +254,20 @@ func BuildSubtitleCandidates(videoID, dlDir string) []SubtitleTrack {
 		return nil
 	}
 
-	// 语言后缀 → language code 映射
-	// 注意：翻译后的文件是 .en.zh.srt 格式，.zh.srt 需要优先匹配
-	langSuffix := map[string]string{
-		".en.zh.srt":   "zh",   // 翻译结果: en.zh.srt → zh
-		".zh.srt":      "zh",
-		".zh-hans.srt": "zh",
-		".zh-hant.srt": "zh-TW",
-		".en.srt":      "en",
-		".ja.srt":      "ja",
+	// 有序后缀列表（长后缀优先匹配，避免 .zh.srt 被 .srt 提前匹配）
+	type suffixLang struct {
+		suffix string
+		lang   string
+	}
+	suffixes := []suffixLang{
+		{".en.zh.srt", "zh"},   // 翻译结果（从 en → zh，最优先）
+		{".zh-hant.srt", "zh-TW"},
+		{".zh-hans.srt", "zh"},
+		{".zh.srt", "zh"},
+		{".en.srt", "en"},
+		{".ja.srt", "ja"},
+		{".ko.srt", "ko"},
+		{".srt", "en"},          // BCut ASR 原始转录（无语言后缀，作为英语 fallback）
 	}
 
 	seen := make(map[string]bool)
@@ -274,12 +280,12 @@ func BuildSubtitleCandidates(videoID, dlDir string) []SubtitleTrack {
 		name := strings.ToLower(e.Name())
 
 		var language string
-		for suffix, lang := range langSuffix {
-			if strings.HasSuffix(name, suffix) {
-				language = lang
+		for _, sl := range suffixes {
+			if strings.HasSuffix(name, sl.suffix) {
+				language = sl.lang
 				break
 			}
-		}
+			}
 		if language == "" {
 			continue
 		}
@@ -434,6 +440,53 @@ func (s *SubtitleStore) AllUploaded(videoID string) bool {
 		}
 	}
 	return true
+}
+
+// ListPendingVideos 列出所有有待上传字幕的视频ID（审核通过后将恢复监听）
+func (s *SubtitleStore) ListPendingVideos() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil
+	}
+
+	var result []string
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		videoID := strings.TrimSuffix(e.Name(), ".json")
+		tracks, err := s.loadTracks(videoID)
+		if err != nil || len(tracks) == 0 {
+			continue
+		}
+		// 有 pending 或 failed 状态的 → 需要继续监听
+		needsWatch := false
+		for _, t := range tracks {
+			if t.Status == SubtitleStatusPending || t.Status == SubtitleStatusFailed {
+				needsWatch = true
+				break
+			}
+		}
+		if !needsWatch {
+			continue
+		}
+		// 检查是否全部已上传完成
+		allDone := true
+		for _, t := range tracks {
+			if t.Status != SubtitleStatusUploaded && t.Status != SubtitleStatusMissing {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			continue
+		}
+		result = append(result, videoID)
+	}
+	return result
 }
 
 // GetStatus 获取某个视频的字幕整体状态
