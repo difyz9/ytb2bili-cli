@@ -1,0 +1,143 @@
+package pipeline
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+
+	"github.com/zolagz/ytb2bili-go/internal/auth"
+	"github.com/zolagz/ytb2bili-go/internal/bili"
+	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/download"
+	"github.com/zolagz/ytb2bili-go/internal/metadata"
+	"github.com/zolagz/ytb2bili-go/internal/storage"
+	"github.com/zolagz/ytb2bili-go/internal/transcriber"
+	"github.com/zolagz/ytb2bili-go/internal/translator"
+	"github.com/zolagz/ytb2bili-go/internal/workflow"
+)
+
+type pipelineStep interface {
+	Definition() workflow.Step
+	Run(context.Context, *PipelineState) error
+}
+
+type stepDeps struct {
+	config  *config.Config
+	tasks   *storage.TaskStore
+	history *storage.HistoryStore
+}
+
+func buildRegistry(state *PipelineState, deps stepDeps) (*workflow.Registry, error) {
+	steps := []pipelineStep{
+		&downloadStep{config: deps.config},
+		&transcribeStep{},
+		&translateStep{config: deps.config},
+		&metadataStep{config: deps.config},
+		&uploadStep{config: deps.config, tasks: deps.tasks, history: deps.history},
+	}
+	definitions := make([]workflow.Step, 0, len(steps))
+	for _, implementation := range steps {
+		definition := implementation.Definition()
+		step := implementation
+		definition.Run = func(ctx context.Context, _ *workflow.State) error { return step.Run(ctx, state) }
+		definitions = append(definitions, definition)
+	}
+	return workflow.NewRegistry(definitions...)
+}
+
+type downloadStep struct{ config *config.Config }
+
+func (*downloadStep) Definition() workflow.Step {
+	return workflow.Step{Name: "download", Description: "下载视频、字幕和封面"}
+}
+func (s *downloadStep) Run(ctx context.Context, state *PipelineState) error {
+	req, result := state.Request, state.Result
+	result.DownloadDir = filepath.Join(s.config.DataDir, "downloads", result.TaskID)
+	cookies := req.CookiesPath
+	if cookies == "" {
+		cookies = s.config.YouTubeCookies
+	}
+	if cookies == "" {
+		cookies = filepath.Join(s.config.DataDir, "youtube_cookies.txt")
+	}
+	var err error
+	state.Download, err = download.VideoContext(ctx, req.URL, result.DownloadDir, req.SourceLang, cookies)
+	if err != nil {
+		return fmt.Errorf("下载失败: %w", err)
+	}
+	result.VideoPath, result.SubtitlePath = state.Download.VideoPath, state.Download.SubtitlePath
+	return nil
+}
+
+type transcribeStep struct{}
+
+func (*transcribeStep) Definition() workflow.Step {
+	return workflow.Step{Name: "transcribe", Description: "获取或生成源字幕", Requires: []string{"download"}}
+}
+func (*transcribeStep) Run(ctx context.Context, state *PipelineState) error {
+	if state.Result.SubtitlePath != "" {
+		return nil
+	}
+	var err error
+	state.Result.SubtitlePath, err = transcriber.BcutASRContext(ctx, state.Result.VideoPath, state.Result.DownloadDir, state.Result.TaskID)
+	if err != nil {
+		return fmt.Errorf("转写失败: %w", err)
+	}
+	return nil
+}
+
+type translateStep struct{ config *config.Config }
+
+func (*translateStep) Definition() workflow.Step {
+	return workflow.Step{Name: "translate", Description: "翻译字幕", Requires: []string{"transcribe"}}
+}
+func (s *translateStep) Run(ctx context.Context, state *PipelineState) error {
+	translated, err := translator.SRTContext(ctx, state.Result.SubtitlePath, state.Request.SourceLang, state.Request.TargetLang, s.config)
+	if err != nil {
+		return fmt.Errorf("翻译失败: %w", err)
+	}
+	state.Result.SubtitlePath = translated
+	return nil
+}
+
+type metadataStep struct{ config *config.Config }
+
+func (*metadataStep) Definition() workflow.Step {
+	return workflow.Step{Name: "metadata", Description: "生成标题、简介和标签", Requires: []string{"download"}}
+}
+func (s *metadataStep) Run(ctx context.Context, state *PipelineState) error {
+	meta, err := metadata.GenerateContext(ctx, state.Download.Info, s.config)
+	if err != nil {
+		meta = &metadata.VideoMeta{Title: state.Download.Info.Title, Description: state.Download.Info.Description}
+	}
+	state.Metadata, state.Result.Metadata = meta, meta
+	return nil
+}
+
+type uploadStep struct {
+	config  *config.Config
+	tasks   *storage.TaskStore
+	history *storage.HistoryStore
+}
+
+func (*uploadStep) Definition() workflow.Step {
+	return workflow.Step{Name: "upload", Description: "投稿到 B站并记录历史", Requires: []string{"download", "metadata"}}
+}
+func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
+	var cred auth.LoginInfo
+	if err := storage.NewCredentialStore(filepath.Join(s.config.DataDir, "cookies")).Load(&cred); err != nil {
+		return fmt.Errorf("请先登录: ytb2bili login")
+	}
+	r, req := state.Result, state.Request
+	bvid, err := bili.UploadContext(ctx, &cred, &bili.UploadParams{VideoPath: r.VideoPath, Title: state.Metadata.Title, Desc: state.Metadata.Description, Tags: state.Metadata.Tags, Source: req.URL, Tid: req.Tid, CoverPath: state.Download.CoverPath})
+	if err != nil {
+		return fmt.Errorf("上传失败: %w", err)
+	}
+	r.BVID = bvid
+	s.tasks.SetBVID(r.TaskID, bvid)
+	if err = s.history.Add(&storage.SubmittedVideo{YouTubeID: r.VideoID, BVID: bvid, Title: state.Metadata.Title, Channel: req.Source}); err != nil {
+		return fmt.Errorf("保存投稿历史失败: %w", err)
+	}
+	_, _ = storage.NewSubtitleStore(filepath.Join(s.config.DataDir, "subtitles")).SyncFromDownload(r.TaskID, bvid, r.DownloadDir)
+	return nil
+}

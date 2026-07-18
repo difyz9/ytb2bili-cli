@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -16,10 +17,8 @@ import (
 	"github.com/zolagz/ytb2bili-go/internal/bili"
 	"github.com/zolagz/ytb2bili-go/internal/config"
 	"github.com/zolagz/ytb2bili-go/internal/download"
-	"github.com/zolagz/ytb2bili-go/internal/metadata"
+	"github.com/zolagz/ytb2bili-go/internal/pipeline"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
-	"github.com/zolagz/ytb2bili-go/internal/transcriber"
-	"github.com/zolagz/ytb2bili-go/internal/translator"
 )
 
 // Server HTTP 服务器
@@ -34,17 +33,22 @@ type Server struct {
 
 // VideoTask 视频处理任务
 type VideoTask struct {
-	ID          string          `json:"id"`
-	URL         string          `json:"url"`
-	Title       string          `json:"title"`
-	Description string          `json:"description,omitempty"`
-	Subtitles   []SubtitleEntry `json:"subtitles,omitempty"`
-	Cookies     string          `json:"cookies,omitempty"`
-	Status      string          `json:"status"`
-	CreatedAt   string          `json:"created_at"`
-	UpdatedAt   string          `json:"updated_at"`
-	BVID        string          `json:"bvid,omitempty"`
-	Error       string          `json:"error,omitempty"`
+	ID            string          `json:"id"`
+	URL           string          `json:"url"`
+	Title         string          `json:"title"`
+	Description   string          `json:"description,omitempty"`
+	Subtitles     []SubtitleEntry `json:"subtitles,omitempty"`
+	Cookies       string          `json:"cookies,omitempty"`
+	Status        string          `json:"status"`
+	CreatedAt     string          `json:"created_at"`
+	UpdatedAt     string          `json:"updated_at"`
+	BVID          string          `json:"bvid,omitempty"`
+	Error         string          `json:"error,omitempty"`
+	Chain         []string        `json:"chain,omitempty"`
+	DryRun        bool            `json:"dry_run,omitempty"`
+	SkipTranslate bool            `json:"skip_translate,omitempty"`
+	Planner       string          `json:"planner,omitempty"`
+	Goal          string          `json:"goal,omitempty"`
 }
 
 // SubtitleEntry 字幕条目
@@ -57,14 +61,19 @@ type SubtitleEntry struct {
 
 // SubmitRequest 提交请求
 type SubmitRequest struct {
-	URL         string          `json:"url"`
-	Title       string          `json:"title"`
-	Description string          `json:"description,omitempty"`
-	Operation   string          `json:"operationType,omitempty"`
-	Subtitles   []SubtitleEntry `json:"subtitles,omitempty"`
-	PlaylistID  string          `json:"playlistId,omitempty"`
-	Timestamp   string          `json:"timestamp,omitempty"`
-	Meta        string          `json:"meta,omitempty"` // 加密的 cookies
+	URL           string          `json:"url"`
+	Title         string          `json:"title"`
+	Description   string          `json:"description,omitempty"`
+	Operation     string          `json:"operationType,omitempty"`
+	Subtitles     []SubtitleEntry `json:"subtitles,omitempty"`
+	PlaylistID    string          `json:"playlistId,omitempty"`
+	Timestamp     string          `json:"timestamp,omitempty"`
+	Meta          string          `json:"meta,omitempty"`  // 加密的 cookies
+	Chain         []string        `json:"chain,omitempty"` // 可选任务链；依赖自动补全
+	DryRun        bool            `json:"dryRun,omitempty"`
+	SkipTranslate bool            `json:"skipTranslate,omitempty"`
+	Planner       string          `json:"planner,omitempty"`
+	Goal          string          `json:"goal,omitempty"`
 }
 
 // SubmitResponse 提交响应
@@ -180,9 +189,9 @@ func (s *Server) processFeishuMessage(msg *FeishuMessage) {
 		var videoList []map[string]string
 		for _, v := range videos {
 			videoList = append(videoList, map[string]string{
-				"title":         v.Title,
-				"youtube_url":   fmt.Sprintf("https://www.youtube.com/watch?v=%s", v.YouTubeID),
-				"bilibili_url":  fmt.Sprintf("https://www.bilibili.com/video/%s", v.BVID),
+				"title":        v.Title,
+				"youtube_url":  fmt.Sprintf("https://www.youtube.com/watch?v=%s", v.YouTubeID),
+				"bilibili_url": fmt.Sprintf("https://www.bilibili.com/video/%s", v.BVID),
 			})
 		}
 		s.Feishu.ReplyCard(context.Background(), msg, CreateHistoryCard(videoList))
@@ -288,153 +297,48 @@ func (s *Server) processTasks() {
 	}
 }
 
-// processVideoTask 处理单个视频任务
+// processVideoTask runs every HTTP/Feishu task through the shared application pipeline.
 func (s *Server) processVideoTask(task *VideoTask) {
 	log.Printf("🎬 开始处理任务: %s - %s", task.ID, task.URL)
-
-	// 提取视频 ID 作为文件夹名
-	videoID := extractVideoID(task.URL)
-	if videoID == "" {
-		log.Printf("❌ 无法提取视频 ID")
-		task.Status = "failed"
-		task.Error = "无法提取视频 ID"
-		return
-	}
-
-	// 更新任务状态
-	task.Status = "downloading"
-	task.UpdatedAt = time.Now().Format(time.RFC3339)
-
-	// 下载视频（使用视频 ID 作为保存文件夹）
-	outputDir := s.cfg.DataDir + "/downloads/" + videoID
 	cookiesPath := ""
 	if task.Cookies != "" {
-		// 解密 meta 加密的 cookies → 转为 Netscape 格式 → 保存到本地文件
-		if path, err := download.SaveCookiesFromMeta(task.Cookies, s.cfg.DataDir ); err == nil {
+		if path, err := download.SaveCookiesFromMeta(task.Cookies, s.cfg.DataDir); err == nil {
 			cookiesPath = path
-			log.Printf("🍪 已从 meta 解密并保存 cookies: %s", path)
 		} else {
-			log.Printf("⚠️ 解析 meta cookies 失败: %v，将使用全局 cookies", err)
+			log.Printf("⚠️ 解析任务 cookies 失败，将使用全局 cookies: %v", err)
 		}
 	}
-
-	result, err := download.Video(task.URL, outputDir, "en", cookiesPath)
-	if err != nil {
-		log.Printf("❌ 下载失败: %v", err)
-		task.Status = "failed"
-		task.Error = err.Error()
-		return
-	}
-
-	log.Printf("✅ 下载完成: %s", result.VideoPath)
-
-	// 更新任务状态
-	task.Status = "transcribing"
-	task.UpdatedAt = time.Now().Format(time.RFC3339)
-
-	// 转录 — 使用 videoID 命名 SRT 文件
-	srtPath, err := transcriber.BcutASR(result.VideoPath, outputDir, videoID)
-	if err != nil {
-		log.Printf("❌ 转录失败: %v", err)
-		task.Status = "failed"
-		task.Error = err.Error()
-		return
-	}
-
-	log.Printf("✅ 转录完成: %s", srtPath)
-
-	// 更新任务状态
-	task.Status = "translating"
-	task.UpdatedAt = time.Now().Format(time.RFC3339)
-
-	// 翻译
-	translator := translator.New(translator.Config{
-		APIKey:     s.cfg.LLMAPIKey,
-		BaseURL:    s.cfg.LLMBaseURL,
-		Model:      s.cfg.LLMModel,
-		SourceLang: "en",
-		TargetLang: "zh",
-		BatchSize:  25,
-		MaxWorkers: 3,
+	processor := &pipeline.Processor{Config: s.cfg, Reporter: func(event pipeline.Event) {
+		task.Status = event.Step
+		task.UpdatedAt = time.Now().Format(time.RFC3339)
+		if event.Err != nil {
+			task.Error = event.Err.Error()
+		}
+	}}
+	result, err := processor.Process(context.Background(), pipeline.Request{
+		URL: task.URL, SourceLang: "en", TargetLang: "zh", Tid: s.cfg.BiliTid,
+		Source: "server", CookiesPath: cookiesPath, Chain: task.Chain,
+		DryRun: task.DryRun, SkipTranslate: task.SkipTranslate,
+		Planner: task.Planner, Goal: task.Goal,
+		TaskID: task.ID,
 	})
-
-	zhSrtPath := outputDir + "/" + videoID + ".zh.srt"
-	err = translator.TranslateSRTFile(context.Background(), srtPath, zhSrtPath)
 	if err != nil {
-		log.Printf("❌ 翻译失败: %v", err)
-		task.Status = "failed"
-		task.Error = err.Error()
+		task.Status, task.Error = "failed", err.Error()
+		store := storage.NewTaskStore(filepath.Join(s.cfg.DataDir, "tasks"))
+		if persisted, getErr := store.Get(task.ID); getErr == nil && persisted.Status != "failed" {
+			store.UpdateStep(task.ID, "planning", "failed", err.Error())
+		}
+		log.Printf("❌ 任务失败: %s: %v", task.ID, err)
 		return
 	}
-
-	log.Printf("✅ 翻译完成: %s", zhSrtPath)
-
-	// 生成元数据（AI 标题/简介/标签）
-	task.Status = "generating_metadata"
-	task.UpdatedAt = time.Now().Format(time.RFC3339)
-
-	meta, err := metadata.Generate(result.Info, s.cfg)
-	if err != nil {
-		log.Printf("⚠️ 元数据生成失败: %v，回退到原始标题", err)
-		meta = &metadata.VideoMeta{
-			Title:       result.Info.Title,
-			Description: result.Info.Description,
-			Tags:        []string{},
-		}
+	task.Status, task.BVID = "completed", result.BVID
+	if result.BVID == "" {
+		return
 	}
-	log.Printf("✅ 元数据生成完成: %s", meta.Title)
-
-	// 加载 B站凭证
-	credDir := filepath.Join(s.cfg.DataDir, "cookies")
-	cs := storage.NewCredentialStore(credDir)
 	var cred auth.LoginInfo
-	if err := cs.Load(&cred); err != nil {
-		log.Printf("❌ 加载 B站凭证失败: %v", err)
-		task.Status = "failed"
-		task.Error = "未登录，请先通过 CLI 执行 ytb2bili login"
-		return
+	if err := storage.NewCredentialStore(filepath.Join(s.cfg.DataDir, "cookies")).Load(&cred); err == nil {
+		go s.watchAndUploadSubtitle(result.BVID, result.TaskID, result.DownloadDir, &cred)
 	}
-
-	// 投稿到 B站
-	task.Status = "uploading"
-	task.UpdatedAt = time.Now().Format(time.RFC3339)
-
-	bvid, err := bili.Upload(&cred, &bili.UploadParams{
-		VideoPath: result.VideoPath,
-		Title:     meta.Title,
-		Desc:      meta.Description,
-		Tags:      meta.Tags,
-		Source:    task.URL,
-		Tid:       s.cfg.BiliTid,
-		CoverPath: result.CoverPath,
-	})
-	if err != nil {
-		log.Printf("❌ 投稿到 B站失败: %v", err)
-		task.Status = "failed"
-		task.Error = err.Error()
-		return
-	}
-
-	task.BVID = bvid
-	log.Printf("✅ 投稿成功: https://www.bilibili.com/video/%s", bvid)
-
-	// 记录到历史
-	s.history.Add(&storage.SubmittedVideo{
-		YouTubeID: videoID,
-		BVID:      bvid,
-		Title:     meta.Title,
-		Channel:   "",
-	})
-
-	// 更新任务状态
-	task.Status = "completed"
-	task.UpdatedAt = time.Now().Format(time.RFC3339)
-
-	log.Printf("✅ 任务完成: %s - BVID=%s", task.ID, bvid)
-
-	// 异步监听审核并上传字幕
-	dlDir := filepath.Join(s.cfg.DataDir, "downloads", videoID)
-	go s.watchAndUploadSubtitle(bvid, videoID, dlDir, &cred)
 }
 
 // watchAndUploadSubtitle 异步监听B站视频审核状态，审核通过后上传字幕
@@ -593,18 +497,28 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// 创建任务
 	task := &VideoTask{
-		ID:          generateTaskID(),
-		URL:         req.URL,
-		Title:       req.Title,
-		Description: req.Description,
-		Subtitles:   req.Subtitles,
-		Cookies:     req.Meta,
-		Status:      "pending",
-		CreatedAt:   time.Now().Format(time.RFC3339),
-		UpdatedAt:   time.Now().Format(time.RFC3339),
+		ID:            generateTaskID(),
+		URL:           req.URL,
+		Title:         req.Title,
+		Description:   req.Description,
+		Subtitles:     req.Subtitles,
+		Cookies:       req.Meta,
+		Chain:         req.Chain,
+		DryRun:        req.DryRun,
+		SkipTranslate: req.SkipTranslate,
+		Planner:       req.Planner,
+		Goal:          req.Goal,
+		Status:        "pending",
+		CreatedAt:     time.Now().Format(time.RFC3339),
+		UpdatedAt:     time.Now().Format(time.RFC3339),
 	}
 
 	// 发送到任务队列
+	taskStore := storage.NewTaskStore(filepath.Join(s.cfg.DataDir, "tasks"))
+	if err := taskStore.Persist(taskStore.Prepare(task.ID, task.URL), nil); err != nil {
+		s.jsonError(w, "创建任务失败", http.StatusInternalServerError)
+		return
+	}
 	select {
 	case s.taskChan <- task:
 		s.jsonResponse(w, SubmitResponse{
@@ -613,20 +527,42 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			TaskID:  task.ID,
 		})
 	default:
+		_ = taskStore.Delete(task.ID)
 		s.jsonError(w, "任务队列已满", http.StatusServiceUnavailable)
 	}
 }
 
 // handleListTasks 处理任务列表
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
-	// TODO: 实现任务列表
-	s.jsonResponse(w, []VideoTask{})
+	if r.Method != http.MethodGet {
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tasks := storage.NewTaskStore(filepath.Join(s.cfg.DataDir, "tasks")).List()
+	s.jsonResponse(w, tasks)
 }
 
 // handleGetTask 处理获取任务
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
-	// TODO: 实现获取任务
-	s.jsonError(w, "Not implemented", http.StatusNotImplemented)
+	if r.Method != http.MethodGet {
+		s.jsonError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	if id == "" || strings.ContainsAny(id, `/\\`) {
+		s.jsonError(w, "无效任务 ID", http.StatusBadRequest)
+		return
+	}
+	task, err := storage.NewTaskStore(filepath.Join(s.cfg.DataDir, "tasks")).Get(id)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.jsonError(w, "任务不存在", http.StatusNotFound)
+			return
+		}
+		s.jsonError(w, "读取任务失败", http.StatusInternalServerError)
+		return
+	}
+	s.jsonResponse(w, task)
 }
 
 // handleHistory 处理历史记录

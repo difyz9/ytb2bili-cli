@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/llm"
 )
 
 const (
@@ -442,12 +443,12 @@ func GenerateSRT(entries []SRTEntry, translatedTexts []string) string {
 
 func getLangName(code string) string {
 	names := map[string]string{
-		"en":     "英文",
-		"zh":     "中文",
-		"zh-CN":  "中文",
+		"en":      "英文",
+		"zh":      "中文",
+		"zh-CN":   "中文",
 		"zh-Hans": "中文简体",
-		"ja":     "日文",
-		"ko":     "韩文",
+		"ja":      "日文",
+		"ko":      "韩文",
 	}
 	if name, ok := names[code]; ok {
 		return name
@@ -477,6 +478,10 @@ func ParseSRTTime(t string) float64 {
 
 // SRT 翻译 SRT 字幕文件（兼容旧接口）
 func SRT(inputPath, sourceLang, targetLang string, cfg interface{}) (string, error) {
+	return SRTContext(context.Background(), inputPath, sourceLang, targetLang, cfg)
+}
+
+func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, cfg interface{}) (string, error) {
 	var apiKey, baseURL, model string
 
 	switch c := cfg.(type) {
@@ -507,7 +512,6 @@ func SRT(inputPath, sourceLang, targetLang string, cfg interface{}) (string, err
 	})
 
 	// 翻译
-	ctx := context.Background()
 	if err := translator.TranslateSRTFile(ctx, inputPath, outputPath); err != nil {
 		return "", err
 	}
@@ -517,6 +521,10 @@ func SRT(inputPath, sourceLang, targetLang string, cfg interface{}) (string, err
 
 // CallLLM 调用 LLM（兼容旧接口）
 func CallLLM(prompt string, cfg interface{}) (string, error) {
+	return CallLLMContext(context.Background(), prompt, cfg)
+}
+
+func CallLLMContext(ctx context.Context, prompt string, cfg interface{}) (string, error) {
 	var apiKey, baseURL, model string
 
 	switch c := cfg.(type) {
@@ -532,50 +540,5 @@ func CallLLM(prompt string, cfg interface{}) (string, error) {
 		return "", fmt.Errorf("unsupported config type")
 	}
 
-	client := &http.Client{Timeout: 60 * time.Second}
-
-	payload := map[string]interface{}{
-		"model":       model,
-		"messages":    []map[string]string{{"role": "user", "content": prompt}},
-		"temperature": 0.7,
-		"max_tokens":  2048,
-	}
-	payloadBytes, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequest("POST", baseURL+"/chat/completions", bytes.NewReader(payloadBytes))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", fmt.Errorf("解析响应失败: %s", string(body)[:min(200, len(body))])
-	}
-
-	if result.Error != nil {
-		return "", fmt.Errorf("LLM 错误: %s", result.Error.Message)
-	}
-
-	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("LLM 返回空结果")
-	}
-
-	return result.Choices[0].Message.Content, nil
+	return (&llm.OpenAIClient{APIKey: apiKey, BaseURL: baseURL, Model: model}).Complete(ctx, prompt)
 }

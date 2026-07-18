@@ -19,11 +19,11 @@ import (
 
 // Debugger 调试器
 type Debugger struct {
-	cfg           *config.Config
-	feishu        *FeishuBot
-	dryRun        bool
-	messageCount  int
-	history       *storage.HistoryStore
+	cfg          *config.Config
+	feishu       *FeishuBot
+	dryRun       bool
+	messageCount int
+	history      *storage.HistoryStore
 }
 
 // NewDebugger 创建调试器
@@ -433,9 +433,9 @@ func (d *Debugger) handleCommandMessage(ctx context.Context, msg *FeishuMessage,
 		var videoList []map[string]string
 		for _, v := range videos {
 			videoList = append(videoList, map[string]string{
-				"title":         v.Title,
-				"youtube_url":   fmt.Sprintf("https://www.youtube.com/watch?v=%s", v.YouTubeID),
-				"bilibili_url":  fmt.Sprintf("https://www.bilibili.com/video/%s", v.BVID),
+				"title":        v.Title,
+				"youtube_url":  fmt.Sprintf("https://www.youtube.com/watch?v=%s", v.YouTubeID),
+				"bilibili_url": fmt.Sprintf("https://www.bilibili.com/video/%s", v.BVID),
 			})
 		}
 		d.feishu.ReplyCard(ctx, msg, CreateHistoryCard(videoList))

@@ -11,11 +11,9 @@ import (
 	"time"
 
 	"github.com/zolagz/ytb2bili-go/internal/config"
-	"github.com/zolagz/ytb2bili-go/internal/download"
 	"github.com/zolagz/ytb2bili-go/internal/feishu"
+	"github.com/zolagz/ytb2bili-go/internal/pipeline"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
-	"github.com/zolagz/ytb2bili-go/internal/transcriber"
-	"github.com/zolagz/ytb2bili-go/internal/translator"
 )
 
 // BitableProcessor 多维表格任务处理器
@@ -83,98 +81,38 @@ func (p *BitableProcessor) processOnce(ctx context.Context) {
 // processTask 处理单个任务
 func (p *BitableProcessor) processTask(ctx context.Context, task *feishu.VideoTaskRecord) {
 	log.Printf("\n🔄 处理任务: %s (%s)", task.Title, task.VideoID)
-
-	// 检查是否已提交
-	if p.history.IsSubmitted(task.VideoID) {
-		submitted := p.history.GetSubmitted(task.VideoID)
-		errMsg := fmt.Sprintf("该视频已提交过，BVID: %s", submitted.BVID)
-		log.Printf("⚠️ %s", errMsg)
-		p.client.UpdateTaskStatus(p.config, task.RecordID, "skipped", errMsg, "")
-		return
-	}
-
-	// 保存 cookies 到文件
-	outputDir := p.cfg.DataDir + "/downloads/" + task.VideoID
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		log.Printf("❌ 创建目录失败: %v", err)
-		p.client.UpdateTaskStatus(p.config, task.RecordID, "failed", err.Error(), "")
-		return
-	}
-
 	cookiesPath := ""
 	if task.Cookies != "" {
+		outputDir := filepath.Join(p.cfg.DataDir, "downloads", task.VideoID)
+		if err := os.MkdirAll(outputDir, 0755); err != nil {
+			_ = p.client.UpdateTaskStatus(p.config, task.RecordID, "failed", err.Error(), "")
+			return
+		}
 		cookiesPath = filepath.Join(outputDir, "cookies.txt")
 		if err := p.saveCookiesToFile(task.Cookies, cookiesPath); err != nil {
-			log.Printf("❌ 保存 cookies 失败: %v", err)
-		} else {
-			log.Printf("✅ Cookies 已保存到: %s", cookiesPath)
+			log.Printf("⚠️ 保存任务 cookies 失败，将使用全局 cookies: %v", err)
+			cookiesPath = ""
 		}
 	}
-
-	// Step 1: 下载视频
-	log.Println("\n📥 Step 1: 下载视频...")
-	result, err := download.Video(task.URL, outputDir, "en", cookiesPath)
-	if err != nil {
-		log.Printf("❌ 下载失败: %v", err)
-		p.client.UpdateTaskStatus(p.config, task.RecordID, "failed", "下载失败: "+err.Error(), "")
-		return
-	}
-	log.Printf("✅ 下载完成: %s", result.VideoPath)
-
-	// 更新状态为 transcribing
-	p.client.UpdateTaskStatus(p.config, task.RecordID, "transcribing", "", "")
-
-	// Step 2: 语音转录
-	log.Println("\n🎙️ Step 2: 语音转录...")
-		// Extract a stable videoID from the URL to align subtitle filenames with BuildSubtitleCandidates
-	videoID := extractVideoID(task.URL)
-	if videoID == "" {
-		videoID = task.RecordID
-	}
-	srtPath, err := transcriber.BcutASR(result.VideoPath, outputDir, videoID)
-	if err != nil {
-		log.Printf("❌ 转录失败: %v", err)
-		p.client.UpdateTaskStatus(p.config, task.RecordID, "failed", "转录失败: "+err.Error(), "")
-		return
-	}
-	log.Printf("✅ 转录完成: %s", srtPath)
-
-	// 更新状态为 translating
-	p.client.UpdateTaskStatus(p.config, task.RecordID, "translating", "", "")
-
-	// Step 3: 翻译字幕
-	log.Println("\n🔤 Step 3: 翻译字幕...")
-	trans := translator.New(translator.Config{
-		APIKey:     p.cfg.LLMAPIKey,
-		BaseURL:    p.cfg.LLMBaseURL,
-		Model:      p.cfg.LLMModel,
-		SourceLang: "en",
-		TargetLang: "zh",
-		BatchSize:  25,
-		MaxWorkers: 3,
+	processor := &pipeline.Processor{Config: p.cfg, Reporter: func(event pipeline.Event) {
+		status := event.Step
+		errMsg := ""
+		if event.Err != nil {
+			status, errMsg = "failed", event.Err.Error()
+		}
+		if err := p.client.UpdateTaskStatus(p.config, task.RecordID, status, errMsg, ""); err != nil {
+			log.Printf("⚠️ 更新任务状态失败: %v", err)
+		}
+	}}
+	result, err := processor.Process(ctx, pipeline.Request{
+		URL: task.URL, SourceLang: "en", TargetLang: "zh", Source: "bitable",
+		CookiesPath: cookiesPath, Chain: []string{"translate"}, DryRun: true,
 	})
-
-	zhSrtPath := outputDir + "/subtitle.zh.srt"
-	err = trans.TranslateSRTFile(context.Background(), srtPath, zhSrtPath)
 	if err != nil {
-		log.Printf("❌ 翻译失败: %v", err)
-		p.client.UpdateTaskStatus(p.config, task.RecordID, "failed", "翻译失败: "+err.Error(), "")
+		_ = p.client.UpdateTaskStatus(p.config, task.RecordID, "failed", err.Error(), "")
 		return
 	}
-	log.Printf("✅ 翻译完成: %s", zhSrtPath)
-
-	// 完成
-	log.Println()
-	log.Println(strings.Repeat("━", 60))
-	log.Println("✅ 视频处理完成！")
-	log.Printf("   📁 输出目录: %s", outputDir)
-	log.Printf("   🎬 视频: %s", result.VideoPath)
-	log.Printf("   📝 英文字幕: %s", srtPath)
-	log.Printf("   📝 中文字幕: %s", zhSrtPath)
-	log.Println(strings.Repeat("━", 60))
-
-	// 更新状态为 completed
-	if err := p.client.UpdateTaskStatus(p.config, task.RecordID, "completed", "", ""); err != nil {
+	if err := p.client.UpdateTaskStatus(p.config, task.RecordID, "completed", "", result.BVID); err != nil {
 		log.Printf("❌ 更新状态失败: %v", err)
 	}
 }
@@ -185,18 +123,18 @@ func (p *BitableProcessor) saveCookiesToFile(cookiesJSON string, filePath string
 	// 1. Chrome 扩展格式: expirationDate (camelCase)
 	// 2. 旧格式: expire (lowercase)
 	var cookies []struct {
-		Name            string  `json:"name"`
-		Value           string  `json:"value"`
-		Domain          string  `json:"domain"`
-		Path            string  `json:"path"`
-		Expire          int64   `json:"expire"`
-		ExpirationDate  float64 `json:"expirationDate"`
-		HttpOnly        bool    `json:"httpOnly"`
-		Secure          bool    `json:"secure"`
-		SameSite        string  `json:"sameSite"`
-		Session         bool    `json:"session"`
-		StoreID         string  `json:"storeId"`
-		HostOnly        bool    `json:"hostOnly"`
+		Name           string  `json:"name"`
+		Value          string  `json:"value"`
+		Domain         string  `json:"domain"`
+		Path           string  `json:"path"`
+		Expire         int64   `json:"expire"`
+		ExpirationDate float64 `json:"expirationDate"`
+		HttpOnly       bool    `json:"httpOnly"`
+		Secure         bool    `json:"secure"`
+		SameSite       string  `json:"sameSite"`
+		Session        bool    `json:"session"`
+		StoreID        string  `json:"storeId"`
+		HostOnly       bool    `json:"hostOnly"`
 	}
 
 	if err := json.Unmarshal([]byte(cookiesJSON), &cookies); err != nil {
@@ -239,5 +177,5 @@ func (p *BitableProcessor) saveCookiesToFile(cookiesJSON string, filePath string
 		))
 	}
 
-	return os.WriteFile(filePath, []byte(sb.String()), 0644)
+	return os.WriteFile(filePath, []byte(sb.String()), 0600)
 }
