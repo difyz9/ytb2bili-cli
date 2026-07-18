@@ -20,6 +20,7 @@ import (
 	"github.com/zolagz/ytb2bili-go/internal/config"
 	"github.com/zolagz/ytb2bili-go/internal/download"
 	"github.com/zolagz/ytb2bili-go/internal/metadata"
+	"github.com/zolagz/ytb2bili-go/internal/queue"
 	"github.com/zolagz/ytb2bili-go/internal/search"
 	"github.com/zolagz/ytb2bili-go/internal/server"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
@@ -47,6 +48,7 @@ func commands(cfg *config.Config) []*cli.Command {
 		submitCommand(cfg),
 		taskCommand(cfg),
 		channelCommand(cfg),
+		queueCommand(cfg),
 		serverCommand(cfg), // 保留但 Hidden=true
 		debugCommand(cfg),
 		subtitleCommand(cfg),
@@ -672,160 +674,17 @@ func submitCommand(cfg *config.Config) *cli.Command {
 				return fmt.Errorf("请输入 YouTube URL")
 			}
 
-			// 去重检查
-			videoID := extractYouTubeID(url)
-			history := storage.NewHistoryStore(filepath.Join(cfg.DataDir, "history"))
-			if videoID != "" && history.IsSubmitted(videoID) {
-				submitted := history.GetSubmitted(videoID)
-				msg := fmt.Sprintf("⚠️  该视频已提交过\n   B站链接: https://www.bilibili.com/video/%s\n   提交时间: %s",
-					submitted.BVID, submitted.SubmittedAt[:19])
-				if submitted.Title != "" {
-					msg = fmt.Sprintf("⚠️  该视频已提交过: %s\n   B站链接: https://www.bilibili.com/video/%s\n   提交时间: %s",
-						submitted.Title, submitted.BVID, submitted.SubmittedAt[:19])
-				}
-				return fmt.Errorf(msg)
+			opts := &submitOptions{
+				SourceLang:    c.String("source-lang"),
+				TargetLang:    c.String("target-lang"),
+				Tid:           c.Int("tid"),
+				DryRun:        c.Bool("dry-run"),
+				SkipTranslate: c.Bool("skip-translate"),
+				Source:        "manual",
 			}
 
-			taskDir := filepath.Join(cfg.DataDir, "tasks")
-			credDir := filepath.Join(cfg.DataDir, "cookies")
-			ts := storage.NewTaskStore(taskDir)
-			cs := storage.NewCredentialStore(credDir)
-
-			task := ts.Create(url)
-			id := task.ID
-			fmt.Printf("\n📋 任务 %s: %s\n", id, url)
-
-			totalStart := time.Now()
-
-			// Step 1: Download
-			ts.UpdateStep(id, "download", "running")
-			fmt.Print("\n⬇️ [1/5] 下载视频... ")
-			dlDir := filepath.Join(cfg.DataDir, "downloads", id)
-			cookiesPath := cfg.YouTubeCookies
-			if cookiesPath == "" {
-				cookiesPath = filepath.Join(cfg.DataDir, "youtube_cookies.txt")
-			}
-			result, err := download.Video(url, dlDir, c.String("source-lang"), cookiesPath)
-			if err != nil {
-				ts.UpdateStep(id, "download", "failed", err.Error())
-				return fmt.Errorf("下载失败: %w", err)
-			}
-			ts.UpdateStep(id, "download", "completed")
-			fmt.Printf("✅ %s\n", filepath.Base(result.VideoPath))
-
-			// Step 2: Transcribe
-			ts.UpdateStep(id, "transcribe", "running")
-			srtPath := result.SubtitlePath
-			if srtPath == "" {
-				fmt.Print("🎙️ [2/5] Bcut 语音转字幕... ")
-				srtPath, err = transcriber.BcutASR(result.VideoPath, dlDir, id)
-				if err != nil {
-					ts.UpdateStep(id, "transcribe", "failed", err.Error())
-					return fmt.Errorf("转写失败: %w", err)
-				}
-				fmt.Println("✅")
-			} else {
-				fmt.Printf("📝 [2/5] 已有字幕: %s\n", filepath.Base(srtPath))
-			}
-			ts.UpdateStep(id, "transcribe", "completed")
-
-			// Step 3: Translate
-			if !c.Bool("skip-translate") {
-				ts.UpdateStep(id, "translate", "running")
-				fmt.Printf("🌐 [3/5] AI 翻译 (%s→%s)... ", c.String("source-lang"), c.String("target-lang"))
-				_, err = translator.SRT(srtPath, c.String("source-lang"), c.String("target-lang"), cfg)
-				if err != nil {
-					ts.UpdateStep(id, "translate", "failed", err.Error())
-					return fmt.Errorf("翻译失败: %w", err)
-				}
-				fmt.Println("✅")
-				ts.UpdateStep(id, "translate", "completed")
-			}
-
-			// Step 4: Metadata
-			ts.UpdateStep(id, "metadata", "running")
-			fmt.Print("🤖 [4/5] AI 生成元数据... ")
-			meta, err := metadata.Generate(result.Info, cfg)
-			if err != nil {
-				// Non-fatal
-				meta = &metadata.VideoMeta{Title: result.Info.Title}
-				fmt.Println("⚠ (回退到原始标题)")
-			} else {
-				fmt.Printf("✅ %s\n", meta.Title)
-			}
-			ts.UpdateStep(id, "metadata", "completed")
-			task.Title = meta.Title
-
-			// Step 5: Upload
-			if c.Bool("dry-run") {
-				fmt.Print("⏭️ [5/5] 跳过上传 (--dry-run)\n")
-				task.Status = "completed"
-				elapsed := time.Since(totalStart).Seconds()
-				fmt.Printf("\n✨ 处理完成! 耗时: %.0fs\n", elapsed)
-				return nil
-			}
-
-			ts.UpdateStep(id, "upload", "running")
-			fmt.Print("📤 [5/5] 上传到 B站... ")
-
-			// Load credential
-			var cred auth.LoginInfo
-			if err := cs.Load(&cred); err != nil {
-				ts.UpdateStep(id, "upload", "failed", "未登录")
-				return fmt.Errorf("请先登录: ytb2bili login")
-			}
-
-			bvid, err := bili.Upload(&cred, &bili.UploadParams{
-				VideoPath: result.VideoPath,
-				Title:     meta.Title,
-				Desc:      meta.Description,
-				Tags:      meta.Tags,
-				Source:    url,
-				Tid:       c.Int("tid"),
-				CoverPath: result.CoverPath,
-			})
-			if err != nil {
-				ts.UpdateStep(id, "upload", "failed", err.Error())
-				return fmt.Errorf("上传失败: %w", err)
-			}
-
-			task.BVID = bvid
-			task.Status = "completed"
-			ts.SetBVID(id, bvid)
-			ts.SetCompleted(id)
-			ts.UpdateStep(id, "upload", "completed")
-			fmt.Printf("✅ https://www.bilibili.com/video/%s\n", bvid)
-
-			// 记录到历史
-			history.Add(&storage.SubmittedVideo{
-				YouTubeID: extractYouTubeID(url),
-				BVID:      bvid,
-				Title:     meta.Title,
-				Channel:   "",
-			})
-
-			// 同步字幕追踪状态
-			subStore := storage.NewSubtitleStore(filepath.Join(cfg.DataDir, "subtitles"))
-			tracks, err := subStore.SyncFromDownload(id, bvid, dlDir)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "  ⚠ 同步字幕追踪失败: %v\n", err)
-			}
-
-			// 检查找到的字幕并提示
-			pendingCount := 0
-			for _, t := range tracks {
-				if t.Status == storage.SubtitleStatusPending {
-					pendingCount++
-				}
-			}
-			if pendingCount > 0 {
-				fmt.Printf("  📝 找到 %d 个字幕文件待上传\n", pendingCount)
-				fmt.Printf("  💡 审核通过后执行: ytb subtitle retry %s\n", bvid)
-			}
-
-			elapsed := time.Since(totalStart).Seconds()
-			fmt.Printf("\n✨ 总耗时: %.0fs\n", elapsed)
-			return nil
+			_, err := submitPipeline(url, cfg, opts)
+			return err
 		},
 	}
 }
@@ -1724,4 +1583,429 @@ func formatDuration(seconds int) string {
 		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
 	}
 	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+// ─── submitPipeline ───────────────────────────────────────────────────────────────
+// 可复用的提交流水线，被 submit 命令和 queue work 共享
+
+type submitOptions struct {
+	SourceLang    string
+	TargetLang    string
+	Tid           int
+	DryRun        bool
+	SkipTranslate bool
+	Source        string // 来源标识（manual, channel-sync, ghibli）
+}
+
+// submitPipeline 执行完整提交流水线：下载→转录→翻译→元数据→上传→记录
+// 返回 bvid 和可能的错误
+func submitPipeline(url string, cfg *config.Config, opts *submitOptions) (bvid string, err error) {
+	videoID := extractYouTubeID(url)
+	history := storage.NewHistoryStore(filepath.Join(cfg.DataDir, "history"))
+	if videoID != "" && history.IsSubmitted(videoID) {
+		submitted := history.GetSubmitted(videoID)
+		msg := fmt.Sprintf("⚠️  该视频已提交过\n   B站链接: https://www.bilibili.com/video/%s\n   提交时间: %s",
+			submitted.BVID, submitted.SubmittedAt[:19])
+		if submitted.Title != "" {
+			msg = fmt.Sprintf("⚠️  该视频已提交过: %s\n   B站链接: https://www.bilibili.com/video/%s\n   提交时间: %s",
+				submitted.Title, submitted.BVID, submitted.SubmittedAt[:19])
+		}
+		return "", fmt.Errorf(msg)
+	}
+
+	taskDir := filepath.Join(cfg.DataDir, "tasks")
+	credDir := filepath.Join(cfg.DataDir, "cookies")
+	ts := storage.NewTaskStore(taskDir)
+	cs := storage.NewCredentialStore(credDir)
+
+	task := ts.Create(url)
+	id := task.ID
+	fmt.Printf("\n📋 任务 %s: %s\n", id, url)
+
+	totalStart := time.Now()
+
+	// Step 1: Download
+	ts.UpdateStep(id, "download", "running")
+	fmt.Print("\n⬇️ [1/5] 下载视频... ")
+	dlDir := filepath.Join(cfg.DataDir, "downloads", id)
+	cookiesPath := cfg.YouTubeCookies
+	if cookiesPath == "" {
+		cookiesPath = filepath.Join(cfg.DataDir, "youtube_cookies.txt")
+	}
+	result, dlErr := download.Video(url, dlDir, opts.SourceLang, cookiesPath)
+	if dlErr != nil {
+		ts.UpdateStep(id, "download", "failed", dlErr.Error())
+		return "", fmt.Errorf("下载失败: %w", dlErr)
+	}
+	ts.UpdateStep(id, "download", "completed")
+	fmt.Printf("✅ %s\n", filepath.Base(result.VideoPath))
+
+	// Step 2: Transcribe
+	ts.UpdateStep(id, "transcribe", "running")
+	srtPath := result.SubtitlePath
+	if srtPath == "" {
+		fmt.Print("🎙️ [2/5] Bcut 语音转字幕... ")
+		srtPath, dlErr = transcriber.BcutASR(result.VideoPath, dlDir, id)
+		if dlErr != nil {
+			ts.UpdateStep(id, "transcribe", "failed", dlErr.Error())
+			return "", fmt.Errorf("转写失败: %w", dlErr)
+		}
+		fmt.Println("✅")
+	} else {
+		fmt.Printf("📝 [2/5] 已有字幕: %s\n", filepath.Base(srtPath))
+	}
+	ts.UpdateStep(id, "transcribe", "completed")
+
+	// Step 3: Translate
+	if !opts.SkipTranslate {
+		ts.UpdateStep(id, "translate", "running")
+		fmt.Printf("🌐 [3/5] AI 翻译 (%s→%s)... ", opts.SourceLang, opts.TargetLang)
+		_, translateErr := translator.SRT(srtPath, opts.SourceLang, opts.TargetLang, cfg)
+		if translateErr != nil {
+			ts.UpdateStep(id, "translate", "failed", translateErr.Error())
+			return "", fmt.Errorf("翻译失败: %w", translateErr)
+		}
+		fmt.Println("✅")
+		ts.UpdateStep(id, "translate", "completed")
+	}
+
+	// Step 4: Metadata
+	ts.UpdateStep(id, "metadata", "running")
+	fmt.Print("🤖 [4/5] AI 生成元数据... ")
+	meta, metaErr := metadata.Generate(result.Info, cfg)
+	if metaErr != nil {
+		meta = &metadata.VideoMeta{Title: result.Info.Title}
+		fmt.Println("⚠ (回退到原始标题)")
+	} else {
+		fmt.Printf("✅ %s\n", meta.Title)
+	}
+	ts.UpdateStep(id, "metadata", "completed")
+	task.Title = meta.Title
+
+	// Step 5: Upload
+	if opts.DryRun {
+		fmt.Print("⏭️ [5/5] 跳过上传 (--dry-run)\n")
+		elapsed := time.Since(totalStart).Seconds()
+		fmt.Printf("\n✨ 处理完成! 耗时: %.0fs\n", elapsed)
+		return "", nil
+	}
+
+	ts.UpdateStep(id, "upload", "running")
+	fmt.Print("📤 [5/5] 上传到 B站... ")
+
+	var cred auth.LoginInfo
+	if err := cs.Load(&cred); err != nil {
+		ts.UpdateStep(id, "upload", "failed", "未登录")
+		return "", fmt.Errorf("请先登录: ytb2bili login")
+	}
+
+	newBVID, uploadErr := bili.Upload(&cred, &bili.UploadParams{
+		VideoPath: result.VideoPath,
+		Title:     meta.Title,
+		Desc:      meta.Description,
+		Tags:      meta.Tags,
+		Source:    url,
+		Tid:       opts.Tid,
+		CoverPath: result.CoverPath,
+	})
+	if uploadErr != nil {
+		ts.UpdateStep(id, "upload", "failed", uploadErr.Error())
+		return "", fmt.Errorf("上传失败: %w", uploadErr)
+	}
+
+	bvid = newBVID
+	task.BVID = bvid
+	task.Status = "completed"
+	ts.SetBVID(id, bvid)
+	ts.SetCompleted(id)
+	ts.UpdateStep(id, "upload", "completed")
+	fmt.Printf("✅ https://www.bilibili.com/video/%s\n", bvid)
+
+	// 记录到历史
+	history.Add(&storage.SubmittedVideo{
+		YouTubeID: extractYouTubeID(url),
+		BVID:      bvid,
+		Title:     meta.Title,
+		Channel:   opts.Source,
+	})
+
+	// 同步字幕追踪状态
+	subStore := storage.NewSubtitleStore(filepath.Join(cfg.DataDir, "subtitles"))
+	tracks, syncErr := subStore.SyncFromDownload(id, bvid, dlDir)
+	if syncErr != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠ 同步字幕追踪失败: %v\n", syncErr)
+	}
+
+	pendingCount := 0
+	for _, t := range tracks {
+		if t.Status == storage.SubtitleStatusPending {
+			pendingCount++
+		}
+	}
+	if pendingCount > 0 {
+		fmt.Printf("  📝 找到 %d 个字幕文件待上传\n", pendingCount)
+		fmt.Printf("  💡 审核通过后执行: ytb subtitle retry %s\n", bvid)
+	}
+
+	elapsed := time.Since(totalStart).Seconds()
+	fmt.Printf("\n✨ 总耗时: %.0fs\n", elapsed)
+	return bvid, nil
+}
+
+// ─── Queue ─────────────────────────────────────────────────────────────────────
+
+func queueCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:  "queue",
+		Usage: "作业队列管理（集中式状态机，防重复、防竞态）",
+		Subcommands: []*cli.Command{
+			{
+				Name:      "add",
+				Usage:     "添加视频到队列（幂等：已存在则忽略）",
+				ArgsUsage: "<YouTube URL>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "source", Value: "manual", Usage: "来源标识 (manual, channel-sync, ghibli)"},
+				},
+				Action: func(c *cli.Context) error {
+					url := c.Args().First()
+					if url == "" {
+						return fmt.Errorf("请输入 YouTube URL")
+					}
+					videoID := queue.ExtractVideoID(url)
+					if videoID == "" {
+						return fmt.Errorf("无法从 URL 中提取视频 ID: %s", url)
+					}
+					q := queue.New(cfg.DataDir)
+					added, err := q.Add(videoID, url, "", "", c.String("source"))
+					if err != nil {
+						return fmt.Errorf("添加失败: %w", err)
+					}
+					if added {
+						fmt.Printf("✅ 已加入队列: %s\n", url)
+					} else {
+						fmt.Printf("⏭️ 已在队列中: %s\n", url)
+					}
+					return nil
+				},
+			},
+			{
+				Name:  "status",
+				Usage: "查看队列状态",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "status", Usage: "按状态过滤 (queued, claimed, completed, failed, skipped)"},
+				},
+				Action: func(c *cli.Context) error {
+					q := queue.New(cfg.DataDir)
+
+					if statusFilter := c.String("status"); statusFilter != "" {
+						if !queue.IsValidStatus(statusFilter) {
+							return fmt.Errorf("无效状态: %s（有效值: queued, claimed, completed, failed, skipped）", statusFilter)
+						}
+						data, err := q.Status()
+						if err != nil {
+							return err
+						}
+						var filtered []queue.Video
+						for _, v := range data.Videos {
+							if v.Status == statusFilter {
+								filtered = append(filtered, v)
+							}
+						}
+						fmt.Printf("📊 队列状态 [%s]: %d 个\n", statusFilter, len(filtered))
+						for _, v := range filtered {
+							fmt.Printf("  %s | %s\n", v.Status, v.Title)
+							if len(v.Title) > 50 {
+								v.Title = v.Title[:50] + "..."
+							}
+							fmt.Printf("    URL: %s\n", v.URL)
+							if v.BVID != "" {
+								fmt.Printf("    B站: https://www.bilibili.com/video/%s\n", v.BVID)
+							}
+							if v.Error != "" {
+								fmt.Printf("    错误: %s\n", v.Error)
+							}
+							fmt.Println()
+						}
+						return nil
+					}
+
+					stats := q.Stats()
+					fmt.Printf("📊 队列统计:\n")
+					fmt.Printf("   总任务:  %d\n", stats["total"])
+					fmt.Printf("   ⏳ 排队中: %d\n", stats["queued"])
+					fmt.Printf("   🔄 处理中: %d\n", stats["claimed"])
+					fmt.Printf("   ✅ 已完成: %d\n", stats["completed"])
+					fmt.Printf("   ❌ 已失败: %d\n", stats["failed"])
+					fmt.Printf("   ⏭️ 已跳过: %d\n", stats["skipped"])
+					return nil
+				},
+			},
+			{
+				Name:  "next",
+				Usage: "取出下一个可用的视频（queued → claimed）",
+				Action: func(c *cli.Context) error {
+					q := queue.New(cfg.DataDir)
+					workerID := queue.WorkerID()
+					video, err := q.Next(workerID)
+					if err != nil {
+						return fmt.Errorf("取出失败: %w", err)
+					}
+					if video == nil {
+						fmt.Println("📭 队列中没有待处理视频")
+						return nil
+					}
+					// JSON 输出，方便脚本解析
+					fmt.Println(video.URL)
+					return nil
+				},
+			},
+			{
+				Name:      "complete",
+				Usage:     "标记视频处理成功（claimed → completed）",
+				ArgsUsage: "<video_id> <bvid>",
+				Action: func(c *cli.Context) error {
+					videoID := c.Args().Get(0)
+					bvid := c.Args().Get(1)
+					if videoID == "" || bvid == "" {
+						return fmt.Errorf("用法: ytb queue complete <video_id> <bvid>")
+					}
+					q := queue.New(cfg.DataDir)
+					if err := q.Complete(videoID, bvid); err != nil {
+						return fmt.Errorf("标记完成失败: %w", err)
+					}
+					fmt.Printf("✅ %s 已完成 (BVID: %s)\n", videoID, bvid)
+					return nil
+				},
+			},
+			{
+				Name:      "fail",
+				Usage:     "标记视频处理失败（claimed → failed 或自动重试）",
+				ArgsUsage: "<video_id> <error_message>",
+				Action: func(c *cli.Context) error {
+					videoID := c.Args().Get(0)
+					errMsg := c.Args().Get(1)
+					if videoID == "" {
+						return fmt.Errorf("用法: ytb queue fail <video_id> <error_message>")
+					}
+					q := queue.New(cfg.DataDir)
+					if err := q.Fail(videoID, errMsg); err != nil {
+						return fmt.Errorf("标记失败时出错: %w", err)
+					}
+					// 检查是否已重试到上限
+					v, _ := q.GetByID(videoID)
+					if v != nil && v.Status == queue.StatusFailed {
+						fmt.Printf("❌ %s 已失败（已达最大重试次数 %d）\n", videoID, v.MaxRetries)
+					} else if v != nil {
+						fmt.Printf("🔄 %s 已失败，将自动重试 (第 %d/%d 次)\n", videoID, v.RetryCount, v.MaxRetries)
+					}
+					return nil
+				},
+			},
+			{
+				Name:      "reset",
+				Usage:     "重置视频状态为 queued（用于修复后重新处理）",
+				ArgsUsage: "<video_id>",
+				Action: func(c *cli.Context) error {
+					videoID := c.Args().First()
+					if videoID == "" {
+						return fmt.Errorf("用法: ytb queue reset <video_id>")
+					}
+					q := queue.New(cfg.DataDir)
+					if err := q.Reset(videoID); err != nil {
+						return fmt.Errorf("重置失败: %w", err)
+					}
+					fmt.Printf("🔄 %s 已重置为 queued\n", videoID)
+					return nil
+				},
+			},
+			{
+				Name:  "work",
+				Usage: "启动工作进程：自动取队列 → 提交 → 标记完成/失败",
+				Description: `持续从队列中取视频执行提交流水线。
+每次取一个视频，完成后自动取下一个。
+空闲时每 30 秒重试。支持 --once 单次模式。
+
+死锁检测：claimed 超过 30 分钟自动回退到 queued 重新处理。`,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "once", Usage: "只处理一个视频后退出"},
+					&cli.BoolFlag{Name: "skip-translate", Usage: "跳过翻译"},
+					&cli.IntFlag{Name: "tid", Value: cfg.BiliTid, Usage: "B站分区ID"},
+					&cli.StringFlag{Name: "source-lang", Value: "en", Usage: "源语言"},
+					&cli.StringFlag{Name: "target-lang", Value: "zh", Usage: "目标语言"},
+					&cli.IntFlag{Name: "poll-interval", Value: 30, Usage: "空闲时轮询间隔（秒）"},
+				},
+				Action: func(c *cli.Context) error {
+					q := queue.New(cfg.DataDir)
+					workerID := queue.WorkerID()
+					pollInterval := c.Int("poll-interval")
+					once := c.Bool("once")
+
+					opts := &submitOptions{
+						SourceLang:    c.String("source-lang"),
+						TargetLang:    c.String("target-lang"),
+						Tid:           c.Int("tid"),
+						SkipTranslate: c.Bool("skip-translate"),
+					}
+
+					fmt.Printf("🚀 工作进程启动 (Worker: %s)\n", workerID)
+					if once {
+						fmt.Println("   模式: 单次运行")
+					} else {
+						fmt.Printf("   轮询间隔: %ds\n", pollInterval)
+					}
+
+					processed := 0
+					for {
+						video, err := q.Next(workerID)
+						if err != nil {
+							fmt.Fprintf(os.Stderr, "⚠ 取出视频失败: %v\n", err)
+							if once {
+								return err
+							}
+							time.Sleep(time.Duration(pollInterval) * time.Second)
+							continue
+						}
+						if video == nil {
+							if once && processed == 0 {
+								fmt.Println("📭 队列为空")
+								return nil
+							}
+							if once {
+								break
+							}
+							time.Sleep(time.Duration(pollInterval) * time.Second)
+							continue
+						}
+
+						processed++
+						fmt.Printf("\n═══════════════════════════════════════\n")
+						fmt.Printf("📦 [%s] 开始处理: %s\n", video.VideoID, video.Title)
+						fmt.Printf("═══════════════════════════════════════\n")
+
+						bvid, submitErr := submitPipeline(video.URL, cfg, opts)
+
+						if submitErr != nil {
+							errMsg := submitErr.Error()
+							fmt.Fprintf(os.Stderr, "❌ 处理失败: %s\n", errMsg)
+							if fErr := q.Fail(video.VideoID, errMsg); fErr != nil {
+								fmt.Fprintf(os.Stderr, "⚠ 标记失败时出错: %v\n", fErr)
+							}
+						} else {
+							if cErr := q.Complete(video.VideoID, bvid); cErr != nil {
+								fmt.Fprintf(os.Stderr, "⚠ 标记完成时出错: %v\n", cErr)
+							}
+							fmt.Printf("\n✅ 处理完成: https://www.bilibili.com/video/%s\n", bvid)
+						}
+
+						if once {
+							break
+						}
+					}
+
+					fmt.Printf("\n📊 本轮处理了 %d 个视频\n", processed)
+					return nil
+				},
+			},
+		},
+	}
 }
