@@ -34,7 +34,7 @@ type DiscoveredVideo struct {
 	URL          string `json:"url"`
 	PublishedAt  string `json:"published_at"`
 	DiscoveredAt string `json:"discovered_at"`
-	Status       string `json:"status"` // new / submitted / skipped
+	Status       string `json:"status"` // new / queued / submitted / skipped
 }
 
 // YouTubeFeed RSS feed 结构

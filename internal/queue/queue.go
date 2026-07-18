@@ -1,0 +1,513 @@
+// Package queue 提供集中式作业队列，所有视频状态通过 Unified State Machine 管理。
+//
+// 状态机：
+//
+//	discovered → queued → claimed → completed
+//	                           ↘ failed → (重试 ≤3) → queued
+//	                                              → completed (最终失败)
+//
+// 设计原则：
+//   - 幂等：同一 video_id 多次入队 = 1 次
+//   - 原子：状态转移使用 flock + 临时文件 + rename，保证 crash-safe
+//   - 死锁检测：claimed 超过 30 分钟自动回退到 queued
+//   - 重试上限：默认 3 次，超过标记为 failed
+package queue
+
+import (
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// ─── 状态常量 ──────────────────────────────────────────────────────────────────
+
+const (
+	StatusDiscovered = "discovered" // RSS 发现
+	StatusQueued     = "queued"     // 等待处理
+	StatusClaimed    = "claimed"    // 正在处理中
+	StatusCompleted  = "completed"  // 处理成功
+	StatusFailed     = "failed"     // 处理失败（可重试直到上限）
+	StatusSkipped    = "skipped"    // 手动跳过
+
+	DefaultMaxRetries = 3
+	ClaimTimeout      = 30 * time.Minute // claimed 超时自动回退
+)
+
+// ─── 数据结构 ──────────────────────────────────────────────────────────────────
+
+// Video 表示队列中的一个视频
+type Video struct {
+	VideoID    string `json:"video_id"`
+	URL        string `json:"url"`
+	Title      string `json:"title,omitempty"`
+	ChannelID  string `json:"channel_id,omitempty"`
+	Source     string `json:"source"`               // "channel-sync", "ghibli", "manual"
+	Status     string `json:"status"`                // 当前状态
+	ClaimedBy  string `json:"claimed_by,omitempty"`  // 处理者标识
+	ClaimedAt  string `json:"claimed_at,omitempty"`  // 处理开始时间
+	RetryCount int    `json:"retry_count"`            // 当前重试次数
+	MaxRetries int    `json:"max_retries"`            // 最大重试次数
+	Error      string `json:"error,omitempty"`        // 最后错误信息
+	BVID       string `json:"bvid,omitempty"`         // B站视频ID
+	DiscoveredAt string `json:"discovered_at"`        // 发现时间
+	UpdatedAt  string `json:"updated_at"`             // 最后更新时间
+}
+
+// QueueData 队列文件的顶层结构
+type QueueData struct {
+	Version int     `json:"version"`
+	Videos  []Video `json:"videos"`
+}
+
+// Queue 队列管理器
+type Queue struct {
+	path string // queue.json 的完整路径
+	mu   sync.Mutex
+}
+
+// ─── 构造 ──────────────────────────────────────────────────────────────────────
+
+// New 创建或打开队列。dir 是 data 目录路径。
+func New(dir string) *Queue {
+	qDir := filepath.Join(dir, "queue")
+	os.MkdirAll(qDir, 0755)
+	return &Queue{
+		path: filepath.Join(qDir, "queue.json"),
+	}
+}
+
+// ─── 锁定 ──────────────────────────────────────────────────────────────────────
+
+// lock 获取文件级独占锁（flock LOCK_EX），返回文件句柄
+func (q *Queue) lock() (*os.File, error) {
+	f, err := os.OpenFile(q.path, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("打开队列文件失败: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("锁定队列失败: %w", err)
+	}
+	return f, nil
+}
+
+// unlock 释放文件锁
+func unlock(f *os.File) {
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	f.Close()
+}
+
+// ─── 读写（原子操作） ───────────────────────────────────────────────────────────
+
+// readAll 读取完整队列数据（调用方需持有锁）
+func (q *Queue) readAll(f *os.File) (*QueueData, error) {
+	f.Seek(0, 0)
+	var data QueueData
+	if err := json.NewDecoder(f).Decode(&data); err != nil {
+		// 空文件或损坏 → 返回默认
+		data.Version = 1
+		data.Videos = nil
+	}
+	if data.Version == 0 {
+		data.Version = 1
+	}
+	if data.Videos == nil {
+		data.Videos = []Video{}
+	}
+	return &data, nil
+}
+
+// writeAll 原子写入队列数据（临时文件 + rename）
+func (q *Queue) writeAll(data *QueueData) error {
+	dir := filepath.Dir(q.path)
+	tmpPath := filepath.Join(dir, fmt.Sprintf(".queue.%d.tmp", rand.Int63()))
+	tmp, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("创建临时文件失败: %w", err)
+	}
+	enc := json.NewEncoder(tmp)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("编码队列失败: %w", err)
+	}
+	tmp.Close()
+	if err := os.Rename(tmpPath, q.path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("写入队列失败: %w", err)
+	}
+	return nil
+}
+
+// ─── 核心操作 ──────────────────────────────────────────────────────────────────
+
+// Add 添加视频到队列（幂等：同一 video_id 已存在或已提交则忽略）
+// url 格式：https://www.youtube.com/watch?v=VIDEO_ID
+// source 标识来源（channel-sync, ghibli, manual）
+func (q *Queue) Add(videoID, url, title, channelID, source string) (bool, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return false, err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll(f)
+	if err != nil {
+		return false, err
+	}
+
+	// 幂等检查：已在队列中
+	for _, v := range data.Videos {
+		if v.VideoID == videoID {
+			return false, nil // 已存在，不重复添加
+		}
+	}
+
+	// 三层防重复：检查 history.json
+	if isInHistory(videoID, q.path) {
+		return false, nil
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	video := Video{
+		VideoID:     videoID,
+		URL:         url,
+		Title:       title,
+		ChannelID:   channelID,
+		Source:      source,
+		Status:      StatusQueued,
+		MaxRetries:  DefaultMaxRetries,
+		DiscoveredAt: now,
+		UpdatedAt:   now,
+	}
+	data.Videos = append(data.Videos, video)
+
+	if err := q.writeAll(data); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Next 取出下一个可用的视频（queued → claimed）
+// 返回 (video, nil) 或 (nil, ErrNoAvailable)
+// 自动处理死锁：过期 claimed 回退到 queued
+func (q *Queue) Next(workerID string) (*Video, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	changed := false
+
+	// 死锁检测：超时的 claimed → 回退到 queued
+	for i, v := range data.Videos {
+		if v.Status != StatusClaimed {
+			continue
+		}
+		claimedAt, err := time.Parse(time.RFC3339, v.ClaimedAt)
+		if err != nil {
+			continue
+		}
+		if now.Sub(claimedAt) > ClaimTimeout {
+			data.Videos[i].Status = StatusQueued
+			data.Videos[i].ClaimedBy = ""
+			data.Videos[i].ClaimedAt = ""
+			data.Videos[i].UpdatedAt = now.Format(time.RFC3339)
+			changed = true
+		}
+	}
+
+	// 找下一个 queued
+	for i, v := range data.Videos {
+		if v.Status != StatusQueued {
+			continue
+		}
+		data.Videos[i].Status = StatusClaimed
+		data.Videos[i].ClaimedBy = workerID
+		data.Videos[i].ClaimedAt = now.Format(time.RFC3339)
+		data.Videos[i].UpdatedAt = now.Format(time.RFC3339)
+
+		if err := q.writeAll(data); err != nil {
+			return nil, err
+		}
+		return &data.Videos[i], nil
+	}
+
+	// 没有可用的，但如果有 deadlock 修复了，保存
+	if changed {
+		q.writeAll(data)
+	}
+	return nil, nil
+}
+
+// Complete 标记视频处理成功（claimed → completed）
+func (q *Queue) Complete(videoID, bvid string) error {
+	return q.transition(videoID, func(v *Video) (bool, string) {
+		if v.Status != StatusClaimed {
+			return false, fmt.Sprintf("状态不是 claimed (当前: %s)", v.Status)
+		}
+		v.Status = StatusCompleted
+		v.BVID = bvid
+		return true, ""
+	})
+}
+
+// Fail 标记视频处理失败（claimed → failed 或 queued 重试）
+// 自动重试逻辑：retry_count < max_retries → 回到 queued，否则 failed
+func (q *Queue) Fail(videoID, errMsg string) error {
+	return q.transition(videoID, func(v *Video) (bool, string) {
+		if v.Status != StatusClaimed {
+			return false, fmt.Sprintf("状态不是 claimed (当前: %s)", v.Status)
+		}
+		v.RetryCount++
+		v.Error = errMsg
+		if v.RetryCount >= v.MaxRetries {
+			v.Status = StatusFailed
+		} else {
+			v.Status = StatusQueued // 重新排队等待重试
+			v.ClaimedBy = ""
+			v.ClaimedAt = ""
+		}
+		return true, ""
+	})
+}
+
+// Reset 手动将视频重置为 queued（用于人工介入修复后）
+func (q *Queue) Reset(videoID string) error {
+	return q.transition(videoID, func(v *Video) (bool, string) {
+		if v.Status != StatusFailed && v.Status != StatusSkipped {
+			return false, fmt.Sprintf("只能重置 failed/skipped (当前: %s)", v.Status)
+		}
+		v.Status = StatusQueued
+		v.ClaimedBy = ""
+		v.ClaimedAt = ""
+		v.RetryCount = 0
+		v.Error = ""
+		return true, ""
+	})
+}
+
+// Skip 手动跳过视频
+func (q *Queue) Skip(videoID string) error {
+	return q.transition(videoID, func(v *Video) (bool, string) {
+		if v.Status == StatusCompleted || v.Status == StatusSkipped {
+			return false, fmt.Sprintf("无法跳过一个已完成/已跳过的视频")
+		}
+		v.Status = StatusSkipped
+		return true, ""
+	})
+}
+
+// transition 通用状态转移辅助函数
+func (q *Queue) transition(videoID string, fn func(v *Video) (bool, string)) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll(f)
+	if err != nil {
+		return err
+	}
+
+	for i, v := range data.Videos {
+		if v.VideoID != videoID {
+			continue
+		}
+		ok, msg := fn(&data.Videos[i])
+		if !ok {
+			return fmt.Errorf("转移失败: %s", msg)
+		}
+		data.Videos[i].UpdatedAt = time.Now().Format(time.RFC3339)
+		return q.writeAll(data)
+	}
+
+	return fmt.Errorf("视频 %s 不在队列中", videoID)
+}
+
+// ─── 查询 ──────────────────────────────────────────────────────────────────────
+
+// Status 返回队列中的视频列表，按更新时间降序排列
+func (q *Queue) Status() (*QueueData, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	// 按 updated_at 降序
+	sort.Slice(data.Videos, func(i, j int) bool {
+		return data.Videos[i].UpdatedAt > data.Videos[j].UpdatedAt
+	})
+
+	return data, nil
+}
+
+// GetByID 获取单个视频的状态
+func (q *Queue) GetByID(videoID string) (*Video, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll(f)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, v := range data.Videos {
+		if v.VideoID == videoID {
+			return &v, nil
+		}
+	}
+	return nil, fmt.Errorf("视频 %s 不在队列中", videoID)
+}
+
+// Stats 返回队列统计信息
+func (q *Queue) Stats() map[string]int {
+	stats := map[string]int{
+		"queued":    0,
+		"claimed":   0,
+		"completed": 0,
+		"failed":    0,
+		"skipped":   0,
+		"total":     0,
+	}
+
+	data, err := q.Status()
+	if err != nil {
+		return stats
+	}
+
+	for _, v := range data.Videos {
+		stats["total"]++
+		switch v.Status {
+		case StatusQueued:
+			stats["queued"]++
+		case StatusClaimed:
+			stats["claimed"]++
+		case StatusCompleted:
+			stats["completed"]++
+		case StatusFailed:
+			stats["failed"]++
+		case StatusSkipped:
+			stats["skipped"]++
+		}
+	}
+	return stats
+}
+
+// ─── 工具 ──────────────────────────────────────────────────────────────────────
+
+// isInHistory 检查视频是否已经在提交历史中（三层防重复的最后一层）
+func isInHistory(videoID, queuePath string) bool {
+	// history.json 在 data/history/history.json
+	historyPath := filepath.Join(filepath.Dir(filepath.Dir(queuePath)), "history", "history.json")
+	data, err := os.ReadFile(historyPath)
+	if err != nil {
+		return false // 文件不存在或无法读取 = 没有历史
+	}
+	var entries []struct {
+		YouTubeID string `json:"youtube_id"`
+	}
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.YouTubeID == videoID {
+			return true
+		}
+	}
+	return false
+}
+
+// IsValidStatus 检查是否为有效的状态值
+func IsValidStatus(s string) bool {
+	switch s {
+	case StatusDiscovered, StatusQueued, StatusClaimed,
+		StatusCompleted, StatusFailed, StatusSkipped:
+		return true
+	}
+	return false
+}
+
+// ExtractVideoID 从 YouTube URL 中提取 video ID
+func ExtractVideoID(url string) string {
+	// https://www.youtube.com/watch?v=VIDEO_ID
+	if idx := strings.Index(url, "v="); idx >= 0 {
+		id := url[idx+2:]
+		if amp := strings.Index(id, "&"); amp >= 0 {
+			id = id[:amp]
+		}
+		if len(id) == 11 {
+			return id
+		}
+	}
+	// https://youtu.be/VIDEO_ID
+	if strings.Contains(url, "youtu.be/") {
+		parts := strings.Split(url, "/")
+		for _, p := range parts {
+			if len(p) == 11 && !strings.Contains(p, ".") {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+// WorkerID 返回当前进程的唯一标识
+func WorkerID() string {
+	hostname, _ := os.Hostname()
+	if hostname == "" {
+		hostname = "unknown"
+	}
+	return fmt.Sprintf("%s:%d", hostname, os.Getpid())
+}
+
+// FormatDuration 格式化时间差
+func FormatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+}
