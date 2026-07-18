@@ -2,6 +2,7 @@ package download
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,6 +28,10 @@ type VideoInfo struct {
 }
 
 func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) {
+	return VideoContext(context.Background(), url, outputDir, lang, cookiesPath...)
+}
+
+func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath ...string) (*Result, error) {
 	os.MkdirAll(outputDir, 0755)
 
 	// Check yt-dlp
@@ -77,7 +82,7 @@ func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) 
 
 	// Get video info first
 	infoArgs := append(baseArgs, "--dump-json", "--no-download", "--remote-components", "ejs:github", url)
-	infoCmd := exec.Command("yt-dlp", infoArgs...)
+	infoCmd := exec.CommandContext(ctx, "yt-dlp", infoArgs...)
 	infoCmd.Env = env
 	var infoStderr bytes.Buffer
 	infoCmd.Stderr = &infoStderr
@@ -123,7 +128,7 @@ func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) 
 		url,
 	)
 
-	cmd := exec.Command("yt-dlp", args...)
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = env
@@ -157,7 +162,7 @@ func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) 
 	var coverPath string
 	if info.Thumbnail != "" {
 		coverPath = filepath.Join(outputDir, "cover.jpg")
-		coverCmd := exec.Command("curl", "-sL", "-o", coverPath, info.Thumbnail)
+		coverCmd := exec.CommandContext(ctx, "curl", "-sL", "-o", coverPath, info.Thumbnail)
 		if coverCmd.Run() == nil {
 			if fi, err := os.Stat(coverPath); err != nil || fi.Size() == 0 {
 				coverPath = ""

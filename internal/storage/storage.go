@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +48,10 @@ func (s *TaskStore) path(id string) string {
 	return filepath.Join(s.dir, id+".json")
 }
 
+func validTaskID(id string) bool {
+	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, `/\\`)
+}
+
 func randID() string {
 	b := make([]byte, 6)
 	rand.Read(b)
@@ -54,11 +59,20 @@ func randID() string {
 }
 
 func (s *TaskStore) Create(url string) *Task {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	task := s.Prepare("", url)
+	_ = s.Persist(task, nil)
+	return task
+}
+
+// Prepare creates an in-memory task identity without writing it to disk.
+// A caller-provided id allows adapters and the pipeline to share one identity.
+func (s *TaskStore) Prepare(id, url string) *Task {
+	if id == "" {
+		id = randID()
+	}
 	now := time.Now().Format(time.RFC3339)
-	task := &Task{
-		ID:        randID(),
+	return &Task{
+		ID:        id,
 		Status:    "pending",
 		SourceURL: url,
 		CreatedAt: now,
@@ -72,11 +86,32 @@ func (s *TaskStore) Create(url string) *Task {
 		},
 		Result: make(map[string]string),
 	}
-	s.save(task)
-	return task
+
+}
+
+// Persist writes a prepared task after planning. Plan steps are added to the
+// status map so future registered steps do not require a storage migration.
+func (s *TaskStore) Persist(task *Task, plan []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if task == nil || !validTaskID(task.ID) {
+		return fmt.Errorf("invalid task id")
+	}
+	if task.Steps == nil {
+		task.Steps = make(map[string]Step)
+	}
+	for _, name := range plan {
+		if _, ok := task.Steps[name]; !ok {
+			task.Steps[name] = Step{}
+		}
+	}
+	return s.save(task)
 }
 
 func (s *TaskStore) Get(id string) (*Task, error) {
+	if !validTaskID(id) {
+		return nil, fmt.Errorf("invalid task id")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	data, err := os.ReadFile(s.path(id))
@@ -90,10 +125,21 @@ func (s *TaskStore) Get(id string) (*Task, error) {
 	return &t, nil
 }
 
-func (s *TaskStore) save(task *Task) {
+// Delete removes a task record. It is used for read-only planning, which must
+// not leave an executable pending task behind.
+func (s *TaskStore) Delete(id string) error {
+	if !validTaskID(id) {
+		return fmt.Errorf("invalid task id")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return os.Remove(s.path(id))
+}
+
+func (s *TaskStore) save(task *Task) error {
 	task.UpdatedAt = time.Now().Format(time.RFC3339)
 	data, _ := json.MarshalIndent(task, "", "  ")
-	os.WriteFile(s.path(task.ID), data, 0644)
+	return atomicWriteFile(s.path(task.ID), data, 0644)
 }
 
 func (s *TaskStore) UpdateStep(id, stepName, status string, errMsg ...string) {
@@ -117,37 +163,47 @@ func (s *TaskStore) UpdateStep(id, stepName, status string, errMsg ...string) {
 		step.Error = errMsg[0]
 	}
 	t.Steps[stepName] = step
-	if status == "failed" {
+	if status == "running" {
+		t.Status = "running"
+	} else if status == "failed" {
 		t.Status = "failed"
 	}
 	t.UpdatedAt = now
-	s.save(t)
+	_ = s.save(t)
 }
 
 // SetBVID 设置任务的 BVID
 func (s *TaskStore) SetBVID(id, bvid string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, err := s.Get(id)
+	data, err := os.ReadFile(s.path(id))
 	if err != nil {
+		return
+	}
+	var t Task
+	if json.Unmarshal(data, &t) != nil {
 		return
 	}
 	t.BVID = bvid
 	t.UpdatedAt = time.Now().Format(time.RFC3339)
-	s.save(t)
+	_ = s.save(&t)
 }
 
 // SetCompleted 标记任务完成
 func (s *TaskStore) SetCompleted(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, err := s.Get(id)
+	data, err := os.ReadFile(s.path(id))
 	if err != nil {
+		return
+	}
+	var t Task
+	if json.Unmarshal(data, &t) != nil {
 		return
 	}
 	t.Status = "completed"
 	t.UpdatedAt = time.Now().Format(time.RFC3339)
-	s.save(t)
+	_ = s.save(&t)
 }
 
 func (s *TaskStore) List() []*Task {
@@ -166,6 +222,7 @@ func (s *TaskStore) List() []*Task {
 			tasks = append(tasks, &t)
 		}
 	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt > tasks[j].CreatedAt })
 	return tasks
 }
 
@@ -182,7 +239,7 @@ func NewCredentialStore(dir string) *CredentialStore {
 
 func (c *CredentialStore) Save(cred interface{}) error {
 	data, _ := json.MarshalIndent(cred, "", "  ")
-	return os.WriteFile(c.path, data, 0644)
+	return atomicWriteFile(c.path, data, 0600)
 }
 
 func (c *CredentialStore) Load(v interface{}) error {
@@ -260,14 +317,14 @@ func BuildSubtitleCandidates(videoID, dlDir string) []SubtitleTrack {
 		lang   string
 	}
 	suffixes := []suffixLang{
-		{".en.zh.srt", "zh"},   // 翻译结果（从 en → zh，最优先）
+		{".en.zh.srt", "zh"}, // 翻译结果（从 en → zh，最优先）
 		{".zh-hant.srt", "zh-TW"},
 		{".zh-hans.srt", "zh"},
 		{".zh.srt", "zh"},
 		{".en.srt", "en"},
 		{".ja.srt", "ja"},
 		{".ko.srt", "ko"},
-		{".srt", "en"},          // BCut ASR 原始转录（无语言后缀，作为英语 fallback）
+		{".srt", "en"}, // BCut ASR 原始转录（无语言后缀，作为英语 fallback）
 	}
 
 	seen := make(map[string]bool)
@@ -285,7 +342,7 @@ func BuildSubtitleCandidates(videoID, dlDir string) []SubtitleTrack {
 				language = sl.lang
 				break
 			}
-			}
+		}
 		if language == "" {
 			continue
 		}
@@ -526,7 +583,5 @@ func (s *SubtitleStore) saveTracks(videoID string, tracks []SubtitleTrack) error
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path(videoID), data, 0644)
+	return atomicWriteFile(s.path(videoID), data, 0644)
 }
-
-

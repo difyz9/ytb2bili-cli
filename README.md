@@ -138,7 +138,61 @@ y2b submit [选项] <YouTube URL>
   --tid            B站分区ID (默认: 122)
   --dry-run        仅处理不上传
   --skip-translate 跳过翻译
+  --chain          自定义任务链，使用逗号或 > 分隔
+  --show-plan      只显示规划结果，不执行
+  --planner        规划器：adaptive 或 agent
+  --goal           交给 Agent 的自然语言任务目标
 ```
+
+任务链默认由规划器根据参数自动生成：
+
+```bash
+# 查看默认规划，不执行
+y2b submit --show-plan "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# 用户指定目标步骤；缺少的依赖会自动补齐
+# 实际规划为 download → transcribe → translate
+y2b submit --chain translate "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# 只下载视频
+y2b submit --chain download "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# 自定义完整任务链
+y2b submit --chain 'download > transcribe > metadata' "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# 让配置的 LLM Agent 根据目标制定任务链
+y2b submit --planner agent --goal "下载视频并生成中文字幕，但不要投稿" \
+  --show-plan "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+可用步骤为 `download`、`transcribe`、`translate`、`metadata` 和 `upload`。
+`--dry-run` 会强制移除 `upload`，`--skip-translate` 会强制移除 `translate`，即使自定义或 Agent 规划包含这些步骤也不会绕过安全参数。规划器通过 `workflow.Planner` 接口与执行器解耦，可替换为 LLM Agent 规划器；最终计划仍必须经过步骤注册表和依赖校验后才能执行。
+
+HTTP API 使用相同的任务链处理器，可在提交 JSON 中传入：
+
+```json
+{
+  "url": "https://www.youtube.com/watch?v=VIDEO_ID",
+  "chain": ["translate"],
+  "planner": "adaptive",
+  "goal": "生成中文字幕但不要投稿",
+  "dryRun": true,
+  "skipTranslate": false
+}
+```
+
+CLI、队列 worker、HTTP/飞书服务和飞书多维表格现在共享 `internal/pipeline.Processor`；各入口只负责提供请求和展示进度。
+
+任务链实现使用强类型 `PipelineState` 传递下载结果、字幕、元数据和投稿结果。各步骤位于独立实现中，由注册表适配到通用 workflow 执行器。Agent 规划和元数据生成共享 `internal/llm.Client`，请求会继承任务的 context，取消任务时可中断 LLM、yt-dlp、ffmpeg 和字幕翻译请求。
+
+HTTP 提交响应中的 `task_id` 是任务全生命周期的唯一 ID，可用于查询统一的持久化状态：
+
+```bash
+curl http://localhost:8096/api/v1/tasks
+curl http://localhost:8096/api/v1/tasks/TASK_ID
+```
+
+任务在规划完成后才会正式写入；`--show-plan` 和规划失败不会制造临时 pending 任务。HTTP 接口会先持久化 queued 状态，确保客户端收到的任务 ID 可以立即查询。
 
 ### channel 命令
 

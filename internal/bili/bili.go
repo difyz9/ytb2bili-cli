@@ -1,6 +1,7 @@
 package bili
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -30,6 +31,13 @@ type UploadParams struct {
 }
 
 func Upload(cred *auth.LoginInfo, params *UploadParams) (string, error) {
+	return UploadContext(context.Background(), cred, params)
+}
+
+func UploadContext(ctx context.Context, cred *auth.LoginInfo, params *UploadParams) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	// Build SDK LoginInfo
 	sdkLogin := CredToSDKLogin(cred)
 

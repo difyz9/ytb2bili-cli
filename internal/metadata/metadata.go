@@ -1,13 +1,14 @@
 package metadata
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/zolagz/ytb2bili-go/internal/config"
 	"github.com/zolagz/ytb2bili-go/internal/download"
-	"github.com/zolagz/ytb2bili-go/internal/translator"
+	"github.com/zolagz/ytb2bili-go/internal/llm"
 )
 
 type VideoMeta struct {
@@ -17,6 +18,10 @@ type VideoMeta struct {
 }
 
 func Generate(info download.VideoInfo, cfg *config.Config) (*VideoMeta, error) {
+	return GenerateContext(context.Background(), info, cfg)
+}
+
+func GenerateContext(ctx context.Context, info download.VideoInfo, cfg *config.Config) (*VideoMeta, error) {
 	prompt := fmt.Sprintf(`Generate Bilibili video metadata (in Chinese) based on this YouTube video:
 
 Title: %s
@@ -29,7 +34,7 @@ Please output in JSON format:
   "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
 }`, info.Title, truncate(info.Description, 500))
 
-	resp, err := translator.CallLLM(prompt, cfg)
+	resp, err := (&llm.OpenAIClient{APIKey: cfg.LLMAPIKey, BaseURL: cfg.LLMBaseURL, Model: cfg.LLMModel}).Complete(ctx, prompt)
 	if err != nil {
 		return nil, err
 	}

@@ -76,6 +76,9 @@ func (s *HistoryStore) Add(video *SubmittedVideo) error {
 
 	videos, err := s.load()
 	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
 		videos = []SubmittedVideo{}
 	}
 
@@ -121,5 +124,5 @@ func (s *HistoryStore) load() ([]SubmittedVideo, error) {
 
 func (s *HistoryStore) save(videos []SubmittedVideo) error {
 	data, _ := json.MarshalIndent(videos, "", "  ")
-	return os.WriteFile(s.path(), data, 0644)
+	return atomicWriteFile(s.path(), data, 0644)
 }

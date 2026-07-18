@@ -16,12 +16,12 @@ import (
 )
 
 const (
-	apiBase       = "https://member.bilibili.com/x/bcut/rubick-interface"
-	apiReqUpload  = apiBase + "/resource/create"
-	apiCommit     = apiBase + "/resource/create/complete"
-	apiCreateTask = apiBase + "/task"
+	apiBase        = "https://member.bilibili.com/x/bcut/rubick-interface"
+	apiReqUpload   = apiBase + "/resource/create"
+	apiCommit      = apiBase + "/resource/create/complete"
+	apiCreateTask  = apiBase + "/task"
 	apiQueryResult = apiBase + "/task/result"
-	modelID       = "8"
+	modelID        = "8"
 )
 
 // 上传响应
@@ -73,11 +73,14 @@ type bcutResult struct {
 }
 
 func BcutASR(videoPath, outputDir, videoID string) (string, error) {
-	ctx := context.Background()
+	return BcutASRContext(context.Background(), videoPath, outputDir, videoID)
+}
+
+func BcutASRContext(ctx context.Context, videoPath, outputDir, videoID string) (string, error) {
 
 	// Step 1: Extract audio
 	audioPath := filepath.Join(outputDir, "audio.mp3")
-	cmd := exec.Command("ffmpeg", "-y", "-i", videoPath,
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", videoPath,
 		"-vn", "-acodec", "libmp3lame", "-ab", "128k",
 		"-ar", "16000", "-ac", "1", audioPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -145,11 +148,11 @@ func BcutASR(videoPath, outputDir, videoID string) (string, error) {
 
 func requestUpload(ctx context.Context, fileData []byte) (*uploadResponse, error) {
 	payload := map[string]interface{}{
-		"type":            2,
-		"name":            "audio.mp3",
-		"size":            len(fileData),
+		"type":             2,
+		"name":             "audio.mp3",
+		"size":             len(fileData),
 		"ResourceFileType": "mp3",
-		"model_id":        modelID,
+		"model_id":         modelID,
 	}
 	payloadBytes, _ := json.Marshal(payload)
 

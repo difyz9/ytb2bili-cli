@@ -180,7 +180,7 @@ func SaveCookiesFromMeta(meta string, outputDir string) (string, error) {
 	netscape := CookiesToNetscape(cookies)
 
 	// 4. 保存到文件（统一保存到 data/cookies/ 目录）
-	cookiesDir := filepath.Join(outputDir,"cookies")
+	cookiesDir := filepath.Join(outputDir, "cookies")
 	os.MkdirAll(cookiesDir, 0755)
 	cookiesFile := filepath.Join(cookiesDir, "youtube_cookies_from_meta.txt")
 	if err := os.WriteFile(cookiesFile, []byte(netscape), 0600); err != nil {
