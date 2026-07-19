@@ -139,6 +139,15 @@ func UploadSubtitle(cred *auth.LoginInfo, bvid, subtitlePath, language string) e
 		return fmt.Errorf("解析字幕文件失败: %w", err)
 	}
 
+	// 自动获取视频时长并清理超出时长的字幕
+	duration := getVideoDurationFromAPI(cred, bvid)
+	if duration > 0 {
+		removed := sanitizeBCCSubtitle(subtitle, duration)
+		if removed > 0 {
+			log.Printf("  ⚠ [字幕] 截断了 %d 条超出视频时长 (%ds) 的字幕", removed, duration)
+		}
+	}
+
 	// BCC 条数限制检查（B站每轨限制 ~460-500 条）
 	if len(subtitle.Body) > BCCItemLimit {
 		log.Printf("  ⚠ [字幕] 字幕条数 %d 超过限制 %d，将截断至 %d 条",

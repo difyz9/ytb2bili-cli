@@ -297,7 +297,20 @@ func searchCommand(cfg *config.Config) *cli.Command {
 				}
 				if pendingCount > 0 {
 					fmt.Printf("  📝 找到 %d 个字幕文件待上传\n", pendingCount)
-					fmt.Printf("  💡 审核通过后执行: ytb subtitle retry %s\n", bvid)
+					// 后台自动监听审核（最多等待15分钟）
+					fmt.Printf("  ⏳ 自动监听审核状态（最多15分钟）...\n")
+					done := make(chan struct{})
+					go func() {
+						watchAndUploadSubtitle(bvid, id, dlDir, &cred, cfg)
+						close(done)
+					}()
+					select {
+					case <-done:
+						// watch 已完成（成功或失败都已输出）
+					case <-time.After(15 * time.Minute):
+						fmt.Printf("  ⏰ 等待超时（15分钟），字幕尚未上传\n")
+						fmt.Printf("  💡 审核通过后执行: ytb subtitle retry %s\n", bvid)
+					}
 				}
 
 				elapsed := time.Since(totalStart).Seconds()
