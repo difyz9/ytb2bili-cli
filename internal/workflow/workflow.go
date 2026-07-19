@@ -78,7 +78,7 @@ func (AdaptivePlanner) Plan(_ context.Context, intent Intent, registry *Registry
 	if len(targets) == 0 {
 		targets = []string{"download", "transcribe"}
 		if !intent.SkipTranslate {
-			targets = append(targets, "translate")
+			targets = append(targets, "translate", "tts", "audio-sync")
 		}
 		targets = append(targets, "metadata")
 		if !intent.DryRun {

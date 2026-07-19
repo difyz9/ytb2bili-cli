@@ -103,7 +103,8 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	if len(entries) == 0 {
 		return fmt.Errorf("字幕去重后为空")
 	}
-	fmt.Printf("  解析完成: %d 条字幕\n", len(entries))
+	entries = MergeShortEntries(entries)
+	fmt.Printf("  解析完成: %d 条字幕 (合并后)\n", len(entries))
 
 	// 3. 提取纯文本
 	texts := make([]string, len(entries))
@@ -459,6 +460,86 @@ func ParseSRT(content string) ([]SRTEntry, error) {
 	flush()
 
 	return entries, nil
+}
+
+// MergeShortEntries merges very short adjacent SRT entries into sentence-level
+// chunks for better translation and TTS quality. YouTube word-level timing can
+// produce hundreds of ~10ms cues that should be grouped into natural sentences.
+func MergeShortEntries(entries []SRTEntry) []SRTEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+
+	type merged struct {
+		startTimeCode string
+		endTimeCode   string
+		texts         []string
+		startSec      float64
+		endSec        float64
+	}
+
+	var groups []merged
+	current := merged{startTimeCode: entries[0].TimeCode, texts: []string{entries[0].Text}}
+	current.startSec = parseStartTime(entries[0].TimeCode)
+	current.endSec = parseEndTime(entries[0].TimeCode)
+
+	for i := 1; i < len(entries); i++ {
+		entry := entries[i]
+		start := parseStartTime(entry.TimeCode)
+		end := parseEndTime(entry.TimeCode)
+		duration := end - start
+		accDuration := end - current.startSec
+		lastText := current.texts[len(current.texts)-1]
+		hasEndPunct := strings.HasSuffix(strings.TrimSpace(lastText), ".") ||
+			strings.HasSuffix(strings.TrimSpace(lastText), "!") ||
+			strings.HasSuffix(strings.TrimSpace(lastText), "?") ||
+			strings.HasSuffix(strings.TrimSpace(lastText), "\"")
+
+		// Merge if: very short cue, no punctuation yet, or accumulated duration < 2s
+		shouldMerge := duration < 1.0 || (!hasEndPunct && accDuration < 8.0) || accDuration < 2.0
+
+		if shouldMerge {
+			current.texts = append(current.texts, entry.Text)
+			current.endTimeCode = strings.Split(entry.TimeCode, " --> ")[1]
+			current.endSec = end
+		} else {
+			groups = append(groups, current)
+			current = merged{
+				startTimeCode: entry.TimeCode,
+				texts:         []string{entry.Text},
+				startSec:      start,
+				endSec:        end,
+			}
+		}
+	}
+	groups = append(groups, current)
+
+	// Build result
+	result := make([]SRTEntry, 0, len(groups))
+	for i, g := range groups {
+		result = append(result, SRTEntry{
+			Index:    i + 1,
+			TimeCode: g.startTimeCode + " --> " + g.endTimeCode,
+			Text:     strings.Join(g.texts, " "),
+		})
+	}
+	return result
+}
+
+func parseStartTime(tc string) float64 {
+	parts := strings.Split(tc, " --> ")
+	if len(parts) != 2 {
+		return 0
+	}
+	return ParseSRTTime(strings.TrimSpace(parts[0]))
+}
+
+func parseEndTime(tc string) float64 {
+	parts := strings.Split(tc, " --> ")
+	if len(parts) != 2 {
+		return 0
+	}
+	return ParseSRTTime(strings.TrimSpace(parts[1]))
 }
 
 // DeduplicateRollingEntries removes lines repeated by YouTube rolling captions.
