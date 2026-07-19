@@ -375,7 +375,7 @@ func (t *Translator) callLLM(ctx context.Context, systemPrompt, userContent stri
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
-	req, _ := http.NewRequestWithContext(ctx, "POST", t.config.BaseURL+"/chat/completions", bytes.NewReader(payloadBytes))
+	req, _ := http.NewRequestWithContext(ctx, "POST", t.config.BaseURL+"/v1/chat/completions", bytes.NewReader(payloadBytes))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+t.config.APIKey)
 
