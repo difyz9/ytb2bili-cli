@@ -185,7 +185,7 @@ func searchCommand(cfg *config.Config) *cli.Command {
 				// Step 1: Download
 				ts.UpdateStep(id, "download", "running")
 				fmt.Print("\n⬇️ [1/5] 下载视频... ")
-				dlDir := filepath.Join(cfg.DataDir, "downloads", id)
+				dlDir := filepath.Join(cfg.DataDir, "downloads", video.ID)
 				cookiesPath := cfg.YouTubeCookies
 				if cookiesPath == "" {
 					cookiesPath = filepath.Join(cfg.DataDir, "youtube_cookies.txt")
@@ -203,7 +203,7 @@ func searchCommand(cfg *config.Config) *cli.Command {
 				srtPath := dlResult.SubtitlePath
 				if srtPath == "" {
 					fmt.Print("🎙️ [2/5] Bcut 语音转字幕... ")
-					srtPath, err = transcriber.BcutASR(dlResult.VideoPath, dlDir, id)
+					srtPath, err = transcriber.BcutASR(dlResult.VideoPath, dlDir, video.ID)
 					if err != nil {
 						ts.UpdateStep(id, "transcribe", "failed", err.Error())
 						return fmt.Errorf("转写失败: %w", err)
@@ -301,7 +301,7 @@ func searchCommand(cfg *config.Config) *cli.Command {
 					fmt.Printf("  ⏳ 自动监听审核状态（最多15分钟）...\n")
 					done := make(chan struct{})
 					go func() {
-						watchAndUploadSubtitle(bvid, id, dlDir, &cred, cfg)
+						watchAndUploadSubtitle(bvid, video.ID, dlDir, &cred, cfg)
 						close(done)
 					}()
 					select {

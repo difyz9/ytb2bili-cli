@@ -54,7 +54,7 @@ func (*downloadStep) Definition() workflow.Step {
 }
 func (s *downloadStep) Run(ctx context.Context, state *PipelineState) error {
 	req, result := state.Request, state.Result
-	result.DownloadDir = filepath.Join(s.config.DataDir, "downloads", result.TaskID)
+	result.DownloadDir = filepath.Join(s.config.DataDir, "downloads", result.ArtifactID())
 	cookies := req.CookiesPath
 	if cookies == "" {
 		cookies = s.config.YouTubeCookies
@@ -81,7 +81,7 @@ func (*transcribeStep) Run(ctx context.Context, state *PipelineState) error {
 		return nil
 	}
 	var err error
-	state.Result.SubtitlePath, err = transcriber.BcutASRContext(ctx, state.Result.VideoPath, state.Result.DownloadDir, state.Result.TaskID)
+	state.Result.SubtitlePath, err = transcriber.BcutASRContext(ctx, state.Result.VideoPath, state.Result.DownloadDir, state.Result.ArtifactID())
 	if err != nil {
 		return fmt.Errorf("转写失败: %w", err)
 	}
@@ -114,7 +114,9 @@ func (*audioSyncStep) Run(ctx context.Context, state *PipelineState) error {
 		return fmt.Errorf("audio-sync 需要通过 --audio-dir 提供按字幕编号命名的配音目录")
 	}
 	baseName := state.Result.VideoID
-	if baseName == "" { baseName = state.Result.TaskID }
+	if baseName == "" {
+		baseName = state.Result.TaskID
+	}
 	output := filepath.Join(state.Result.DownloadDir, baseName+".synced.mp4")
 	result, err := audiosync.Sync(ctx, audiosync.Options{VideoPath: state.Result.VideoPath, SubtitlePath: state.Result.SubtitlePath, AudioDir: state.Request.AudioDir, OutputPath: output, DisableSpeedAdjust: state.Request.DisableAudioSpeedAdjust, MissingMode: state.Request.AudioMissingMode})
 	if err != nil {
@@ -161,6 +163,6 @@ func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
 	if err = s.history.Add(&storage.SubmittedVideo{YouTubeID: r.VideoID, BVID: bvid, Title: state.Metadata.Title, Channel: req.Source}); err != nil {
 		return fmt.Errorf("保存投稿历史失败: %w", err)
 	}
-	_, _ = storage.NewSubtitleStore(filepath.Join(s.config.DataDir, "subtitles")).SyncFromDownload(r.TaskID, bvid, r.DownloadDir)
+	_, _ = storage.NewSubtitleStore(filepath.Join(s.config.DataDir, "subtitles")).SyncFromDownload(r.ArtifactID(), bvid, r.DownloadDir)
 	return nil
 }

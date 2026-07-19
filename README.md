@@ -54,7 +54,7 @@ go test ./...
   "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
-任务产物默认位于 `data/downloads/<task-id>/`。Agent 应从命令输出或任务状态中取得真实路径，不要猜测视频、字幕或任务 ID。
+任务产物默认位于 `data/downloads/<videoId>/`，主视频路径为 `data/downloads/<videoId>/<videoId>.mp4`。任务状态仍使用独立的 `task_id`；Agent 不应把 `task_id` 当成媒体目录名。
 
 ### 用户决定任务链
 
@@ -95,7 +95,7 @@ go test ./...
 YouTube 自动字幕通常是滚动字幕，相邻条目会重复同一行。Agent 必须先去重再翻译和配音，否则语音总时长会成倍增加，导致音频被强制加速。
 
 ```bash
-TASK_DIR="data/downloads/<task-id>"
+TASK_DIR="data/downloads/<videoId>"
 VIDEO="$TASK_DIR/VIDEO_ID.mp4"
 SOURCE_SRT="$TASK_DIR/VIDEO_ID.en.srt"
 CLEAN_SRT="$TASK_DIR/VIDEO_ID.en.cleaned.srt"
