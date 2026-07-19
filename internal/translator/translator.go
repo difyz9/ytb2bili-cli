@@ -314,13 +314,16 @@ func (t *Translator) translateGroup(ctx context.Context, texts []string, prevCon
 	for i := range translated {
 		translated[i] = strings.TrimSpace(translated[i])
 	}
-
-	// 确保数量匹配
-	for len(translated) < len(texts) {
-		translated = append(translated, "[翻译缺失]")
+	// Some models return the supplied context despite being asked for only the
+	// target sentences. This shape is unambiguous, so retain the target slice.
+	if len(translated) == len(fullTexts) && len(fullTexts) != len(texts) {
+		translated = translated[targetStart:targetEnd]
 	}
-	if len(translated) > len(texts) {
-		translated = translated[:len(texts)]
+	if len(texts) == 1 && len(translated) > 1 {
+		translated = []string{strings.Join(translated, "")}
+	}
+	if len(translated) != len(texts) {
+		return nil, fmt.Errorf("翻译数量不匹配: 期望 %d 句，实际 %d 句", len(texts), len(translated))
 	}
 
 	return translated, nil

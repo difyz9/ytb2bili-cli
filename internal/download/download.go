@@ -74,11 +74,11 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 		}
 	}
 
-	// Build base args
-	baseArgs := []string{"--impersonate", "chrome"}
-	if cookiesFile != "" {
-		baseArgs = append(baseArgs, "--cookies", cookiesFile)
-	}
+	// Build base args. Prefer a valid exported cookie file. On macOS, fall back
+	// to Chrome's active login so users do not have to export cookies manually.
+	// Set YOUTUBE_COOKIES_FROM_BROWSER to override the browser/profile syntax
+	// accepted by yt-dlp, or to "off" to disable browser-cookie discovery.
+	baseArgs := cookieArgs(cookiesFile, os.Getenv("YOUTUBE_COOKIES_FROM_BROWSER"), runtime.GOOS)
 
 	// Get video info first
 	infoArgs := append(baseArgs, "--dump-json", "--no-download", "--remote-components", "ejs:github", url)
@@ -96,6 +96,10 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 				errMsg = strings.TrimSpace(line)
 				break
 			}
+		}
+		if errMsg == err.Error() && stderrStr != "" {
+			lines := strings.Split(stderrStr, "\n")
+			errMsg = strings.TrimSpace(lines[len(lines)-1])
 		}
 		return nil, fmt.Errorf("获取视频信息失败: %s", errMsg)
 	}
@@ -115,6 +119,7 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 
 	args := append(baseArgs,
 		"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+		"--merge-output-format", "mp4",
 		"--write-auto-sub", "--sub-langs", subLangs,
 		"--convert-subs", "srt",
 		"--embed-metadata",
@@ -178,6 +183,24 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 		CoverPath:    coverPath,
 		Info:         info,
 	}, nil
+}
+
+func cookieArgs(cookiesFile, browser, goos string) []string {
+	if cookiesFile != "" && hasValidCookies(cookiesFile) {
+		return []string{"--cookies", cookiesFile}
+	}
+
+	browser = strings.TrimSpace(browser)
+	if strings.EqualFold(browser, "off") || strings.EqualFold(browser, "none") {
+		return nil
+	}
+	if browser == "" && goos == "darwin" {
+		browser = "chrome"
+	}
+	if browser != "" {
+		return []string{"--cookies-from-browser", browser}
+	}
+	return nil
 }
 
 // hasValidCookies checks if a Netscape cookies file has non-zero expiry timestamps

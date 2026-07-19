@@ -185,6 +185,49 @@ CLI、队列 worker、HTTP/飞书服务和飞书多维表格现在共享 `intern
 
 任务链实现使用强类型 `PipelineState` 传递下载结果、字幕、元数据和投稿结果。各步骤位于独立实现中，由注册表适配到通用 workflow 执行器。Agent 规划和元数据生成共享 `internal/llm.Client`，请求会继承任务的 context，取消任务时可中断 LLM、yt-dlp、ffmpeg 和字幕翻译请求。
 
+### 音画同步
+
+项目内置 `skills/audio-video-sync`。它参考 `video_audio_sync/core/audio_processor_v2.py`，按照 SRT 时间轴对分段配音进行智能调速和静音填充，并将同步音轨合并回视频。
+
+配音目录需要按字幕序号命名，例如：
+
+```text
+tts_audio/
+├── 1.mp3
+├── 2.mp3
+└── 3.mp3
+```
+
+安装 Python 依赖：
+
+```bash
+python3 -m pip install -r skills/audio-video-sync/requirements.txt
+python3 skills/audio-video-sync/scripts/audio_processor_v2.py --check
+```
+
+在任务链中使用：
+
+```bash
+y2b submit \
+  --chain "audio-sync > metadata > upload" \
+  --audio-dir ./tts_audio \
+  "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+规划器会补全为：
+
+```text
+download → transcribe → translate → audio-sync → metadata → upload
+```
+
+可选参数：
+
+- `--no-audio-speed-adjust`：禁用智能调速。
+- `--audio-missing error`：缺失任一配音片段时失败，默认值。
+- `--audio-missing silence`：缺失片段按静音处理。
+
+可通过 `YTB2BILI_PYTHON` 指定 Python 解释器，通过 `YTB2BILI_AUDIO_SYNC_SCRIPT` 指定 Skill 脚本位置。同步成功后，后续上传步骤会自动使用 `.synced.mp4`。
+
 HTTP 提交响应中的 `task_id` 是任务全生命周期的唯一 ID，可用于查询统一的持久化状态：
 
 ```bash
@@ -193,6 +236,36 @@ curl http://localhost:8096/api/v1/tasks/TASK_ID
 ```
 
 任务在规划完成后才会正式写入；`--show-plan` 和规划失败不会制造临时 pending 任务。HTTP 接口会先持久化 queued 状态，确保客户端收到的任务 ID 可以立即查询。
+
+### HTTP 服务安全配置
+
+服务默认只监听 `127.0.0.1:8096`。如果需要监听局域网或公网地址，必须配置 API Token：
+
+```bash
+export YTB2BILI_SERVER_TOKEN="请使用足够长的随机字符串"
+y2b start --addr 0.0.0.0:8096
+
+curl -H "Authorization: Bearer $YTB2BILI_SERVER_TOKEN" \
+  http://localhost:8096/api/v1/tasks
+```
+
+浏览器扩展还需要配置允许的 Origin，多个来源使用逗号分隔：
+
+```bash
+export YTB2BILI_ALLOWED_ORIGINS="chrome-extension://EXTENSION_ID,https://admin.example.com"
+```
+
+构建浏览器扩展时，对应配置为：
+
+```bash
+export VITE_BACKEND_URL="http://127.0.0.1:8096"
+export VITE_YTB2BILI_SERVER_TOKEN="$YTB2BILI_SERVER_TOKEN"
+export VITE_COOKIES_ENCRYPT_KEY="与后端 COOKIES_ENCRYPT_KEY 相同的值"
+```
+
+未携带 `Origin` 的本机 CLI 请求不受 CORS 限制。`/health` 无需 Token，其余 HTTP API 和飞书 Webhook 均受 Bearer Token 保护。提交请求体最大为 1 MiB。
+
+飞书 App ID 和 App Secret 不再提供源码默认值，请使用 `FEISHU_APP_ID`、`FEISHU_APP_SECRET` 或配置文件。若旧版本中的 Secret 曾经是真实凭据，应在飞书后台立即轮换。
 
 ### channel 命令
 

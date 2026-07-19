@@ -24,15 +24,8 @@ type YouTubeCookie struct {
 	StoreID        string  `json:"storeId,omitempty"`
 }
 
-// 默认加密密钥，需与 extension/utils/config.ts 中的 COOKIES_ENCRYPT_KEY 保持一致
-// 可通过 COOKIES_ENCRYPT_KEY 环境变量覆盖
-const defaultCookiesEncryptKey = "59e7052041ce4bd6aff82f6a0bca9cde"
-
 func getEncryptKey() string {
-	if key := os.Getenv("COOKIES_ENCRYPT_KEY"); key != "" {
-		return key
-	}
-	return defaultCookiesEncryptKey
+	return os.Getenv("COOKIES_ENCRYPT_KEY")
 }
 
 // deriveKey 从密钥字符串派生出 AES-256 密钥（与 extension 的 crypto.ts 保持一致）
@@ -69,7 +62,9 @@ func DecryptCookiesMeta(meta string) (string, error) {
 	ciphertext := combined[12:]
 
 	// 派生密钥
-	key := deriveKey(getEncryptKey())
+	keyValue := getEncryptKey()
+	if keyValue == "" { return "", fmt.Errorf("COOKIES_ENCRYPT_KEY is required") }
+	key := deriveKey(keyValue)
 
 	// AES-GCM 解密
 	block, err := aes.NewCipher(key)

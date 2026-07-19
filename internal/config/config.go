@@ -2,19 +2,22 @@ package config
 
 import (
 	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
 
 // Config 配置
 type Config struct {
-	DataDir        string `toml:"data_dir"`
-	LLMAPIKey      string `toml:"llm_api_key"`
-	LLMBaseURL     string `toml:"llm_base_url"`
-	LLMModel       string `toml:"llm_model"`
-	BiliTid        int    `toml:"bili_tid"`
-	YouTubeCookies string `toml:"youtube_cookies"`
-	
+	DataDir        string   `toml:"data_dir"`
+	LLMAPIKey      string   `toml:"llm_api_key"`
+	LLMBaseURL     string   `toml:"llm_base_url"`
+	LLMModel       string   `toml:"llm_model"`
+	BiliTid        int      `toml:"bili_tid"`
+	YouTubeCookies string   `toml:"youtube_cookies"`
+	ServerToken    string   `toml:"server_token"`
+	AllowedOrigins []string `toml:"allowed_origins"`
+
 	// 飞书多维表格配置
 	FeishuAppID     string `toml:"feishu_app_id"`
 	FeishuAppSecret string `toml:"feishu_app_secret"`
@@ -44,7 +47,18 @@ func (c *Config) Init() {
 	if cookies := os.Getenv("YOUTUBE_COOKIES"); cookies != "" {
 		c.YouTubeCookies = cookies
 	}
-	
+	if c.ServerToken == "" {
+		c.ServerToken = os.Getenv("YTB2BILI_SERVER_TOKEN")
+	}
+	if origins := os.Getenv("YTB2BILI_ALLOWED_ORIGINS"); origins != "" {
+		c.AllowedOrigins = nil
+		for _, origin := range strings.Split(origins, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				c.AllowedOrigins = append(c.AllowedOrigins, origin)
+			}
+		}
+	}
+
 	// 飞书多维表格配置
 	if c.FeishuAppID == "" {
 		c.FeishuAppID = os.Getenv("FEISHU_APP_ID")

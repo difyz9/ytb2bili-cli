@@ -48,18 +48,24 @@ go build -o ytb2bili .
 
 ```bash
 # 飞书应用配置（从你的服务器复制）
-export FEISHU_APP_ID="cli_aaa921692978dce6"
-export FEISHU_APP_SECRET="x6wwyDmSVlbubdcGpO5nKhdwxniTB7ka"
+export FEISHU_APP_ID="你的飞书应用ID"
+export FEISHU_APP_SECRET="你的飞书应用Secret"
 
 # 多维表格配置
-export BITABLE_APP_TOKEN="MEG6bQc6CaXNwbsM1vZc0jBon0Z"
-export BITABLE_TABLE_ID="tblkMgbUbScdevlr"
+export BITABLE_APP_TOKEN="你的多维表格AppToken"
+export BITABLE_TABLE_ID="你的数据表ID"
 
 # DeepSeek API（用于字幕翻译）
 export DEEPSEEK_API_KEY="你的 DeepSeek API Key"
 
 # YouTube Cookies（可选，如果需要使用全局 cookies）
 export YOUTUBE_COOKIES="/path/to/your/youtube_cookies.txt"
+
+# macOS 默认会回退读取 Chrome 登录态，也可指定浏览器/Profile
+export YOUTUBE_COOKIES_FROM_BROWSER="chrome:Default"
+
+# 如不希望访问浏览器 cookies，可显式关闭
+export YOUTUBE_COOKIES_FROM_BROWSER="off"
 ```
 
 ### 4. 运行多维表格处理器
@@ -103,7 +109,7 @@ nohup ./ytb2bili bitable > bitable.log 2>&1 &
 tail -f bitable.log
 
 # 或查看多维表格
-# 访问: https://gcnkq1umi9ma.feishu.cn/base/MEG6bQc6CaXNwbsM1vZc0jBon0Z
+# 访问你的飞书多维表格链接
 ```
 
 ### 2. 手动测试下载

@@ -11,7 +11,7 @@
 export const FEISHU_CONFIG = {
   // 飞书应用 ID
   get APP_ID(): string {
-    return import.meta.env.VITE_FEISHU_APP_ID || 'cli_aaa921692978dce6';
+	return import.meta.env.VITE_FEISHU_APP_ID || '';
   },
   
   // 飞书应用 Secret (注意: 生产环境应通过后端代理，不应暴露在前端)
@@ -34,6 +34,10 @@ export const BACKEND_CONFIG = {
   get BASE_URL(): string {
     return import.meta.env.VITE_BACKEND_URL || this.PRODUCTION_URL;
   },
+
+	get API_TOKEN(): string {
+		return import.meta.env.VITE_YTB2BILI_SERVER_TOKEN || '';
+	},
 } as const;
 
 /**
@@ -76,8 +80,8 @@ export function normalizeBackendBaseUrl(url: string): string {
 export const AUTH_CONFIG = {
   APP_ID: import.meta.env.VITE_APP_ID || 'ytb2bili_extension',
   PROJECT_ID: import.meta.env.VITE_PROJECT_ID || '',
-  APP_SECRET: import.meta.env.VITE_APP_SECRET || 'ytb2bili_secret_2026',
-  COOKIES_ENCRYPT_KEY: import.meta.env.VITE_COOKIES_ENCRYPT_KEY || '59e7052041ce4bd6aff82f6a0bca9cde',
+	APP_SECRET: import.meta.env.VITE_APP_SECRET || '',
+	COOKIES_ENCRYPT_KEY: import.meta.env.VITE_COOKIES_ENCRYPT_KEY || '',
 } as const;
 
 /**

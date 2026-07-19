@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,22 +36,25 @@ type Server struct {
 
 // VideoTask 视频处理任务
 type VideoTask struct {
-	ID            string          `json:"id"`
-	URL           string          `json:"url"`
-	Title         string          `json:"title"`
-	Description   string          `json:"description,omitempty"`
-	Subtitles     []SubtitleEntry `json:"subtitles,omitempty"`
-	Cookies       string          `json:"cookies,omitempty"`
-	Status        string          `json:"status"`
-	CreatedAt     string          `json:"created_at"`
-	UpdatedAt     string          `json:"updated_at"`
-	BVID          string          `json:"bvid,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	Chain         []string        `json:"chain,omitempty"`
-	DryRun        bool            `json:"dry_run,omitempty"`
-	SkipTranslate bool            `json:"skip_translate,omitempty"`
-	Planner       string          `json:"planner,omitempty"`
-	Goal          string          `json:"goal,omitempty"`
+	ID                      string          `json:"id"`
+	URL                     string          `json:"url"`
+	Title                   string          `json:"title"`
+	Description             string          `json:"description,omitempty"`
+	Subtitles               []SubtitleEntry `json:"subtitles,omitempty"`
+	Cookies                 string          `json:"cookies,omitempty"`
+	Status                  string          `json:"status"`
+	CreatedAt               string          `json:"created_at"`
+	UpdatedAt               string          `json:"updated_at"`
+	BVID                    string          `json:"bvid,omitempty"`
+	Error                   string          `json:"error,omitempty"`
+	Chain                   []string        `json:"chain,omitempty"`
+	DryRun                  bool            `json:"dry_run,omitempty"`
+	SkipTranslate           bool            `json:"skip_translate,omitempty"`
+	Planner                 string          `json:"planner,omitempty"`
+	Goal                    string          `json:"goal,omitempty"`
+	AudioDir                string          `json:"audio_dir,omitempty"`
+	DisableAudioSpeedAdjust bool            `json:"disable_audio_speed_adjust,omitempty"`
+	AudioMissingMode        string          `json:"audio_missing_mode,omitempty"`
 }
 
 // SubtitleEntry 字幕条目
@@ -61,19 +67,22 @@ type SubtitleEntry struct {
 
 // SubmitRequest 提交请求
 type SubmitRequest struct {
-	URL           string          `json:"url"`
-	Title         string          `json:"title"`
-	Description   string          `json:"description,omitempty"`
-	Operation     string          `json:"operationType,omitempty"`
-	Subtitles     []SubtitleEntry `json:"subtitles,omitempty"`
-	PlaylistID    string          `json:"playlistId,omitempty"`
-	Timestamp     string          `json:"timestamp,omitempty"`
-	Meta          string          `json:"meta,omitempty"`  // 加密的 cookies
-	Chain         []string        `json:"chain,omitempty"` // 可选任务链；依赖自动补全
-	DryRun        bool            `json:"dryRun,omitempty"`
-	SkipTranslate bool            `json:"skipTranslate,omitempty"`
-	Planner       string          `json:"planner,omitempty"`
-	Goal          string          `json:"goal,omitempty"`
+	URL                     string          `json:"url"`
+	Title                   string          `json:"title"`
+	Description             string          `json:"description,omitempty"`
+	Operation               string          `json:"operationType,omitempty"`
+	Subtitles               []SubtitleEntry `json:"subtitles,omitempty"`
+	PlaylistID              string          `json:"playlistId,omitempty"`
+	Timestamp               string          `json:"timestamp,omitempty"`
+	Meta                    string          `json:"meta,omitempty"`  // 加密的 cookies
+	Chain                   []string        `json:"chain,omitempty"` // 可选任务链；依赖自动补全
+	DryRun                  bool            `json:"dryRun,omitempty"`
+	SkipTranslate           bool            `json:"skipTranslate,omitempty"`
+	Planner                 string          `json:"planner,omitempty"`
+	Goal                    string          `json:"goal,omitempty"`
+	AudioDir                string          `json:"audioDir,omitempty"`
+	DisableAudioSpeedAdjust bool            `json:"disableAudioSpeedAdjust,omitempty"`
+	AudioMissingMode        string          `json:"audioMissingMode,omitempty"`
 }
 
 // SubmitResponse 提交响应
@@ -119,6 +128,9 @@ func New(cfg *config.Config) *Server {
 
 // Start 启动服务器
 func (s *Server) Start(addr string) error {
+	if !isLoopbackAddr(addr) && s.cfg.ServerToken == "" {
+		return fmt.Errorf("拒绝在非本机地址 %q 上启动：请配置 YTB2BILI_SERVER_TOKEN", addr)
+	}
 	mux := http.NewServeMux()
 
 	// API 路由
@@ -132,8 +144,12 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/feishu/webhook", s.feishuWebhook)
 
 	s.server = &http.Server{
-		Addr:    addr,
-		Handler: corsMiddleware(mux),
+		Addr:              addr,
+		Handler:           corsMiddleware(s.cfg.AllowedOrigins, apiAuthMiddleware(s.cfg.ServerToken, mux)),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	log.Printf("🚀 服务器启动在 %s", addr)
@@ -320,7 +336,9 @@ func (s *Server) processVideoTask(task *VideoTask) {
 		Source: "server", CookiesPath: cookiesPath, Chain: task.Chain,
 		DryRun: task.DryRun, SkipTranslate: task.SkipTranslate,
 		Planner: task.Planner, Goal: task.Goal,
-		TaskID: task.ID,
+		TaskID:   task.ID,
+		AudioDir: task.AudioDir, DisableAudioSpeedAdjust: task.DisableAudioSpeedAdjust,
+		AudioMissingMode: task.AudioMissingMode,
 	})
 	if err != nil {
 		task.Status, task.Error = "failed", err.Error()
@@ -464,8 +482,14 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			s.jsonError(w, "请求体过大", http.StatusRequestEntityTooLarge)
+			return
+		}
 		s.jsonError(w, "读取请求失败", http.StatusBadRequest)
 		return
 	}
@@ -497,20 +521,23 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// 创建任务
 	task := &VideoTask{
-		ID:            generateTaskID(),
-		URL:           req.URL,
-		Title:         req.Title,
-		Description:   req.Description,
-		Subtitles:     req.Subtitles,
-		Cookies:       req.Meta,
-		Chain:         req.Chain,
-		DryRun:        req.DryRun,
-		SkipTranslate: req.SkipTranslate,
-		Planner:       req.Planner,
-		Goal:          req.Goal,
-		Status:        "pending",
-		CreatedAt:     time.Now().Format(time.RFC3339),
-		UpdatedAt:     time.Now().Format(time.RFC3339),
+		ID:                      generateTaskID(),
+		URL:                     req.URL,
+		Title:                   req.Title,
+		Description:             req.Description,
+		Subtitles:               req.Subtitles,
+		Cookies:                 req.Meta,
+		Chain:                   req.Chain,
+		DryRun:                  req.DryRun,
+		SkipTranslate:           req.SkipTranslate,
+		Planner:                 req.Planner,
+		Goal:                    req.Goal,
+		AudioDir:                req.AudioDir,
+		DisableAudioSpeedAdjust: req.DisableAudioSpeedAdjust,
+		AudioMissingMode:        req.AudioMissingMode,
+		Status:                  "pending",
+		CreatedAt:               time.Now().Format(time.RFC3339),
+		UpdatedAt:               time.Now().Format(time.RFC3339),
 	}
 
 	// 发送到任务队列
@@ -643,9 +670,24 @@ func extractVideoID(url string) string {
 }
 
 // corsMiddleware 添加 CORS 头，允许 Chrome 扩展内容脚本跨域请求
-func corsMiddleware(next http.Handler) http.Handler {
+func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			allowed := false
+			for _, candidate := range allowedOrigins {
+				if candidate == origin {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
@@ -657,4 +699,32 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func apiAuthMiddleware(token string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if token == "" || r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		provided := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if len(provided) != len(token) || subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

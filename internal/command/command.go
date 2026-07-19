@@ -314,7 +314,7 @@ func searchCommand(cfg *config.Config) *cli.Command {
 // startServer exec 自身以 server 子命令后台运行
 func startServer(cfg *config.Config, addr string, port int) error {
 	if port != 8096 {
-		addr = fmt.Sprintf(":%d", port)
+		addr = fmt.Sprintf("127.0.0.1:%d", port)
 	}
 
 	pidFile := filepath.Join(cfg.DataDir, "server.pid")
@@ -422,7 +422,7 @@ func startCommand(cfg *config.Config) *cli.Command {
 		Name:  "start",
 		Usage: "以后台守护进程方式启动 HTTP API 服务器",
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "addr", Value: ":8096", Usage: "监听地址"},
+			&cli.StringFlag{Name: "addr", Value: "127.0.0.1:8096", Usage: "监听地址"},
 			&cli.IntFlag{Name: "port", Value: 8096, Usage: "监听端口 (覆盖 addr)"},
 		},
 		Action: func(c *cli.Context) error {
@@ -482,7 +482,7 @@ func restartCommand(cfg *config.Config) *cli.Command {
 		Name:  "restart",
 		Usage: "重启 HTTP API 服务器",
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "addr", Value: ":8096", Usage: "监听地址"},
+			&cli.StringFlag{Name: "addr", Value: "127.0.0.1:8096", Usage: "监听地址"},
 			&cli.IntFlag{Name: "port", Value: 8096, Usage: "监听端口 (覆盖 addr)"},
 		},
 		Action: func(c *cli.Context) error {
@@ -673,6 +673,9 @@ func submitCommand(cfg *config.Config) *cli.Command {
 			&cli.BoolFlag{Name: "show-plan", Usage: "只显示规划后的任务链，不执行"},
 			&cli.StringFlag{Name: "planner", Value: "adaptive", Usage: "规划器: adaptive 或 agent"},
 			&cli.StringFlag{Name: "goal", Usage: "交给 Agent 的自然语言任务目标"},
+			&cli.StringFlag{Name: "audio-dir", Usage: "按字幕序号命名的分段配音目录（audio-sync 步骤必需）"},
+			&cli.BoolFlag{Name: "no-audio-speed-adjust", Usage: "音画同步时禁用智能调速，仅按时间轴填充"},
+			&cli.StringFlag{Name: "audio-missing", Value: "error", Usage: "缺失配音处理: error 或 silence"},
 		},
 		Action: func(c *cli.Context) error {
 			url := c.Args().First()
@@ -705,6 +708,8 @@ func submitCommand(cfg *config.Config) *cli.Command {
 				Tid: opts.Tid, DryRun: opts.DryRun, SkipTranslate: opts.SkipTranslate,
 				Source: opts.Source, Chain: opts.Chain, PlanOnly: opts.ShowPlan,
 				Planner: c.String("planner"), Goal: c.String("goal"),
+				AudioDir: c.String("audio-dir"), DisableAudioSpeedAdjust: c.Bool("no-audio-speed-adjust"),
+				AudioMissingMode: c.String("audio-missing"),
 			})
 			if result != nil {
 				fmt.Printf("🔗 任务链: %s\n", strings.Join(result.Plan, " → "))
@@ -1012,7 +1017,7 @@ func serverCommand(cfg *config.Config) *cli.Command {
 		Usage:  "启动 HTTP API 服务器（前台运行）",
 		Hidden: true,
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "addr", Value: ":8096", Usage: "监听地址"},
+			&cli.StringFlag{Name: "addr", Value: "127.0.0.1:8096", Usage: "监听地址"},
 			&cli.StringFlag{Name: "feishu-app-id", Usage: "飞书 App ID"},
 			&cli.StringFlag{Name: "feishu-app-secret", Usage: "飞书 App Secret"},
 			&cli.StringFlag{Name: "feishu-verify-token", Usage: "飞书 Verify Token"},
@@ -1068,8 +1073,8 @@ func debugCommand(cfg *config.Config) *cli.Command {
 		Name:  "debug",
 		Usage: "调试模式 - 监听飞书消息并显示详细信息",
 		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "feishu-app-id", Value: "cli_aaa921692978dce6", Usage: "飞书 App ID"},
-			&cli.StringFlag{Name: "feishu-app-secret", Value: "x6wwyDmSVlbubdcGpO5nKhdwxniTB7ka", Usage: "飞书 App Secret"},
+			&cli.StringFlag{Name: "feishu-app-id", Value: cfg.FeishuAppID, Usage: "飞书 App ID"},
+			&cli.StringFlag{Name: "feishu-app-secret", Value: cfg.FeishuAppSecret, Usage: "飞书 App Secret"},
 			&cli.BoolFlag{Name: "dry-run", Usage: "仅显示消息，不处理"},
 		},
 		Action: func(c *cli.Context) error {
