@@ -9,3 +9,6 @@ ytb2bili
 # generated output files
 ${OUTPUT}
 ytb
+
+
+__pycache__/
