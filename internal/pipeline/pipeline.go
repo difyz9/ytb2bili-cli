@@ -36,6 +36,15 @@ type Result struct {
 	Duration                                                                     time.Duration
 }
 
+// ArtifactID is the stable directory/file identity for media artifacts.
+// TaskID remains the execution identity and must not leak into media paths.
+func (r *Result) ArtifactID() string {
+	if r.VideoID != "" {
+		return r.VideoID
+	}
+	return r.TaskID
+}
+
 type Event struct {
 	Step            string
 	Position, Total int

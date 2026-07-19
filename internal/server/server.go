@@ -355,7 +355,7 @@ func (s *Server) processVideoTask(task *VideoTask) {
 	}
 	var cred auth.LoginInfo
 	if err := storage.NewCredentialStore(filepath.Join(s.cfg.DataDir, "cookies")).Load(&cred); err == nil {
-		go s.watchAndUploadSubtitle(result.BVID, result.TaskID, result.DownloadDir, &cred)
+		go s.watchAndUploadSubtitle(result.BVID, result.ArtifactID(), result.DownloadDir, &cred)
 	}
 }
 

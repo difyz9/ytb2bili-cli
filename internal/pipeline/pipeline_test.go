@@ -57,6 +57,17 @@ func TestCallerProvidedTaskIDIsPreserved(t *testing.T) {
 	}
 }
 
+func TestArtifactIDPrefersVideoID(t *testing.T) {
+	result := &Result{TaskID: "task-123", VideoID: "dQw4w9WgXcQ"}
+	if got := result.ArtifactID(); got != "dQw4w9WgXcQ" {
+		t.Fatalf("ArtifactID()=%q", got)
+	}
+	result.VideoID = ""
+	if got := result.ArtifactID(); got != "task-123" {
+		t.Fatalf("fallback ArtifactID()=%q", got)
+	}
+}
+
 func TestAudioSyncPlanExpandsTranslationDependencies(t *testing.T) {
 	result, err := (&Processor{Config: &config.Config{DataDir: t.TempDir()}}).Process(context.Background(), Request{
 		URL: "https://youtu.be/dQw4w9WgXcQ", Chain: []string{"audio-sync"}, PlanOnly: true, AudioDir: "/tmp/voice",
