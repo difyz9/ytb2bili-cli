@@ -12,8 +12,12 @@ import (
 var Version = "dev"
 
 func main() {
-	cfg := config.Default()
-	cfg.Init()
+	// 优先加载 config.yaml，不存在则使用默认值
+	cfg, err := config.LoadYAML("config.yaml")
+	if err != nil {
+		cfg = config.Default()
+		cfg.Init()
+	}
 
 	app := command.NewApp(cfg)
 	app.Version = Version
