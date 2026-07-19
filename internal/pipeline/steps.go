@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/zolagz/ytb2bili-go/internal/audiosync"
@@ -33,6 +35,7 @@ func buildRegistry(state *PipelineState, deps stepDeps) (*workflow.Registry, err
 		&downloadStep{config: deps.config},
 		&transcribeStep{},
 		&translateStep{config: deps.config},
+		&ttsStep{config: deps.config},
 		&audioSyncStep{},
 		&metadataStep{config: deps.config},
 		&uploadStep{config: deps.config, tasks: deps.tasks, history: deps.history},
@@ -104,21 +107,57 @@ func (s *translateStep) Run(ctx context.Context, state *PipelineState) error {
 
 type metadataStep struct{ config *config.Config }
 
+// ttsStep 使用 IndexTTS 将翻译后的字幕合成为中文配音片段
+type ttsStep struct{ config *config.Config }
+
+func (*ttsStep) Definition() workflow.Step {
+	return workflow.Step{Name: "tts", Description: "使用 IndexTTS 合成分段中文配音", Requires: []string{"translate"}}
+}
+
+func (s *ttsStep) Run(ctx context.Context, state *PipelineState) error {
+	script := filepath.Join("skills", "audio-video-sync", "scripts", "synthesize_srt.py")
+	audioDir := filepath.Join(state.Result.DownloadDir, "voice")
+	// 确保目录存在
+	if err := os.MkdirAll(audioDir, 0755); err != nil {
+		return fmt.Errorf("创建配音目录失败: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, filepath.Join(s.config.DataDir, "..", ".venv", "bin", "python3"), script,
+		"--srt", state.Result.SubtitlePath,
+		"--output-dir", audioDir,
+		"--api-url", "http://localhost:18765",
+		"--concurrency", "1",
+		"--retries", "3",
+		"--timeout", "180",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("TTS 合成失败: %w\n输出: %s", err, string(output))
+	}
+	fmt.Printf("   %s", string(output))
+	state.AudioDir = audioDir
+	return nil
+}
+
 type audioSyncStep struct{}
 
 func (*audioSyncStep) Definition() workflow.Step {
 	return workflow.Step{Name: "audio-sync", Description: "按字幕时间轴对齐分段配音并替换视频音轨；需要请求提供 audio-dir", Requires: []string{"translate"}}
 }
 func (*audioSyncStep) Run(ctx context.Context, state *PipelineState) error {
-	if state.Request.AudioDir == "" {
-		return fmt.Errorf("audio-sync 需要通过 --audio-dir 提供按字幕编号命名的配音目录")
+	audioDir := state.Request.AudioDir
+	if audioDir == "" && state.AudioDir != "" {
+		audioDir = state.AudioDir
+	}
+	if audioDir == "" {
+		return fmt.Errorf("audio-sync 需要通过 --audio-dir 提供按字幕编号命名的配音目录，或先执行 tts 步骤")
 	}
 	baseName := state.Result.VideoID
 	if baseName == "" {
 		baseName = state.Result.TaskID
 	}
 	output := filepath.Join(state.Result.DownloadDir, baseName+".synced.mp4")
-	result, err := audiosync.Sync(ctx, audiosync.Options{VideoPath: state.Result.VideoPath, SubtitlePath: state.Result.SubtitlePath, AudioDir: state.Request.AudioDir, OutputPath: output, DisableSpeedAdjust: state.Request.DisableAudioSpeedAdjust, MissingMode: state.Request.AudioMissingMode})
+	result, err := audiosync.Sync(ctx, audiosync.Options{VideoPath: state.Result.VideoPath, SubtitlePath: state.Result.SubtitlePath, AudioDir: audioDir, OutputPath: output, DisableSpeedAdjust: state.Request.DisableAudioSpeedAdjust, MissingMode: state.Request.AudioMissingMode})
 	if err != nil {
 		return err
 	}

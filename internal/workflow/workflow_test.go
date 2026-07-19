@@ -13,6 +13,8 @@ func testRegistry(t *testing.T) *Registry {
 		Step{Name: "download", Run: noop},
 		Step{Name: "transcribe", Requires: []string{"download"}, Run: noop},
 		Step{Name: "translate", Requires: []string{"transcribe"}, Run: noop},
+		Step{Name: "tts", Requires: []string{"translate"}, Run: noop},
+		Step{Name: "audio-sync", Requires: []string{"translate"}, Run: noop},
 		Step{Name: "metadata", Requires: []string{"download"}, Run: noop},
 		Step{Name: "upload", Requires: []string{"download", "metadata"}, Run: noop},
 	)
@@ -27,7 +29,7 @@ func TestAdaptivePlannerDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"download", "transcribe", "translate", "metadata", "upload"}
+	want := []string{"download", "transcribe", "translate", "tts", "audio-sync", "metadata", "upload"}
 	if !reflect.DeepEqual(plan, want) {
 		t.Fatalf("plan = %v, want %v", plan, want)
 	}
