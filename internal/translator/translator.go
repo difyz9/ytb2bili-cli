@@ -653,10 +653,7 @@ func getLangName(code string) string {
 	names := map[string]string{
 		"en":      "英文",
 		"zh":      "中文",
-		"zh-CN":   "中文",
-		"zh-Hans": "中文简体",
-		"ja":      "日文",
-		"ko":      "韩文",
+
 	}
 	if name, ok := names[code]; ok {
 		return name

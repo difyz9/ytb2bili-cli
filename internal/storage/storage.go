@@ -319,12 +319,9 @@ func BuildSubtitleCandidates(videoID, dlDir string) []SubtitleTrack {
 	}
 	suffixes := []suffixLang{
 		{".zh-hans.srt", "zh"}, // 当前简体中文输出格式，最优先
-		{".en.zh.srt", "zh"},   // 兼容旧版翻译结果
 		{".zh-hant.srt", "zh-TW"},
 		{".zh.srt", "zh"},
 		{".en.srt", "en"},
-		{".ja.srt", "ja"},
-		{".ko.srt", "ko"},
 		{".srt", "en"}, // BCut ASR 原始转录（无语言后缀，作为英语 fallback）
 	}
 
