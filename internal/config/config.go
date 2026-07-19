@@ -5,24 +5,25 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"gopkg.in/yaml.v3"
 )
 
 // Config 配置
 type Config struct {
-	DataDir        string   `toml:"data_dir"`
-	LLMAPIKey      string   `toml:"llm_api_key"`
-	LLMBaseURL     string   `toml:"llm_base_url"`
-	LLMModel       string   `toml:"llm_model"`
-	BiliTid        int      `toml:"bili_tid"`
-	YouTubeCookies string   `toml:"youtube_cookies"`
-	ServerToken    string   `toml:"server_token"`
-	AllowedOrigins []string `toml:"allowed_origins"`
+	DataDir        string   `toml:"data_dir" yaml:"data_dir"`
+	LLMAPIKey      string   `toml:"llm_api_key" yaml:"llm_api_key"`
+	LLMBaseURL     string   `toml:"llm_base_url" yaml:"llm_base_url"`
+	LLMModel       string   `toml:"llm_model" yaml:"llm_model"`
+	BiliTid        int      `toml:"bili_tid" yaml:"bili_tid"`
+	YouTubeCookies string   `toml:"youtube_cookies" yaml:"youtube_cookies"`
+	ServerToken    string   `toml:"server_token" yaml:"server_token"`
+	AllowedOrigins []string `toml:"allowed_origins" yaml:"allowed_origins"`
 
 	// 飞书多维表格配置
-	FeishuAppID     string `toml:"feishu_app_id"`
-	FeishuAppSecret string `toml:"feishu_app_secret"`
-	BitableAppToken string `toml:"bitable_app_token"`
-	BitableTableID  string `toml:"bitable_table_id"`
+	FeishuAppID     string `toml:"feishu_app_id" yaml:"feishu_app_id"`
+	FeishuAppSecret string `toml:"feishu_app_secret" yaml:"feishu_app_secret"`
+	BitableAppToken string `toml:"bitable_app_token" yaml:"bitable_app_token"`
+	BitableTableID  string `toml:"bitable_table_id" yaml:"bitable_table_id"`
 }
 
 func Default() *Config {
@@ -72,6 +73,19 @@ func (c *Config) Init() {
 	if c.BitableTableID == "" {
 		c.BitableTableID = os.Getenv("BITABLE_TABLE_ID")
 	}
+}
+
+func LoadYAML(path string) (*Config, error) {
+	cfg := Default()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return nil, err
+	}
+	cfg.Init()
+	return cfg, nil
 }
 
 func Load(path string) (*Config, error) {

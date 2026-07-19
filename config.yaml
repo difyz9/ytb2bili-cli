@@ -1,0 +1,6 @@
+# ytb2bili-go 依赖配置
+llm_api_key: "sk-489ee4c6456745d2b977a479c51207ef"
+llm_base_url: "https://api.deepseek.com"
+llm_model: "deepseek-v4-flash"
+data_dir: "./data"
+bili_tid: 122
