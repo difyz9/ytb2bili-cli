@@ -24,7 +24,7 @@ func main() {
 	}
 	t := translator.New(translator.Config{
 		APIKey: apiKey, BaseURL: "https://api.deepseek.com", Model: "deepseek-chat",
-		SourceLang: "en", TargetLang: "zh", BatchSize: 1, MaxWorkers: 3, RetryCount: 3, ContextSize: 0,
+		SourceLang: "en", TargetLang: "zh", BatchSize: 3, MaxWorkers: 3, RetryCount: 3, ContextSize: 3,
 	})
 	if err := t.TranslateSRTFile(context.Background(), *input, *output); err != nil {
 		fmt.Fprintln(os.Stderr, err)
