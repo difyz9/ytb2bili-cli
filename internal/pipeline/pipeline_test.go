@@ -57,6 +57,19 @@ func TestCallerProvidedTaskIDIsPreserved(t *testing.T) {
 	}
 }
 
+func TestAudioSyncPlanExpandsTranslationDependencies(t *testing.T) {
+	result, err := (&Processor{Config: &config.Config{DataDir: t.TempDir()}}).Process(context.Background(), Request{
+		URL: "https://youtu.be/dQw4w9WgXcQ", Chain: []string{"audio-sync"}, PlanOnly: true, AudioDir: "/tmp/voice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"download", "transcribe", "translate", "audio-sync"}
+	if !reflect.DeepEqual(result.Plan, want) {
+		t.Fatalf("plan=%v want=%v", result.Plan, want)
+	}
+}
+
 func TestAgentPlannerRequiresGoal(t *testing.T) {
 	_, err := (&Processor{Config: &config.Config{DataDir: t.TempDir(), LLMAPIKey: "unused"}}).Process(context.Background(), Request{
 		URL: "https://youtu.be/dQw4w9WgXcQ", Planner: "agent", PlanOnly: true,

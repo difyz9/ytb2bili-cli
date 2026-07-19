@@ -1,0 +1,4 @@
+interface:
+  display_name: "音画同步"
+  short_description: "按照字幕时间轴智能对齐分段配音并合成可发布的最终视频文件"
+  default_prompt: "Use $audio-video-sync to align segmented voice audio with subtitles and merge it into a video."

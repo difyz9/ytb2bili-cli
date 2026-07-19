@@ -17,17 +17,9 @@ func main() {
 	appToken := os.Getenv("BITABLE_APP_TOKEN")
 	tableID := os.Getenv("BITABLE_TABLE_ID")
 
-	if appID == "" {
-		appID = "cli_aaa921692978dce6"
-	}
-	if appSecret == "" {
-		appSecret = "x6wwyDmSVlbubdcGpO5nKhdwxniTB7ka"
-	}
-	if appToken == "" {
-		appToken = "MEG6bQc6CaXNwbsM1vZc0jBon0Z"
-	}
-	if tableID == "" {
-		tableID = "tblkMgbUbScdevlr"
+	if appID == "" || appSecret == "" || appToken == "" || tableID == "" {
+		fmt.Fprintln(os.Stderr, "缺少配置：请设置 FEISHU_APP_ID、FEISHU_APP_SECRET、BITABLE_APP_TOKEN 和 BITABLE_TABLE_ID")
+		os.Exit(2)
 	}
 
 	fmt.Println("🔍 查询飞书多维表格中的任务...")

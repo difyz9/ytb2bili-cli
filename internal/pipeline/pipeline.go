@@ -24,13 +24,16 @@ type Request struct {
 	Chain                               []string
 	Planner, Goal                       string
 	TaskID                              string
+	AudioDir                            string
+	DisableAudioSpeedAdjust             bool
+	AudioMissingMode                    string
 }
 
 type Result struct {
-	TaskID, VideoID, DownloadDir, VideoPath, SubtitlePath, BVID string
-	Plan                                                        []string
-	Metadata                                                    *metadata.VideoMeta
-	Duration                                                    time.Duration
+	TaskID, VideoID, DownloadDir, VideoPath, SubtitlePath, SyncedVideoPath, BVID string
+	Plan                                                                         []string
+	Metadata                                                                     *metadata.VideoMeta
+	Duration                                                                     time.Duration
 }
 
 type Event struct {

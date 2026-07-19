@@ -103,6 +103,12 @@ func (AdaptivePlanner) Plan(_ context.Context, intent Intent, registry *Registry
 	var add func(string) error
 	add = func(raw string) error {
 		name := normalize(raw)
+		if intent.SkipTranslate && name == "translate" {
+			return fmt.Errorf("workflow: step %q requires translation, but translation is disabled", raw)
+		}
+		if intent.DryRun && name == "upload" {
+			return fmt.Errorf("workflow: step %q is disabled by dry-run", raw)
+		}
 		step, ok := registry.Step(name)
 		if !ok {
 			return fmt.Errorf("workflow: unknown step %q", raw)

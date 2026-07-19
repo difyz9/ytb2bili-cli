@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/zolagz/ytb2bili-go/internal/audiosync"
 	"github.com/zolagz/ytb2bili-go/internal/auth"
 	"github.com/zolagz/ytb2bili-go/internal/bili"
 	"github.com/zolagz/ytb2bili-go/internal/config"
@@ -32,6 +33,7 @@ func buildRegistry(state *PipelineState, deps stepDeps) (*workflow.Registry, err
 		&downloadStep{config: deps.config},
 		&transcribeStep{},
 		&translateStep{config: deps.config},
+		&audioSyncStep{},
 		&metadataStep{config: deps.config},
 		&uploadStep{config: deps.config, tasks: deps.tasks, history: deps.history},
 	}
@@ -101,6 +103,27 @@ func (s *translateStep) Run(ctx context.Context, state *PipelineState) error {
 }
 
 type metadataStep struct{ config *config.Config }
+
+type audioSyncStep struct{}
+
+func (*audioSyncStep) Definition() workflow.Step {
+	return workflow.Step{Name: "audio-sync", Description: "按字幕时间轴对齐分段配音并替换视频音轨；需要请求提供 audio-dir", Requires: []string{"translate"}}
+}
+func (*audioSyncStep) Run(ctx context.Context, state *PipelineState) error {
+	if state.Request.AudioDir == "" {
+		return fmt.Errorf("audio-sync 需要通过 --audio-dir 提供按字幕编号命名的配音目录")
+	}
+	baseName := state.Result.VideoID
+	if baseName == "" { baseName = state.Result.TaskID }
+	output := filepath.Join(state.Result.DownloadDir, baseName+".synced.mp4")
+	result, err := audiosync.Sync(ctx, audiosync.Options{VideoPath: state.Result.VideoPath, SubtitlePath: state.Result.SubtitlePath, AudioDir: state.Request.AudioDir, OutputPath: output, DisableSpeedAdjust: state.Request.DisableAudioSpeedAdjust, MissingMode: state.Request.AudioMissingMode})
+	if err != nil {
+		return err
+	}
+	state.Result.SyncedVideoPath = result.Output
+	state.Result.VideoPath = result.Output
+	return nil
+}
 
 func (*metadataStep) Definition() workflow.Step {
 	return workflow.Step{Name: "metadata", Description: "生成标题、简介和标签", Requires: []string{"download"}}

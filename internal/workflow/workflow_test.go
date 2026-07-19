@@ -105,3 +105,18 @@ func TestAgentPlannerCannotBypassDryRun(t *testing.T) {
 		t.Fatalf("plan=%v want empty", plan)
 	}
 }
+
+func TestDisabledDependencyIsRejected(t *testing.T) {
+	noop := func(context.Context, *State) error { return nil }
+	registry, err := NewRegistry(
+		Step{Name: "translate", Run: noop},
+		Step{Name: "audio-sync", Requires: []string{"translate"}, Run: noop},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = (AdaptivePlanner{}).Plan(context.Background(), Intent{Requested: []string{"audio-sync"}, SkipTranslate: true}, registry)
+	if err == nil {
+		t.Fatal("expected disabled dependency error")
+	}
+}
