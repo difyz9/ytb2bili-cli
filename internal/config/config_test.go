@@ -18,3 +18,19 @@ func TestInitLoadsServerSecurityEnvironment(t *testing.T) {
 		t.Fatalf("origins=%v", cfg.AllowedOrigins)
 	}
 }
+
+func TestDefaultTranslationTargetIsSimplifiedChinese(t *testing.T) {
+	cfg := Default()
+	if got := cfg.EffectiveTranslationTargetLang(); got != "zh-Hans" {
+		t.Fatalf("target language=%q", got)
+	}
+}
+
+func TestTranslationTargetEnvironmentOverridesConfig(t *testing.T) {
+	t.Setenv("YTB2BILI_TRANSLATION_TARGET_LANG", "ja")
+	cfg := Default()
+	cfg.Init()
+	if got := cfg.EffectiveTranslationTargetLang(); got != "ja" {
+		t.Fatalf("target language=%q", got)
+	}
+}

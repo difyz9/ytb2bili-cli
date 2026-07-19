@@ -99,7 +99,7 @@ TASK_DIR="data/downloads/<videoId>"
 VIDEO="$TASK_DIR/VIDEO_ID.mp4"
 SOURCE_SRT="$TASK_DIR/VIDEO_ID.en.srt"
 CLEAN_SRT="$TASK_DIR/VIDEO_ID.en.cleaned.srt"
-ZH_SRT="$TASK_DIR/VIDEO_ID.en.cleaned.zh.srt"
+ZH_SRT="$TASK_DIR/VIDEO_ID.zh-Hans.srt"
 AUDIO_DIR="$TASK_DIR/indextts_audio"
 OUTPUT="$TASK_DIR/VIDEO_ID.zh.indextts.synced.mp4"
 
@@ -189,6 +189,15 @@ export YOUTUBE_COOKIES="/path/to/youtube_cookies.txt"
 # macOS 没有有效 Cookies 文件时会默认读取 Chrome 登录态
 export YOUTUBE_COOKIES_FROM_BROWSER="chrome"
 ```
+
+`config.yaml` 可以统一指定字幕翻译目标语言；未配置时默认为简体中文：
+
+```yaml
+translation_target_lang: zh-Hans
+```
+
+也可通过 `YTB2BILI_TRANSLATION_TARGET_LANG` 覆盖配置。命令行
+`--target-lang` 和 HTTP 请求的 `targetLang` 优先级最高。
 
 ### 使用
 
@@ -280,7 +289,7 @@ y2b submit [选项] <YouTube URL>
 
 选项:
   --source-lang    源语言 (默认: en)
-  --target-lang    目标语言 (默认: zh)
+  --target-lang    目标语言（默认读取 config.yaml，缺省为 zh-Hans 简体中文）
   --tid            B站分区ID (默认: 122)
   --dry-run        仅处理不上传
   --skip-translate 跳过翻译
@@ -319,6 +328,7 @@ HTTP API 使用相同的任务链处理器，可在提交 JSON 中传入：
 ```json
 {
   "url": "https://www.youtube.com/watch?v=VIDEO_ID",
+  "targetLang": "zh-Hans",
   "chain": ["translate"],
   "planner": "adaptive",
   "goal": "生成中文字幕但不要投稿",

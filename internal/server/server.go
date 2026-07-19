@@ -52,6 +52,8 @@ type VideoTask struct {
 	SkipTranslate           bool            `json:"skip_translate,omitempty"`
 	Planner                 string          `json:"planner,omitempty"`
 	Goal                    string          `json:"goal,omitempty"`
+	SourceLang              string          `json:"source_lang,omitempty"`
+	TargetLang              string          `json:"target_lang,omitempty"`
 	AudioDir                string          `json:"audio_dir,omitempty"`
 	DisableAudioSpeedAdjust bool            `json:"disable_audio_speed_adjust,omitempty"`
 	AudioMissingMode        string          `json:"audio_missing_mode,omitempty"`
@@ -80,6 +82,8 @@ type SubmitRequest struct {
 	SkipTranslate           bool            `json:"skipTranslate,omitempty"`
 	Planner                 string          `json:"planner,omitempty"`
 	Goal                    string          `json:"goal,omitempty"`
+	SourceLang              string          `json:"sourceLang,omitempty"`
+	TargetLang              string          `json:"targetLang,omitempty"`
 	AudioDir                string          `json:"audioDir,omitempty"`
 	DisableAudioSpeedAdjust bool            `json:"disableAudioSpeedAdjust,omitempty"`
 	AudioMissingMode        string          `json:"audioMissingMode,omitempty"`
@@ -332,7 +336,7 @@ func (s *Server) processVideoTask(task *VideoTask) {
 		}
 	}}
 	result, err := processor.Process(context.Background(), pipeline.Request{
-		URL: task.URL, SourceLang: "en", TargetLang: "zh", Tid: s.cfg.BiliTid,
+		URL: task.URL, SourceLang: task.SourceLang, TargetLang: task.TargetLang, Tid: s.cfg.BiliTid,
 		Source: "server", CookiesPath: cookiesPath, Chain: task.Chain,
 		DryRun: task.DryRun, SkipTranslate: task.SkipTranslate,
 		Planner: task.Planner, Goal: task.Goal,
@@ -532,6 +536,8 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		SkipTranslate:           req.SkipTranslate,
 		Planner:                 req.Planner,
 		Goal:                    req.Goal,
+		SourceLang:              req.SourceLang,
+		TargetLang:              req.TargetLang,
 		AudioDir:                req.AudioDir,
 		DisableAudioSpeedAdjust: req.DisableAudioSpeedAdjust,
 		AudioMissingMode:        req.AudioMissingMode,

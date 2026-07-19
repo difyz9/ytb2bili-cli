@@ -354,12 +354,12 @@ func (d *Debugger) processVideo(url, videoID, title, cookiesPath string, msg *Fe
 		BaseURL:    d.cfg.LLMBaseURL,
 		Model:      d.cfg.LLMModel,
 		SourceLang: "en",
-		TargetLang: "zh",
+		TargetLang: d.cfg.EffectiveTranslationTargetLang(),
 		BatchSize:  25,
 		MaxWorkers: 3,
 	})
 
-	zhSrtPath := outputDir + "/subtitle.zh.srt"
+	zhSrtPath := translator.TranslatedSRTPath(srtPath, d.cfg.EffectiveTranslationTargetLang())
 	err = trans.TranslateSRTFile(context.Background(), srtPath, zhSrtPath)
 	if err != nil {
 		fmt.Printf("   ❌ 翻译失败: %v\n", err)
