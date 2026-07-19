@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -56,7 +57,7 @@ type Translator struct {
 // New 创建翻译器
 func New(config Config) *Translator {
 	if config.BatchSize <= 0 {
-		config.BatchSize = 25
+		config.BatchSize = 3
 	}
 	if config.MaxWorkers <= 0 {
 		config.MaxWorkers = 3
@@ -98,6 +99,10 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	if len(entries) == 0 {
 		return fmt.Errorf("字幕文件为空")
 	}
+	entries = DeduplicateRollingEntries(entries)
+	if len(entries) == 0 {
+		return fmt.Errorf("字幕去重后为空")
+	}
 	fmt.Printf("  解析完成: %d 条字幕\n", len(entries))
 
 	// 3. 提取纯文本
@@ -115,15 +120,42 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	fmt.Printf("  翻译完成: %d/%d 条, 耗时 %v\n", len(result.TranslatedTexts), len(texts), result.Duration)
 
 	// 5. 生成译文 SRT
-	content := GenerateSRT(entries, result.TranslatedTexts)
+	entries, translatedTexts := DeduplicateTranslations(entries, result.TranslatedTexts)
+	content := GenerateSRT(entries, translatedTexts)
+	fmt.Printf("  保存前去重完成: %d 条字幕\n", len(entries))
 
 	// 6. 写入输出文件
-	if err := os.WriteFile(outputPath, []byte(content), 0644); err != nil {
+	if err := writeFileAtomic(outputPath, []byte(content)); err != nil {
 		return fmt.Errorf("保存翻译字幕失败: %w", err)
 	}
 	fmt.Printf("  保存到: %s\n", outputPath)
 
 	return nil
+}
+
+func writeFileAtomic(path string, content []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(dir, ".translated-*.srt")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err := temporary.Write(content); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Chmod(0644); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }
 
 // TranslateTexts 批量翻译文本
@@ -393,7 +425,7 @@ func ParseSRT(content string) ([]SRTEntry, error) {
 
 	flush := func() {
 		if stage == 2 && len(textLines) > 0 {
-			current.Text = strings.Join(textLines, " ")
+			current.Text = strings.Join(textLines, "\n")
 			entries = append(entries, current)
 		}
 		current = SRTEntry{}
@@ -427,6 +459,58 @@ func ParseSRT(content string) ([]SRTEntry, error) {
 	flush()
 
 	return entries, nil
+}
+
+// DeduplicateRollingEntries removes lines repeated by YouTube rolling captions.
+// A line is emitted only when it is not present in the immediately preceding cue.
+func DeduplicateRollingEntries(entries []SRTEntry) []SRTEntry {
+	result := make([]SRTEntry, 0, len(entries))
+	previous := map[string]struct{}{}
+	for _, entry := range entries {
+		current := map[string]struct{}{}
+		var additions []string
+		for _, line := range strings.Split(entry.Text, "\n") {
+			line = strings.Join(strings.Fields(line), " ")
+			if line == "" {
+				continue
+			}
+			current[line] = struct{}{}
+			if _, repeated := previous[line]; !repeated {
+				additions = append(additions, line)
+			}
+		}
+		previous = current
+		if len(additions) == 0 {
+			continue
+		}
+		entry.Index = len(result) + 1
+		entry.Text = strings.Join(additions, " ")
+		result = append(result, entry)
+	}
+	return result
+}
+
+// DeduplicateTranslations removes consecutive identical translated captions
+// before writing the output file and keeps SRT indices contiguous.
+func DeduplicateTranslations(entries []SRTEntry, texts []string) ([]SRTEntry, []string) {
+	filteredEntries := make([]SRTEntry, 0, len(entries))
+	filteredTexts := make([]string, 0, len(texts))
+	previous := ""
+	for i, entry := range entries {
+		text := entry.Text
+		if i < len(texts) && strings.TrimSpace(texts[i]) != "" {
+			text = strings.TrimSpace(texts[i])
+		}
+		normalized := strings.Join(strings.Fields(text), " ")
+		if normalized == "" || normalized == previous {
+			continue
+		}
+		entry.Index = len(filteredEntries) + 1
+		filteredEntries = append(filteredEntries, entry)
+		filteredTexts = append(filteredTexts, text)
+		previous = normalized
+	}
+	return filteredEntries, filteredTexts
 }
 
 // GenerateSRT 生成 SRT 内容
@@ -501,17 +585,18 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 	}
 
 	// 生成输出路径
-	outputPath := strings.TrimSuffix(inputPath, ".srt") + "." + targetLang + ".srt"
+	outputPath := TranslatedSRTPath(inputPath, targetLang)
 
 	// 创建翻译器
 	translator := New(Config{
-		APIKey:     apiKey,
-		BaseURL:    baseURL,
-		Model:      model,
-		SourceLang: sourceLang,
-		TargetLang: targetLang,
-		BatchSize:  25,
-		MaxWorkers: 3,
+		APIKey:      apiKey,
+		BaseURL:     baseURL,
+		Model:       model,
+		SourceLang:  sourceLang,
+		TargetLang:  targetLang,
+		BatchSize:   3,
+		MaxWorkers:  3,
+		ContextSize: 3,
 	})
 
 	// 翻译
@@ -520,6 +605,18 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 	}
 
 	return outputPath, nil
+}
+
+// TranslatedSRTPath returns a stable output path without appending the target
+// language twice when an already translated file is passed in.
+func TranslatedSRTPath(inputPath, targetLang string) string {
+	ext := filepath.Ext(inputPath)
+	base := strings.TrimSuffix(inputPath, ext)
+	suffix := "." + targetLang
+	if strings.HasSuffix(strings.ToLower(base), strings.ToLower(suffix)) {
+		return base + ".srt"
+	}
+	return base + suffix + ".srt"
 }
 
 // CallLLM 调用 LLM（兼容旧接口）
