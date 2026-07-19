@@ -42,7 +42,7 @@ func main() {
 	}
 	t := translator.New(translator.Config{
 		APIKey: appConfig.LLMAPIKey, BaseURL: appConfig.LLMBaseURL, Model: appConfig.LLMModel,
-		SourceLang: *sourceLang, TargetLang: *targetLang, BatchSize: 3, MaxWorkers: 3, RetryCount: 3, ContextSize: 3,
+		SourceLang: *sourceLang, TargetLang: *targetLang, BatchSize: 25, MaxWorkers: 3, RetryCount: 2, ContextSize: 2,
 	})
 	if err := t.TranslateSRTFile(context.Background(), *input, *output); err != nil {
 		fmt.Fprintln(os.Stderr, err)

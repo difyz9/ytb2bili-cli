@@ -108,8 +108,8 @@ python3 skills/audio-video-sync/scripts/clean_rolling_srt.py \
   --input "$SOURCE_SRT" \
   --output "$CLEAN_SRT"
 
-# 2. 每批 3 条、携带上下文翻译；保存前再次去重
-go run ./cmd/translate-srt \
+# 2. 默认每批 25 条、前后各携带 2 条上下文翻译；输入输出条数严格一致
+go run ./cmd/llm-batch-translator \
   --input "$CLEAN_SRT" \
   --output "$ZH_SRT"
 
@@ -136,6 +136,23 @@ ffprobe -v error \
   -show_entries stream=codec_type,codec_name,duration:format=duration,size \
   -of json "$OUTPUT"
 ```
+
+批量翻译器也可以独立编译使用：
+
+```bash
+go build -o bin/llm-batch-translator ./cmd/llm-batch-translator
+
+./bin/llm-batch-translator \
+  --config config.yaml \
+  --input data/downloads/VIDEO_ID/VIDEO_ID.en.srt \
+  --target-lang zh-Hans \
+  --batch-size 25 \
+  --workers 3 \
+  --retries 2 \
+  --context-size 2
+```
+
+`--output` 默认生成 `VIDEO_ID.zh-Hans.srt`。每批的 25 条是待翻译字幕，前后文只用于保持语义连贯，不计入批次数量，也不会写入输出。翻译器严格保留输入字幕的条数、序号和时间轴；如果需要清理 YouTube 滚动字幕，必须先显式运行第 1 步的清理脚本。API Key 默认读取 `DEEPSEEK_API_KEY`；API 地址和模型可通过 `config.yaml`、`LLM_BASE_URL`、`LLM_MODEL` 或对应命令行参数覆盖。
 
 IndexTTS2 默认地址为 `http://localhost:18765`。可用参数包括：
 
