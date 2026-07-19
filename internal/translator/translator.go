@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zolagz/ytb2bili-go/internal/config"
@@ -36,9 +37,25 @@ type Config struct {
 
 // Result 翻译结果
 type Result struct {
-	OriginalTexts   []string
-	TranslatedTexts []string
-	Duration        time.Duration
+	OriginalTexts      []string
+	TranslatedTexts    []string
+	Duration           time.Duration
+	Errors             []error
+	SkippedTranslation bool
+	DetectedLanguage   string
+}
+
+type translateTask struct {
+	groupIndex  int
+	texts       []string
+	prevContext []string
+	nextContext []string
+}
+
+type translateResult struct {
+	groupIndex int
+	texts      []string
+	err        error
 }
 
 // SRTEntry SRT 条目
@@ -72,7 +89,7 @@ func New(config Config) *Translator {
 		config.SourceLang = "en"
 	}
 	if config.TargetLang == "" {
-		config.TargetLang = "zh"
+		config.TargetLang = "zh-Hans"
 	}
 
 	return &Translator{
@@ -170,93 +187,109 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 			Duration:        time.Since(startTime),
 		}, nil
 	}
+	if sameLanguage(t.config.SourceLang, t.config.TargetLang) {
+		copied := append([]string(nil), texts...)
+		return &Result{
+			OriginalTexts: texts, TranslatedTexts: copied,
+			Duration: time.Since(startTime), SkippedTranslation: true,
+			DetectedLanguage: t.config.SourceLang,
+		}, nil
+	}
 
 	totalGroups := (len(texts) + t.config.BatchSize - 1) / t.config.BatchSize
 	fmt.Printf("  分组: %d 组, 每组最多 %d 句\n", totalGroups, t.config.BatchSize)
 
-	// 并发翻译
-	type taskResult struct {
-		groupIndex int
-		result     []string
-		err        error
-	}
-
-	taskChan := make(chan int, totalGroups)
-	resultChan := make(chan taskResult, totalGroups)
+	taskChan := make(chan translateTask)
+	resultChan := make(chan translateResult, totalGroups)
 
 	// 启动 workers
+	var workers sync.WaitGroup
 	for i := 0; i < t.config.MaxWorkers; i++ {
+		workers.Add(1)
 		go func() {
-			for groupIdx := range taskChan {
-				start := groupIdx * t.config.BatchSize
-				end := start + t.config.BatchSize
-				if end > len(texts) {
-					end = len(texts)
+			defer workers.Done()
+			for task := range taskChan {
+				translated, err := t.translateGroupWithRetry(ctx, task.texts, task.prevContext, task.nextContext)
+				if err != nil {
+					err = fmt.Errorf("第 %d/%d 组: %w", task.groupIndex+1, totalGroups, err)
 				}
-
-				currentGroup := texts[start:end]
-
-				// 获取上下文
-				var prevContext, nextContext []string
-				if start > 0 && t.config.ContextSize > 0 {
-					prevStart := start - t.config.ContextSize
-					if prevStart < 0 {
-						prevStart = 0
-					}
-					prevContext = texts[prevStart:start]
+				select {
+				case resultChan <- translateResult{groupIndex: task.groupIndex, texts: translated, err: err}:
+				case <-ctx.Done():
+					return
 				}
-				if end < len(texts) && t.config.ContextSize > 0 {
-					nextEnd := end + t.config.ContextSize
-					if nextEnd > len(texts) {
-						nextEnd = len(texts)
-					}
-					nextContext = texts[end:nextEnd]
-				}
-
-				translated, err := t.translateGroupWithRetry(ctx, currentGroup, prevContext, nextContext)
-				resultChan <- taskResult{groupIndex: groupIdx, result: translated, err: err}
 			}
 		}()
 	}
 
 	// 发送任务
 	go func() {
-		for i := 0; i < totalGroups; i++ {
-			taskChan <- i
+		defer close(taskChan)
+		for groupIndex := 0; groupIndex < totalGroups; groupIndex++ {
+			start := groupIndex * t.config.BatchSize
+			end := min(start+t.config.BatchSize, len(texts))
+			prevStart := start
+			if t.config.ContextSize > 0 {
+				prevStart = max(0, start-t.config.ContextSize)
+			}
+			nextEnd := end
+			if t.config.ContextSize > 0 {
+				nextEnd = min(len(texts), end+t.config.ContextSize)
+			}
+			task := translateTask{
+				groupIndex: groupIndex, texts: texts[start:end],
+				prevContext: texts[prevStart:start], nextContext: texts[end:nextEnd],
+			}
+			select {
+			case taskChan <- task:
+			case <-ctx.Done():
+				return
+			}
 		}
-		close(taskChan)
+	}()
+	go func() {
+		workers.Wait()
+		close(resultChan)
 	}()
 
 	// 收集结果
 	results := make(map[int][]string)
-	var lastErr error
-
-	for i := 0; i < totalGroups; i++ {
-		res := <-resultChan
+	var translationErrors []error
+	for res := range resultChan {
 		if res.err != nil {
-			lastErr = res.err
+			translationErrors = append(translationErrors, res.err)
 			continue
 		}
-		results[res.groupIndex] = res.result
+		results[res.groupIndex] = res.texts
 		fmt.Printf("  组 %d/%d 翻译完成\n", res.groupIndex+1, totalGroups)
 	}
 
-	if lastErr != nil {
-		return nil, lastErr
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(translationErrors) > 0 {
+		return nil, fmt.Errorf("%d 个翻译组失败，首个错误: %w", len(translationErrors), translationErrors[0])
 	}
 
 	// 合并结果
 	var allTranslated []string
 	for i := 0; i < totalGroups; i++ {
-		if groupResult, ok := results[i]; ok {
-			allTranslated = append(allTranslated, groupResult...)
+		groupResult, ok := results[i]
+		if !ok {
+			return nil, fmt.Errorf("翻译结果缺少第 %d/%d 组", i+1, totalGroups)
 		}
+		allTranslated = append(allTranslated, groupResult...)
+	}
+	if len(allTranslated) != len(texts) {
+		return nil, fmt.Errorf("翻译总数不匹配: 期望 %d 条，实际 %d 条", len(texts), len(allTranslated))
 	}
 
 	return &Result{
-		OriginalTexts:   texts,
-		TranslatedTexts: allTranslated,
-		Duration:        time.Since(startTime),
+		OriginalTexts:    texts,
+		TranslatedTexts:  allTranslated,
+		Duration:         time.Since(startTime),
+		Errors:           translationErrors,
+		DetectedLanguage: t.config.SourceLang,
 	}, nil
 }
 
@@ -265,7 +298,14 @@ func (t *Translator) translateGroupWithRetry(ctx context.Context, texts []string
 
 	for attempt := 0; attempt <= t.config.RetryCount; attempt++ {
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt) * time.Second)
+			delay := time.Duration(1<<(attempt-1)) * time.Second
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
 		}
 
 		result, err := t.translateGroup(ctx, texts, prevContext, nextContext)
@@ -624,8 +664,27 @@ func getLangName(code string) string {
 	return code
 }
 
+func sameLanguage(source, target string) bool {
+	canonical := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if parts := strings.FieldsFunc(value, func(r rune) bool { return r == '-' || r == '_' }); len(parts) > 0 {
+			return parts[0]
+		}
+		return value
+	}
+	source, target = canonical(source), canonical(target)
+	return source != "" && source == target
+}
+
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b
@@ -697,7 +756,28 @@ func TranslatedSRTPath(inputPath, targetLang string) string {
 	if strings.HasSuffix(strings.ToLower(base), strings.ToLower(suffix)) {
 		return base + ".srt"
 	}
+	base = trimSubtitleProcessingSuffix(base)
 	return base + suffix + ".srt"
+}
+
+func trimSubtitleProcessingSuffix(base string) string {
+	if strings.EqualFold(filepath.Ext(base), ".cleaned") {
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	language := strings.TrimPrefix(filepath.Ext(base), ".")
+	if isLanguageTag(language) {
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	return base
+}
+
+func isLanguageTag(value string) bool {
+	_, ok := map[string]struct{}{
+		"ar": {}, "de": {}, "en": {}, "es": {}, "fr": {}, "it": {},
+		"ja": {}, "ko": {}, "pt": {}, "ru": {}, "zh": {}, "zh-cn": {},
+		"zh-hans": {}, "zh-hant": {},
+	}[strings.ToLower(strings.TrimSpace(value))]
+	return ok
 }
 
 // CallLLM 调用 LLM（兼容旧接口）

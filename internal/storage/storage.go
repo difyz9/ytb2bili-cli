@@ -300,7 +300,8 @@ func (s *SubtitleStore) path(videoID string) string {
 
 // BuildSubtitleCandidates 扫描下载目录中的所有 SRT 字幕文件
 // 按优先级自动识别语言后缀（优先匹配更具体的后缀）
-// 支持：.en.zh.srt (翻译), .zh-hant.srt, .zh.srt, .en.srt, .ja.srt, .srt (BCut ASR fallback)
+// 支持：.zh-Hans.srt (简体翻译), .en.zh.srt (旧格式), .zh-Hant.srt,
+// .zh.srt, .en.srt, .ja.srt, .srt (BCut ASR fallback)
 func BuildSubtitleCandidates(videoID, dlDir string) []SubtitleTrack {
 	if dlDir == "" {
 		return nil
@@ -317,9 +318,9 @@ func BuildSubtitleCandidates(videoID, dlDir string) []SubtitleTrack {
 		lang   string
 	}
 	suffixes := []suffixLang{
-		{".en.zh.srt", "zh"}, // 翻译结果（从 en → zh，最优先）
+		{".zh-hans.srt", "zh"}, // 当前简体中文输出格式，最优先
+		{".en.zh.srt", "zh"},   // 兼容旧版翻译结果
 		{".zh-hant.srt", "zh-TW"},
-		{".zh-hans.srt", "zh"},
 		{".zh.srt", "zh"},
 		{".en.srt", "en"},
 		{".ja.srt", "ja"},
@@ -330,35 +331,25 @@ func BuildSubtitleCandidates(videoID, dlDir string) []SubtitleTrack {
 	seen := make(map[string]bool)
 	var tracks []SubtitleTrack
 
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".srt") {
+	for _, sl := range suffixes {
+		if seen[sl.lang] {
 			continue
 		}
-		name := strings.ToLower(e.Name())
-
-		var language string
-		for _, sl := range suffixes {
-			if strings.HasSuffix(name, sl.suffix) {
-				language = sl.lang
-				break
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), sl.suffix) {
+				continue
 			}
+			seen[sl.lang] = true
+			filePath := filepath.Join(dlDir, e.Name())
+			tracks = append(tracks, SubtitleTrack{
+				VideoID:  videoID,
+				FilePath: filePath,
+				FileName: e.Name(),
+				Language: sl.lang,
+				Status:   SubtitleStatusPending,
+			})
+			break
 		}
-		if language == "" {
-			continue
-		}
-		if seen[language] {
-			continue // 只保留每种语言的第一个
-		}
-		seen[language] = true
-
-		filePath := filepath.Join(dlDir, e.Name())
-		tracks = append(tracks, SubtitleTrack{
-			VideoID:  videoID,
-			FilePath: filePath,
-			FileName: e.Name(),
-			Language: language,
-			Status:   SubtitleStatusPending,
-		})
 	}
 
 	return tracks

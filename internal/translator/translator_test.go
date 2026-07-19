@@ -1,8 +1,10 @@
 package translator
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDeduplicateRollingEntries(t *testing.T) {
@@ -17,6 +19,35 @@ func TestDeduplicateRollingEntries(t *testing.T) {
 	}
 	if got[0].Index != 1 || got[1].Index != 2 {
 		t.Fatalf("indices were not normalized: %#v", got)
+	}
+}
+
+func TestTranslateTextsSkipsSameLanguage(t *testing.T) {
+	translator := New(Config{SourceLang: "zh-CN", TargetLang: "zh-Hans"})
+	input := []string{"第一句", "第二句"}
+	result, err := translator.TranslateTexts(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.SkippedTranslation || result.DetectedLanguage != "zh-CN" {
+		t.Fatalf("unexpected skip result: %#v", result)
+	}
+	if len(result.TranslatedTexts) != len(input) || result.TranslatedTexts[1] != input[1] {
+		t.Fatalf("unexpected copied translations: %#v", result.TranslatedTexts)
+	}
+}
+
+func TestRetryStopsWhenContextIsCancelled(t *testing.T) {
+	translator := New(Config{
+		APIKey: "unused", BaseURL: "http://127.0.0.1:1", RetryCount: 5,
+		SourceLang: "en", TargetLang: "zh",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	_, err := translator.translateGroupWithRetry(ctx, []string{"hello"}, nil, nil)
+	if err == nil || time.Since(started) > time.Second {
+		t.Fatalf("cancelled retry returned err=%v after %v", err, time.Since(started))
 	}
 }
 
@@ -35,13 +66,16 @@ func TestDeduplicateTranslations(t *testing.T) {
 }
 
 func TestTranslatedSRTPath(t *testing.T) {
-	if got := TranslatedSRTPath("/tmp/video.en.srt", "zh"); got != "/tmp/video.en.zh.srt" {
+	if got := TranslatedSRTPath("/tmp/video.en.srt", "zh-Hans"); got != "/tmp/video.zh-Hans.srt" {
 		t.Fatalf("unexpected translated path: %s", got)
 	}
-	if got := TranslatedSRTPath("/tmp/video.en.zh.srt", "zh"); got != "/tmp/video.en.zh.srt" {
+	if got := TranslatedSRTPath("/tmp/video.zh-Hans.srt", "zh-Hans"); got != "/tmp/video.zh-Hans.srt" {
 		t.Fatalf("target language was appended twice: %s", got)
 	}
-	if got := TranslatedSRTPath("/tmp/video.EN.SRT", "zh"); !strings.HasSuffix(got, ".zh.srt") {
+	if got := TranslatedSRTPath("/tmp/video.EN.SRT", "zh-Hans"); !strings.HasSuffix(got, "/video.zh-Hans.srt") {
 		t.Fatalf("unexpected uppercase extension handling: %s", got)
+	}
+	if got := TranslatedSRTPath("/tmp/video.en.cleaned.srt", "zh-Hans"); got != "/tmp/video.zh-Hans.srt" {
+		t.Fatalf("cleaned source suffix was retained: %s", got)
 	}
 }

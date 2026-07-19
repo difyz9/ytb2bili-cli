@@ -4,3 +4,4 @@ llm_base_url: "https://api.deepseek.com"
 llm_model: "deepseek-v4-flash"
 data_dir: "./data"
 bili_tid: 122
+translation_target_lang: zh-Hans

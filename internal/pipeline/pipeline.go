@@ -71,7 +71,7 @@ func (p *Processor) Process(ctx context.Context, req Request) (*Result, error) {
 		req.SourceLang = "en"
 	}
 	if req.TargetLang == "" {
-		req.TargetLang = "zh"
+		req.TargetLang = p.Config.EffectiveTranslationTargetLang()
 	}
 	if req.Tid == 0 {
 		req.Tid = p.Config.BiliTid

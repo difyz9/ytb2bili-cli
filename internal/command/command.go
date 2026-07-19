@@ -678,7 +678,7 @@ func submitCommand(cfg *config.Config) *cli.Command {
 		ArgsUsage: "<YouTube URL>",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "source-lang", Value: "en", Usage: "源语言"},
-			&cli.StringFlag{Name: "target-lang", Value: "zh", Usage: "目标语言"},
+			&cli.StringFlag{Name: "target-lang", Value: cfg.EffectiveTranslationTargetLang(), Usage: "目标语言（默认读取 translation_target_lang）"},
 			&cli.IntFlag{Name: "tid", Value: cfg.BiliTid, Usage: "B站分区ID"},
 			&cli.BoolFlag{Name: "dry-run", Usage: "仅处理不上传"},
 			&cli.BoolFlag{Name: "skip-translate", Usage: "跳过翻译"},
@@ -1483,7 +1483,7 @@ func autoCommand(cfg *config.Config) *cli.Command {
 					}
 				}}
 				result, err := processor.Process(c.Context, pipeline.Request{
-					URL: v.URL, SourceLang: "en", TargetLang: "zh", Tid: c.Int("tid"),
+					URL: v.URL, SourceLang: "en", TargetLang: cfg.EffectiveTranslationTargetLang(), Tid: c.Int("tid"),
 					SkipTranslate: c.Bool("skip-translate"), Source: v.Channel,
 				})
 				if err != nil {
@@ -1718,7 +1718,7 @@ func queueCommand(cfg *config.Config) *cli.Command {
 					&cli.BoolFlag{Name: "skip-translate", Usage: "跳过翻译"},
 					&cli.IntFlag{Name: "tid", Value: cfg.BiliTid, Usage: "B站分区ID"},
 					&cli.StringFlag{Name: "source-lang", Value: "en", Usage: "源语言"},
-					&cli.StringFlag{Name: "target-lang", Value: "zh", Usage: "目标语言"},
+					&cli.StringFlag{Name: "target-lang", Value: cfg.EffectiveTranslationTargetLang(), Usage: "目标语言（默认读取 translation_target_lang）"},
 					&cli.IntFlag{Name: "poll-interval", Value: 30, Usage: "空闲时轮询间隔（秒）"},
 				},
 				Action: func(c *cli.Context) error {

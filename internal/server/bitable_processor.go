@@ -105,7 +105,7 @@ func (p *BitableProcessor) processTask(ctx context.Context, task *feishu.VideoTa
 		}
 	}}
 	result, err := processor.Process(ctx, pipeline.Request{
-		URL: task.URL, SourceLang: "en", TargetLang: "zh", Source: "bitable",
+		URL: task.URL, SourceLang: "en", TargetLang: p.cfg.EffectiveTranslationTargetLang(), Source: "bitable",
 		CookiesPath: cookiesPath, Chain: []string{"translate"}, DryRun: true,
 	})
 	if err != nil {
