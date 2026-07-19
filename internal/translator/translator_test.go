@@ -2,6 +2,11 @@ package translator
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +42,68 @@ func TestTranslateTextsSkipsSameLanguage(t *testing.T) {
 	}
 }
 
+func TestTranslateSRTFilePreservesEntryCountAndTimeline(t *testing.T) {
+	directory := t.TempDir()
+	inputPath := filepath.Join(directory, "video.zh.srt")
+	outputPath := filepath.Join(directory, "video.zh-Hans.srt")
+	input := `1
+00:00:00,000 --> 00:00:01,000
+重复字幕
+
+2
+00:00:01,000 --> 00:00:02,000
+重复字幕
+
+3
+00:00:02,000 --> 00:00:03,000
+下一条字幕
+
+`
+	if err := os.WriteFile(inputPath, []byte(input), 0644); err != nil {
+		t.Fatal(err)
+	}
+	engine := New(Config{SourceLang: "zh", TargetLang: "zh-Hans"})
+	if err := engine.TranslateSRTFile(context.Background(), inputPath, outputPath); err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ParseSRT(string(written))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("translated entries=%d, want 3", len(entries))
+	}
+	if entries[1].Index != 2 || entries[1].TimeCode != "00:00:01,000 --> 00:00:02,000" {
+		t.Fatalf("subtitle structure changed: %#v", entries[1])
+	}
+}
+
+func TestParseSRTPreservesCueWithBlankLineBeforeText(t *testing.T) {
+	content := `1
+00:00:00,160 --> 00:00:02,869
+
+This is the first subtitle.
+
+2
+00:00:02,869 --> 00:00:03,000
+Second subtitle.
+`
+	entries, err := ParseSRT(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("parsed entries=%d, want 2: %#v", len(entries), entries)
+	}
+	if entries[0].Text != "This is the first subtitle." {
+		t.Fatalf("first subtitle text=%q", entries[0].Text)
+	}
+}
+
 func TestRetryStopsWhenContextIsCancelled(t *testing.T) {
 	translator := New(Config{
 		APIKey: "unused", BaseURL: "http://127.0.0.1:1", RetryCount: 5,
@@ -49,6 +116,65 @@ func TestRetryStopsWhenContextIsCancelled(t *testing.T) {
 	if err == nil || time.Since(started) > time.Second {
 		t.Fatalf("cancelled retry returned err=%v after %v", err, time.Since(started))
 	}
+}
+
+func TestShouldTranslateUsesLanguageDecision(t *testing.T) {
+	translator := New(Config{
+		APIKey: "test", BaseURL: "http://llm.test", Model: "test-model",
+		SourceLang: "auto", TargetLang: "zh-Hans",
+	})
+	translator.client = newLLMTestClient("```json\n{\"needs_translation\":false,\"detected_language\":\"zh\",\"reason\":\"主体为中文\"}\n```")
+	result, err := translator.TranslateTexts(context.Background(), []string{"这已经是中文字幕。"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.SkippedTranslation || result.DetectedLanguage != "zh" {
+		t.Fatalf("unexpected language decision result: %#v", result)
+	}
+}
+
+func TestTranslateGroupRejectsCountMismatch(t *testing.T) {
+	translator := New(Config{
+		APIKey: "test", BaseURL: "http://llm.test", Model: "test-model",
+		SourceLang: "en", TargetLang: "zh-Hans",
+	})
+	translator.client = newLLMTestClient("第一句")
+	_, err := translator.translateGroup(context.Background(), []string{"one", "two"}, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "当前批次包含 2 条") {
+		t.Fatalf("expected count mismatch, got %v", err)
+	}
+}
+
+func TestTranslateGroupParsesIndexedJSONWithoutMergingDuplicates(t *testing.T) {
+	translator := New(Config{
+		APIKey: "test", BaseURL: "http://llm.test", Model: "test-model",
+		SourceLang: "en", TargetLang: "zh-Hans",
+	})
+	translator.client = newLLMTestClient(`{"translations":[{"index":1,"text":"重复字幕"},{"index":2,"text":"重复字幕"}]}`)
+	translated, err := translator.translateGroup(context.Background(), []string{"same", "same"}, []string{"before"}, []string{"after"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(translated) != 2 || translated[0] != "重复字幕" || translated[1] != "重复字幕" {
+		t.Fatalf("duplicate subtitles were not preserved: %#v", translated)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return fn(request)
+}
+
+func newLLMTestClient(content string) *http.Client {
+	body := `{"choices":[{"message":{"content":` + strconv.Quote(content) + `}}]}`
+	return &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
 }
 
 func TestDeduplicateTranslations(t *testing.T) {
@@ -77,5 +203,27 @@ func TestTranslatedSRTPath(t *testing.T) {
 	}
 	if got := TranslatedSRTPath("/tmp/video.en.cleaned.srt", "zh-Hans"); got != "/tmp/video.zh-Hans.srt" {
 		t.Fatalf("cleaned source suffix was retained: %s", got)
+	}
+}
+
+func TestMergeShortEntriesProducesValidTimeCodes(t *testing.T) {
+	entries := []SRTEntry{
+		{Index: 1, TimeCode: "00:00:00,000 --> 00:00:00,500", Text: "Hello"},
+		{Index: 2, TimeCode: "00:00:00,500 --> 00:00:02,000", Text: "world."},
+		{Index: 3, TimeCode: "00:00:02,000 --> 00:00:05,000", Text: "Next sentence."},
+	}
+	got := MergeShortEntries(entries)
+	if len(got) != 2 {
+		t.Fatalf("merged entries=%d, want 2", len(got))
+	}
+	if got[0].TimeCode != "00:00:00,000 --> 00:00:02,000" {
+		t.Fatalf("first time code=%q", got[0].TimeCode)
+	}
+	if got[1].TimeCode != "00:00:02,000 --> 00:00:05,000" {
+		t.Fatalf("second time code=%q", got[1].TimeCode)
+	}
+	parsed, err := ParseSRT(GenerateSRT(got, []string{"你好，世界。", "下一句。"}))
+	if err != nil || len(parsed) != 2 {
+		t.Fatalf("generated SRT is invalid: entries=%d err=%v", len(parsed), err)
 	}
 }

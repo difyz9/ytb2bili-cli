@@ -74,7 +74,7 @@ type Translator struct {
 // New 创建翻译器
 func New(config Config) *Translator {
 	if config.BatchSize <= 0 {
-		config.BatchSize = 3
+		config.BatchSize = 25
 	}
 	if config.MaxWorkers <= 0 {
 		config.MaxWorkers = 3
@@ -116,12 +116,7 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	if len(entries) == 0 {
 		return fmt.Errorf("字幕文件为空")
 	}
-	entries = DeduplicateRollingEntries(entries)
-	if len(entries) == 0 {
-		return fmt.Errorf("字幕去重后为空")
-	}
-	entries = MergeShortEntries(entries)
-	fmt.Printf("  解析完成: %d 条字幕 (合并后)\n", len(entries))
+	fmt.Printf("  解析完成: %d 条字幕\n", len(entries))
 
 	// 3. 提取纯文本
 	texts := make([]string, len(entries))
@@ -137,10 +132,13 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	}
 	fmt.Printf("  翻译完成: %d/%d 条, 耗时 %v\n", len(result.TranslatedTexts), len(texts), result.Duration)
 
-	// 5. 生成译文 SRT
-	entries, translatedTexts := DeduplicateTranslations(entries, result.TranslatedTexts)
-	content := GenerateSRT(entries, translatedTexts)
-	fmt.Printf("  保存前去重完成: %d 条字幕\n", len(entries))
+	// 5. 一对一生成译文 SRT。翻译器必须保留输入字幕的条数、序号和时间轴；
+	// 滚动字幕清理属于独立的显式预处理步骤，不在翻译过程中执行。
+	if len(result.TranslatedTexts) != len(entries) {
+		return fmt.Errorf("翻译结果数量不匹配: 输入 %d 条，输出 %d 条", len(entries), len(result.TranslatedTexts))
+	}
+	content := GenerateSRT(entries, result.TranslatedTexts)
+	fmt.Printf("  保留原始字幕结构: %d 条\n", len(entries))
 
 	// 6. 写入输出文件
 	if err := writeFileAtomic(outputPath, []byte(content)); err != nil {
@@ -187,12 +185,17 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 			Duration:        time.Since(startTime),
 		}, nil
 	}
-	if sameLanguage(t.config.SourceLang, t.config.TargetLang) {
+	shouldTranslate, detectedLanguage, decisionErr := t.shouldTranslate(ctx, texts)
+	if decisionErr != nil {
+		fmt.Printf("  翻译语言判定失败，将继续翻译: %v\n", decisionErr)
+		shouldTranslate = true
+	}
+	if !shouldTranslate {
 		copied := append([]string(nil), texts...)
 		return &Result{
 			OriginalTexts: texts, TranslatedTexts: copied,
 			Duration: time.Since(startTime), SkippedTranslation: true,
-			DetectedLanguage: t.config.SourceLang,
+			DetectedLanguage: detectedLanguage,
 		}, nil
 	}
 
@@ -289,7 +292,7 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 		TranslatedTexts:  allTranslated,
 		Duration:         time.Since(startTime),
 		Errors:           translationErrors,
-		DetectedLanguage: t.config.SourceLang,
+		DetectedLanguage: detectedLanguage,
 	}, nil
 }
 
@@ -298,7 +301,7 @@ func (t *Translator) translateGroupWithRetry(ctx context.Context, texts []string
 
 	for attempt := 0; attempt <= t.config.RetryCount; attempt++ {
 		if attempt > 0 {
-			delay := time.Duration(1<<(attempt-1)) * time.Second
+			delay := time.Duration(attempt) * time.Second
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
@@ -319,18 +322,8 @@ func (t *Translator) translateGroupWithRetry(ctx context.Context, texts []string
 }
 
 func (t *Translator) translateGroup(ctx context.Context, texts []string, prevContext, nextContext []string) ([]string, error) {
-	// 构建上下文
-	var fullTexts []string
-	targetStart := 0
-
-	if len(prevContext) > 0 {
-		fullTexts = append(fullTexts, prevContext...)
-		targetStart = len(fullTexts)
-	}
-	fullTexts = append(fullTexts, texts...)
-	targetEnd := len(fullTexts)
-	if len(nextContext) > 0 {
-		fullTexts = append(fullTexts, nextContext...)
+	if len(texts) == 0 {
+		return []string{}, nil
 	}
 
 	// 构建提示词
@@ -340,12 +333,11 @@ func (t *Translator) translateGroup(ctx context.Context, texts []string, prevCon
 
 上下文信息：
 - 前置上下文：%d 句（仅供参考，不需要翻译）
-- 目标翻译：%d 句（位于第 %d-%d 句，需要全部翻译）
+- 目标翻译：%d 句（需要逐条翻译）
 - 后置上下文：%d 句（仅供参考，不需要翻译）
 
-请只翻译目标部分（第 %d-%d 句），但要充分考虑前后文的连贯性。`,
-			len(prevContext), len(texts), targetStart+1, targetEnd,
-			len(nextContext), targetStart+1, targetEnd)
+			请只翻译 target_subtitles，但要充分考虑前后文的连贯性。`,
+			len(prevContext), len(texts), len(nextContext))
 	}
 
 	systemPrompt := fmt.Sprintf(`你是一个专业的视频字幕翻译专家。我将给你一段连续的%s字幕，其中包含 %d 句需要翻译的内容。%s
@@ -356,50 +348,134 @@ func (t *Translator) translateGroup(ctx context.Context, texts []string, prevCon
 3. 准确传神：忠实原文含义，保持语气和情感
 4. 简洁明了：字幕需要快速阅读，避免冗长
 5. 数量严格：必须输出 %d 句翻译，不多不少
-6. 分隔符：每句翻译用"%s"分隔
+6. 一一对应：即使相邻字幕内容重复，也必须保留并分别翻译，不得合并、去重或省略
+7. 索引严格：输出中 index 必须从 1 连续到 %d
 
-输入格式：句子用"%s"分隔
-输出格式：只返回目标部分的%s翻译，用"%s"分隔
+输入格式：JSON 对象；previous_context 和 next_context 只供参考，target_subtitles 才需要翻译
+输出格式：只返回 JSON：{"translations":[{"index":1,"text":"译文"}]}
 
-注意：只返回翻译的%s文本，不要添加序号、解释或其他内容。`,
+	注意：只返回合法 JSON，不要使用 Markdown 代码块，不要添加解释。`,
 		getLangName(t.config.SourceLang),
 		len(texts),
 		contextInfo,
 		getLangName(t.config.TargetLang),
 		len(texts),
-		sentenceBreak,
-		sentenceBreak,
-		getLangName(t.config.TargetLang),
-		sentenceBreak,
-		getLangName(t.config.TargetLang))
+		len(texts))
 
-	// 组合输入
-	combinedText := strings.Join(fullTexts, "\n"+sentenceBreak+"\n")
+	targets := make([]map[string]interface{}, len(texts))
+	for i, text := range texts {
+		targets[i] = map[string]interface{}{"index": i + 1, "text": text}
+	}
+	inputPayload := map[string]interface{}{
+		"previous_context": prevContext,
+		"target_subtitles": targets,
+		"next_context":     nextContext,
+	}
+	combinedJSON, err := json.Marshal(inputPayload)
+	if err != nil {
+		return nil, fmt.Errorf("构建翻译批次失败: %w", err)
+	}
 
 	// 调用 LLM
-	response, err := t.callLLM(ctx, systemPrompt, combinedText)
+	response, err := t.callLLM(ctx, systemPrompt, string(combinedJSON))
 	if err != nil {
 		return nil, err
 	}
 
-	// 解析结果
+	return parseTranslations(response, len(texts))
+}
+
+func parseTranslations(response string, expected int) ([]string, error) {
+	var structured struct {
+		Translations []struct {
+			Index int    `json:"index"`
+			Text  string `json:"text"`
+		} `json:"translations"`
+	}
+	if err := json.Unmarshal([]byte(extractJSON(response)), &structured); err == nil && len(structured.Translations) > 0 {
+		if len(structured.Translations) != expected {
+			return nil, fmt.Errorf("翻译数量不匹配: 当前批次包含 %d 条待翻译字幕，实际返回 %d 条", expected, len(structured.Translations))
+		}
+		translated := make([]string, expected)
+		for position, item := range structured.Translations {
+			if item.Index != position+1 {
+				return nil, fmt.Errorf("翻译索引不连续: 位置 %d 返回 index=%d", position+1, item.Index)
+			}
+			if strings.TrimSpace(item.Text) == "" {
+				return nil, fmt.Errorf("第 %d 条翻译为空", item.Index)
+			}
+			translated[position] = strings.TrimSpace(item.Text)
+		}
+		return translated, nil
+	}
+
+	// 兼容 ytb2bili-main 原实现使用的分隔符响应。
 	translated := strings.Split(response, sentenceBreak)
 	for i := range translated {
 		translated[i] = strings.TrimSpace(translated[i])
 	}
-	// Some models return the supplied context despite being asked for only the
-	// target sentences. This shape is unambiguous, so retain the target slice.
-	if len(translated) == len(fullTexts) && len(fullTexts) != len(texts) {
-		translated = translated[targetStart:targetEnd]
+	if len(translated) != expected {
+		return nil, fmt.Errorf("翻译数量不匹配: 当前批次包含 %d 条待翻译字幕，实际返回 %d 条", expected, len(translated))
 	}
-	if len(texts) == 1 && len(translated) > 1 {
-		translated = []string{strings.Join(translated, "")}
-	}
-	if len(translated) != len(texts) {
-		return nil, fmt.Errorf("翻译数量不匹配: 期望 %d 句，实际 %d 句", len(texts), len(translated))
+	return translated, nil
+}
+
+func (t *Translator) shouldTranslate(ctx context.Context, texts []string) (bool, string, error) {
+	if sameLanguage(t.config.SourceLang, t.config.TargetLang) {
+		return false, t.config.SourceLang, nil
 	}
 
-	return translated, nil
+	samples := make([]string, 0, 8)
+	for _, text := range texts {
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			continue
+		}
+		samples = append(samples, trimmed)
+		if len(samples) >= 8 {
+			break
+		}
+	}
+	if len(samples) == 0 {
+		return false, "", nil
+	}
+
+	systemPrompt := fmt.Sprintf(`你是字幕翻译前的语言判定器。请判断给定字幕样本是否需要翻译成%s。
+
+规则：
+1. 如果字幕主体已经是目标语言，needs_translation=false。
+2. 如果字幕主体不是目标语言，needs_translation=true。
+3. 混合语言时，以主体语言为准。
+4. 只输出 JSON，不要输出解释文字。
+
+输出格式：{"needs_translation":true,"detected_language":"en","reason":"主体为英文"}`,
+		getLangName(t.config.TargetLang))
+
+	response, err := t.callLLM(ctx, systemPrompt, strings.Join(samples, "\n"+sentenceBreak+"\n"))
+	if err != nil {
+		return false, "", fmt.Errorf("翻译语言判定请求失败: %w", err)
+	}
+
+	var decision struct {
+		NeedsTranslation bool   `json:"needs_translation"`
+		DetectedLanguage string `json:"detected_language"`
+		Reason           string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(extractJSON(response)), &decision); err != nil {
+		return false, "", fmt.Errorf("解析翻译语言判定失败: %w", err)
+	}
+	fmt.Printf("  语言判定: detected=%s, translate=%t, reason=%s\n",
+		decision.DetectedLanguage, decision.NeedsTranslation, decision.Reason)
+	return decision.NeedsTranslation, decision.DetectedLanguage, nil
+}
+
+func extractJSON(response string) string {
+	start := strings.Index(response, "{")
+	end := strings.LastIndex(response, "}")
+	if start >= 0 && end >= start {
+		return response[start : end+1]
+	}
+	return response
 }
 
 func (t *Translator) callLLM(ctx context.Context, systemPrompt, userContent string) (string, error) {
@@ -477,6 +553,11 @@ func ParseSRT(content string) ([]SRTEntry, error) {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
+			// Some generated SRT files contain an extra blank line between the
+			// time code and its text. It is still the same cue, not a separator.
+			if stage == 2 && len(textLines) == 0 {
+				continue
+			}
 			flush()
 			continue
 		}
@@ -518,8 +599,9 @@ func MergeShortEntries(entries []SRTEntry) []SRTEntry {
 		endSec        float64
 	}
 
+	firstStart, firstEnd := splitTimeCode(entries[0].TimeCode)
 	var groups []merged
-	current := merged{startTimeCode: entries[0].TimeCode, texts: []string{entries[0].Text}}
+	current := merged{startTimeCode: firstStart, endTimeCode: firstEnd, texts: []string{entries[0].Text}}
 	current.startSec = parseStartTime(entries[0].TimeCode)
 	current.endSec = parseEndTime(entries[0].TimeCode)
 
@@ -544,8 +626,10 @@ func MergeShortEntries(entries []SRTEntry) []SRTEntry {
 			current.endSec = end
 		} else {
 			groups = append(groups, current)
+			entryStart, entryEnd := splitTimeCode(entry.TimeCode)
 			current = merged{
-				startTimeCode: entry.TimeCode,
+				startTimeCode: entryStart,
+				endTimeCode:   entryEnd,
 				texts:         []string{entry.Text},
 				startSec:      start,
 				endSec:        end,
@@ -564,6 +648,14 @@ func MergeShortEntries(entries []SRTEntry) []SRTEntry {
 		})
 	}
 	return result
+}
+
+func splitTimeCode(tc string) (string, string) {
+	parts := strings.Split(tc, " --> ")
+	if len(parts) != 2 {
+		return strings.TrimSpace(tc), strings.TrimSpace(tc)
+	}
+	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 }
 
 func parseStartTime(tc string) float64 {
@@ -652,8 +744,19 @@ func GenerateSRT(entries []SRTEntry, translatedTexts []string) string {
 func getLangName(code string) string {
 	names := map[string]string{
 		"en":      "英文",
+		"zh-Hans": "中文",
+		"zh-CN":   "中文",
 		"zh":      "中文",
-
+		"ja":      "日文",
+		"ko":      "韩文",
+		"es":      "西班牙文",
+		"fr":      "法文",
+		"de":      "德文",
+		"ru":      "俄文",
+		"ar":      "阿拉伯文",
+		"pt":      "葡萄牙文",
+		"it":      "意大利文",
+		"auto":    "自动检测",
 	}
 	if name, ok := names[code]; ok {
 		return name
@@ -731,9 +834,10 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 		Model:       model,
 		SourceLang:  sourceLang,
 		TargetLang:  targetLang,
-		BatchSize:   3,
+		BatchSize:   25,
 		MaxWorkers:  3,
-		ContextSize: 3,
+		RetryCount:  2,
+		ContextSize: 2,
 	})
 
 	// 翻译
