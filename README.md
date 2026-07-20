@@ -152,7 +152,7 @@ go build -o bin/llm-batch-translator ./cmd/llm-batch-translator
   --context-size 2
 ```
 
-`--output` 默认生成 `VIDEO_ID.zh-Hans.srt`。每批的 25 条是待翻译字幕，前后文只用于保持语义连贯，不计入批次数量，也不会写入输出。翻译器严格保留输入字幕的条数、序号和时间轴；如果需要清理 YouTube 滚动字幕，必须先显式运行第 1 步的清理脚本。API Key 默认读取 `DEEPSEEK_API_KEY`；API 地址和模型可通过 `config.yaml`、`LLM_BASE_URL`、`LLM_MODEL` 或对应命令行参数覆盖。
+`--output` 默认生成 `VIDEO_ID.zh-Hans.srt`。每批的 25 条是待翻译语义单元，前后文只用于保持语义连贯，不计入批次数量，也不会写入输出。翻译器会为滚动字幕建立行级翻译记忆：相同原文行只翻译一次，再回填到所有原始字幕，因此严格保留输入字幕的条数、序号和时间轴，同时避免相同片段前后译法漂移。如果需要生成非滚动字幕或用于配音，仍可先显式运行第 1 步的清理脚本。API Key 默认读取 `DEEPSEEK_API_KEY`；API 地址和模型可通过 `config.yaml`、`LLM_BASE_URL`、`LLM_MODEL` 或对应命令行参数覆盖。
 
 IndexTTS2 默认地址为 `http://localhost:18765`。可用参数包括：
 
