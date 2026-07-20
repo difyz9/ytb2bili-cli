@@ -65,6 +65,14 @@ type SRTEntry struct {
 	Text     string
 }
 
+// translationPlan separates semantic translation units from the immutable SRT
+// structure. Repeated lines in rolling captions share one translated unit and
+// are projected back to every original cue after translation.
+type translationPlan struct {
+	units      []string
+	entryUnits [][]int
+}
+
 // Translator 批量翻译器
 type Translator struct {
 	config Config
@@ -118,26 +126,32 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	}
 	fmt.Printf("  解析完成: %d 条字幕\n", len(entries))
 
-	// 3. 提取纯文本
-	texts := make([]string, len(entries))
-	for i, e := range entries {
-		texts[i] = e.Text
+	// 3. 建立滚动字幕翻译计划。同一原子文本行只翻译一次，再回填到每个
+	// 原始 cue，从而保持重复片段的译法稳定，同时不改变 SRT 结构。
+	plan, err := buildTranslationPlan(entries)
+	if err != nil {
+		return fmt.Errorf("建立字幕翻译计划失败: %w", err)
 	}
+	fmt.Printf("  语义翻译单元: %d 条 (回填到 %d 条原始字幕)\n", len(plan.units), len(entries))
 
 	// 4. 批量翻译
 	fmt.Printf("  开始批量翻译 (batch=%d, workers=%d)...\n", t.config.BatchSize, t.config.MaxWorkers)
-	result, err := t.TranslateTexts(ctx, texts)
+	result, err := t.TranslateTexts(ctx, plan.units)
 	if err != nil {
 		return fmt.Errorf("翻译失败: %w", err)
 	}
-	fmt.Printf("  翻译完成: %d/%d 条, 耗时 %v\n", len(result.TranslatedTexts), len(texts), result.Duration)
+	fmt.Printf("  翻译完成: %d/%d 个语义单元, 耗时 %v\n", len(result.TranslatedTexts), len(plan.units), result.Duration)
+	translatedTexts, err := plan.project(result.TranslatedTexts)
+	if err != nil {
+		return fmt.Errorf("回填翻译结果失败: %w", err)
+	}
 
 	// 5. 一对一生成译文 SRT。翻译器必须保留输入字幕的条数、序号和时间轴；
 	// 滚动字幕清理属于独立的显式预处理步骤，不在翻译过程中执行。
-	if len(result.TranslatedTexts) != len(entries) {
-		return fmt.Errorf("翻译结果数量不匹配: 输入 %d 条，输出 %d 条", len(entries), len(result.TranslatedTexts))
+	if len(translatedTexts) != len(entries) {
+		return fmt.Errorf("翻译结果数量不匹配: 输入 %d 条，输出 %d 条", len(entries), len(translatedTexts))
 	}
-	content := GenerateSRT(entries, result.TranslatedTexts)
+	content := GenerateSRT(entries, translatedTexts)
 	fmt.Printf("  保留原始字幕结构: %d 条\n", len(entries))
 
 	// 6. 写入输出文件
@@ -147,6 +161,53 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	fmt.Printf("  保存到: %s\n", outputPath)
 
 	return nil
+}
+
+func buildTranslationPlan(entries []SRTEntry) (*translationPlan, error) {
+	plan := &translationPlan{entryUnits: make([][]int, len(entries))}
+	unitByText := make(map[string]int)
+	for entryIndex, entry := range entries {
+		lines := strings.Split(strings.ReplaceAll(entry.Text, "\r\n", "\n"), "\n")
+		for _, line := range lines {
+			normalized := strings.Join(strings.Fields(line), " ")
+			if normalized == "" {
+				continue
+			}
+			unitIndex, exists := unitByText[normalized]
+			if !exists {
+				unitIndex = len(plan.units)
+				unitByText[normalized] = unitIndex
+				plan.units = append(plan.units, normalized)
+			}
+			plan.entryUnits[entryIndex] = append(plan.entryUnits[entryIndex], unitIndex)
+		}
+		if len(plan.entryUnits[entryIndex]) == 0 {
+			return nil, fmt.Errorf("第 %d 条字幕没有可翻译文本", entry.Index)
+		}
+	}
+	return plan, nil
+}
+
+func (p *translationPlan) project(translatedUnits []string) ([]string, error) {
+	if len(translatedUnits) != len(p.units) {
+		return nil, fmt.Errorf("语义单元数量不匹配: 期望 %d，实际 %d", len(p.units), len(translatedUnits))
+	}
+	projected := make([]string, len(p.entryUnits))
+	for entryIndex, unitIndexes := range p.entryUnits {
+		lines := make([]string, 0, len(unitIndexes))
+		for _, unitIndex := range unitIndexes {
+			if unitIndex < 0 || unitIndex >= len(translatedUnits) {
+				return nil, fmt.Errorf("第 %d 条字幕引用了无效语义单元 %d", entryIndex+1, unitIndex)
+			}
+			translation := strings.TrimSpace(translatedUnits[unitIndex])
+			if translation == "" {
+				return nil, fmt.Errorf("第 %d 个语义单元翻译为空", unitIndex+1)
+			}
+			lines = append(lines, translation)
+		}
+		projected[entryIndex] = strings.Join(lines, "\n")
+	}
+	return projected, nil
 }
 
 func writeFileAtomic(path string, content []byte) error {

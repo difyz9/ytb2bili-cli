@@ -82,6 +82,45 @@ func TestTranslateSRTFilePreservesEntryCountAndTimeline(t *testing.T) {
 	}
 }
 
+func TestTranslationPlanProjectsRollingLinesBackToEveryCue(t *testing.T) {
+	entries := []SRTEntry{
+		{Index: 1, Text: "This is Pencil"},
+		{Index: 2, Text: "This is Pencil\na design tool"},
+		{Index: 3, Text: "a design tool"},
+	}
+	plan, err := buildTranslationPlan(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.units) != 2 || plan.units[0] != "This is Pencil" || plan.units[1] != "a design tool" {
+		t.Fatalf("unexpected semantic units: %#v", plan.units)
+	}
+	projected, err := plan.project([]string{"这是 Pencil", "一款设计工具"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"这是 Pencil", "这是 Pencil\n一款设计工具", "一款设计工具"}
+	for i := range want {
+		if projected[i] != want[i] {
+			t.Fatalf("projected[%d]=%q, want %q", i, projected[i], want[i])
+		}
+	}
+}
+
+func TestTranslationPlanNormalizesEquivalentRollingLines(t *testing.T) {
+	entries := []SRTEntry{
+		{Index: 1, Text: "same   rolling line"},
+		{Index: 2, Text: " same rolling line \nnext line"},
+	}
+	plan, err := buildTranslationPlan(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.units) != 2 || plan.entryUnits[0][0] != plan.entryUnits[1][0] {
+		t.Fatalf("equivalent lines did not share translation memory: %#v", plan)
+	}
+}
+
 func TestParseSRTPreservesCueWithBlankLineBeforeText(t *testing.T) {
 	content := `1
 00:00:00,160 --> 00:00:02,869
