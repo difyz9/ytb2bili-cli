@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -97,15 +98,24 @@ func (m *Monitor) loadSubscriptions() []Subscription {
 		return nil
 	}
 	var subs []Subscription
-	json.Unmarshal(data, &subs)
+	if err := json.Unmarshal(data, &subs); err != nil {
+		log.Printf("warning: loadSubscriptions unmarshal failed: %v", err)
+		return nil
+	}
 	return subs
 }
 
 func (m *Monitor) saveSubscriptions(subs []Subscription) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	data, _ := json.MarshalIndent(subs, "", "  ")
-	os.WriteFile(m.subPath, data, 0644)
+	data, err := json.MarshalIndent(subs, "", "  ")
+	if err != nil {
+		log.Printf("warning: saveSubscriptions marshal failed: %v", err)
+		return
+	}
+	if err := os.WriteFile(m.subPath, data, 0644); err != nil {
+		log.Printf("warning: saveSubscriptions write failed: %v", err)
+	}
 }
 
 // AddSubscription 添加一个频道订阅
@@ -183,15 +193,24 @@ func (m *Monitor) loadVideos() []DiscoveredVideo {
 		return nil
 	}
 	var videos []DiscoveredVideo
-	json.Unmarshal(data, &videos)
+	if err := json.Unmarshal(data, &videos); err != nil {
+		log.Printf("warning: loadVideos unmarshal failed: %v", err)
+		return nil
+	}
 	return videos
 }
 
 func (m *Monitor) saveVideos(videos []DiscoveredVideo) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	data, _ := json.MarshalIndent(videos, "", "  ")
-	os.WriteFile(m.videoPath, data, 0644)
+	data, err := json.MarshalIndent(videos, "", "  ")
+	if err != nil {
+		log.Printf("warning: saveVideos marshal failed: %v", err)
+		return
+	}
+	if err := os.WriteFile(m.videoPath, data, 0644); err != nil {
+		log.Printf("warning: saveVideos write failed: %v", err)
+	}
 }
 
 // DiscoveredVideos 返回所有已发现的视频

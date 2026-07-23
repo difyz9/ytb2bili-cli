@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 )
@@ -137,45 +136,59 @@ func (s *Searcher) SearchPaginated(query string, filter *SearchFilter, continuat
 	payload := buildSearchPayload(query, params, continuation)
 	payloadBytes, _ := json.Marshal(payload)
 
-	req, err := http.NewRequest("POST", searchURL, bytes.NewReader(payloadBytes))
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 0; attempt <= s.Retries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * time.Second)
+		}
+
+		req, err := http.NewRequest("POST", searchURL, bytes.NewReader(payloadBytes))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("User-Agent", webUserAgent)
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		req.Header.Set("Origin", "https://www.youtube.com")
+		req.Header.Set("Referer", "https://www.youtube.com/")
+
+		resp, err := s.Client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			lastErr = fmt.Errorf("HTTP %d", resp.StatusCode)
+			continue
+		}
+
+		var data map[string]interface{}
+		if err := json.Unmarshal(body, &data); err != nil {
+			lastErr = fmt.Errorf("解析 JSON 失败: %w", err)
+			continue
+		}
+
+		videos, nextContinuation := parseInnerTubeResponseWithContinuation(data, s.MaxResults)
+
+		return &SearchResult{
+			Query:        query,
+			Videos:       videos,
+			TotalFound:   len(videos),
+			Continuation: nextContinuation,
+		}, nil
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", webUserAgent)
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-	req.Header.Set("Origin", "https://www.youtube.com")
-	req.Header.Set("Referer", "https://www.youtube.com/")
-
-	resp, err := s.Client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	var data map[string]interface{}
-	if err := json.Unmarshal(body, &data); err != nil {
-		return nil, fmt.Errorf("解析 JSON 失败: %w", err)
-	}
-
-	videos, nextContinuation := parseInnerTubeResponseWithContinuation(data, s.MaxResults)
-
-	return &SearchResult{
-		Query:        query,
-		Videos:       videos,
-		TotalFound:   len(videos),
-		Continuation: nextContinuation,
-	}, nil
+	return nil, fmt.Errorf("分页搜索失败 (重试 %d 次): %w", s.Retries, lastErr)
 }
 
 // parseInnerTubeResponse 解析 InnerTube API 响应
@@ -483,25 +496,38 @@ func SearchAndPrint(query string, maxResults int) error {
 }
 
 // ExtractVideoID 从 URL 或文本中提取视频 ID
+// 使用字符串匹配方式（与 pipeline.ExtractYouTubeID 共享逻辑）
 func ExtractVideoID(input string) string {
 	// 直接的视频 ID (11 位)
-	if matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]{11}$`, input); matched {
+	if len(input) == 11 {
+		for _, c := range input {
+			if !isVideoIDChar(c) {
+				return ""
+			}
+		}
 		return input
 	}
 
-	// YouTube URL
-	patterns := []string{
-		`(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})`,
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
-		if matches := re.FindStringSubmatch(input); len(matches) > 1 {
-			return matches[1]
+	// YouTube URL patterns
+	for _, prefix := range []string{"v=", "youtu.be/", "shorts/", "embed/"} {
+		if idx := strings.Index(input, prefix); idx >= 0 {
+			start := idx + len(prefix)
+			end := strings.IndexAny(input[start:], "?&#/")
+			if end < 0 {
+				end = len(input) - start
+			}
+			id := input[start : start+end]
+			if len(id) == 11 {
+				return id
+			}
 		}
 	}
-
 	return ""
+}
+
+// isVideoIDChar 检查字符是否属于 YouTube 视频 ID 字符集
+func isVideoIDChar(c rune) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_'
 }
 
 // min 返回两个整数中较小的一个

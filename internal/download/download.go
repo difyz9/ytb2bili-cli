@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,9 +107,15 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 
 	var info VideoInfo
 	if err := json.Unmarshal(infoOut, &info); err != nil {
-		// Just use first line
+		// Try just the first line in case yt-dlp prefix metadata on the first line
 		lines := strings.SplitN(string(infoOut), "\n", 2)
-		json.Unmarshal([]byte(lines[0]), &info)
+		if len(lines) > 0 {
+			if err2 := json.Unmarshal([]byte(lines[0]), &info); err2 != nil {
+				return nil, fmt.Errorf("解析视频信息 JSON 失败: %w (second attempt: %v)", err, err2)
+			}
+		} else {
+			return nil, fmt.Errorf("解析视频信息 JSON 失败: %w", err)
+		}
 	}
 
 	// Check subtitle languages
@@ -134,8 +141,8 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 	)
 
 	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = log.Writer()
+	cmd.Stderr = log.Writer()
 	cmd.Env = env
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("下载失败: %w", err)

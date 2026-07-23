@@ -309,7 +309,7 @@ func (d *Debugger) saveCookiesToFile(cookiesJSON string, filePath string) error 
 		))
 	}
 
-	return os.WriteFile(filePath, []byte(sb.String()), 0644)
+	return os.WriteFile(filePath, []byte(sb.String()), 0600)
 }
 
 // processVideo 处理视频

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"os"
 
@@ -25,9 +24,4 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		log.Fatalf("❌ %v", err)
 	}
-}
-
-func init() {
-	// Print verbose version info
-	_ = fmt.Sprintf
 }

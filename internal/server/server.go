@@ -11,9 +11,11 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/zolagz/ytb2bili-go/internal/auth"
@@ -23,6 +25,13 @@ import (
 	"github.com/zolagz/ytb2bili-go/internal/pipeline"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
 )
+
+// subtitleWatchLogger implements bili.SubtitleWatchLogger for server-side log.Printf output
+type subtitleWatchLogger struct{}
+
+func (subtitleWatchLogger) Printf(format string, args ...interface{}) {
+	log.Printf(format, args...)
+}
 
 // Server HTTP 服务器
 type Server struct {
@@ -147,9 +156,16 @@ func (s *Server) Start(addr string) error {
 	// 飞书机器人路由
 	mux.HandleFunc("/feishu/webhook", s.feishuWebhook)
 
+	// Apply middleware: cors → auth → timeout
+	handler := requestTimeoutMiddleware(
+		corsMiddleware(s.cfg.AllowedOrigins,
+			apiAuthMiddleware(s.cfg.ServerToken, mux),
+		),
+	)
+
 	s.server = &http.Server{
 		Addr:              addr,
-		Handler:           corsMiddleware(s.cfg.AllowedOrigins, apiAuthMiddleware(s.cfg.ServerToken, mux)),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -175,6 +191,21 @@ func (s *Server) Start(addr string) error {
 
 	// 恢复上次未完成的字幕监听（重启后继续等待审核）
 	go s.resumePendingSubtitleWatches()
+
+	// Graceful shutdown: listen for signals in a goroutine
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		sig := <-sigCh
+		log.Printf("🛑 接收到信号 %v，开始优雅关闭...", sig)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if err := s.Stop(ctx); err != nil {
+			log.Printf("❌ 服务器关闭失败: %v", err)
+		}
+	}()
 
 	return s.server.ListenAndServe()
 }
@@ -359,77 +390,7 @@ func (s *Server) processVideoTask(task *VideoTask) {
 	}
 	var cred auth.LoginInfo
 	if err := storage.NewCredentialStore(filepath.Join(s.cfg.DataDir, "cookies")).Load(&cred); err == nil {
-		go s.watchAndUploadSubtitle(result.BVID, result.ArtifactID(), result.DownloadDir, &cred)
-	}
-}
-
-// watchAndUploadSubtitle 异步监听B站视频审核状态，审核通过后上传字幕
-func (s *Server) watchAndUploadSubtitle(bvid, videoID, dlDir string, cred *auth.LoginInfo) {
-	subStore := storage.NewSubtitleStore(filepath.Join(s.cfg.DataDir, "subtitles"))
-
-	// 同步最新字幕追踪状态
-	tracks, err := subStore.SyncFromDownload(videoID, bvid, dlDir)
-	if err != nil {
-		log.Printf("❌ [字幕] 同步字幕追踪失败: %v", err)
-		return
-	}
-
-	pending := 0
-	for _, t := range tracks {
-		if t.Status == storage.SubtitleStatusPending {
-			pending++
-		}
-	}
-	if pending == 0 {
-		log.Printf("ℹ️ [字幕] 没有待上传的字幕文件")
-		return
-	}
-
-	log.Printf("⏳ [字幕] 监听视频 %s 审核状态 (共 %d 个字幕待上传)...", bvid, pending)
-
-	// 等待审核通过
-	status, err := bili.WaitForReviewPassed(cred, bvid)
-	if err != nil {
-		log.Printf("❌ [字幕] 等待审核失败: %v", err)
-		return
-	}
-	if status == nil {
-		log.Printf("❌ [字幕] 获取审核状态失败")
-		return
-	}
-	log.Printf("✅ [字幕] 视频审核通过 (state=%d)", status.State)
-
-	// 重新同步（字幕文件可能已更新）
-	subStore.SyncFromDownload(videoID, bvid, dlDir)
-	pendingTracks := subStore.GetPending(videoID)
-	if len(pendingTracks) == 0 {
-		log.Printf("ℹ️ [字幕] 没有待上传的字幕文件")
-		return
-	}
-
-	successCount := 0
-	for _, track := range pendingTracks {
-		log.Printf("  📤 上传字幕: %s (%s)...", track.FileName, track.Language)
-		err := bili.UploadSubtitle(cred, bvid, track.FilePath, track.Language)
-		if err != nil {
-			log.Printf("  ❌ 字幕上传失败: %v", err)
-			subStore.MarkFailed(videoID, track.Language, err.Error())
-			continue
-		}
-		subStore.MarkUploaded(videoID, track.Language)
-		log.Printf("  ✅ 字幕上传完成: %s", track.FileName)
-		successCount++
-	}
-
-	if successCount > 0 {
-		allDone := subStore.AllUploaded(videoID)
-		if allDone {
-			log.Printf("✅ [字幕] 全部字幕上传完成! https://www.bilibili.com/video/%s", bvid)
-		} else {
-			log.Printf("✅ [字幕] 已上传 %d 个字幕文件，部分仍待处理", successCount)
-		}
-	} else {
-		log.Printf("❌ [字幕] 所有字幕上传均失败，请稍后重试")
+					go bili.WatchAndUploadSubtitle(result.BVID, result.ArtifactID(), result.DownloadDir, &cred, s.cfg.DataDir, subtitleWatchLogger{})
 	}
 }
 
@@ -475,7 +436,7 @@ func (s *Server) resumePendingSubtitleWatches() {
 		// 提取下载目录（从第一条字幕文件的路径推断）
 		dlDir := filepath.Dir(tracks[0].FilePath)
 		log.Printf("🔄 恢复字幕监听: %s (BVID=%s, %d 个字幕待上传)", videoID, bvid, len(tracks))
-		go s.watchAndUploadSubtitle(bvid, videoID, dlDir, &cred)
+			go bili.WatchAndUploadSubtitle(bvid, videoID, dlDir, &cred, s.cfg.DataDir, subtitleWatchLogger{})
 	}
 }
 
@@ -560,7 +521,9 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			TaskID:  task.ID,
 		})
 	default:
-		_ = taskStore.Delete(task.ID)
+		if err := taskStore.Delete(task.ID); err != nil {
+			log.Printf("warning: failed to clean up task %s: %v", task.ID, err)
+		}
 		s.jsonError(w, "任务队列已满", http.StatusServiceUnavailable)
 	}
 }
@@ -733,4 +696,38 @@ func isLoopbackAddr(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// requestTimeoutMiddleware wraps handlers with a per-request timeout.
+// If a request handler exceeds the timeout, the context is cancelled and
+// a 503 Service Unavailable is returned.
+func requestTimeoutMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip timeout for health checks and long-lived endpoints
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+
+		r = r.WithContext(ctx)
+
+		done := make(chan bool, 1)
+		go func() {
+			next.ServeHTTP(w, r)
+			done <- true
+		}()
+
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			if ctx.Err() == context.DeadlineExceeded {
+				log.Printf("⏰ 请求超时: %s %s", r.Method, r.URL.Path)
+				http.Error(w, `{"error":"请求超时"}`, http.StatusServiceUnavailable)
+			}
+		}
+	})
 }

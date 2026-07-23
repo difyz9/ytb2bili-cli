@@ -12,6 +12,7 @@ import (
 	"github.com/zolagz/ytb2bili-go/internal/config"
 	"github.com/zolagz/ytb2bili-go/internal/llm"
 	"github.com/zolagz/ytb2bili-go/internal/metadata"
+	"github.com/zolagz/ytb2bili-go/internal/search"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
 	"github.com/zolagz/ytb2bili-go/internal/workflow"
 )
@@ -190,18 +191,5 @@ func (o *taskObserver) StepFinished(name string, err error) {
 }
 
 func ExtractYouTubeID(url string) string {
-	for _, prefix := range []string{"v=", "youtu.be/", "shorts/", "embed/"} {
-		if idx := strings.Index(url, prefix); idx >= 0 {
-			start := idx + len(prefix)
-			end := strings.IndexAny(url[start:], "?&#/")
-			if end < 0 {
-				end = len(url) - start
-			}
-			id := url[start : start+end]
-			if len(id) == 11 {
-				return id
-			}
-		}
-	}
-	return ""
+	return search.ExtractVideoID(url)
 }
