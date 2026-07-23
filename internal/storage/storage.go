@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -54,13 +55,18 @@ func validTaskID(id string) bool {
 
 func randID() string {
 	b := make([]byte, 6)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		log.Printf("warning: crypto/rand.Read failed (%v), falling back to timestamp-based id", err)
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
 	return hex.EncodeToString(b)
 }
 
 func (s *TaskStore) Create(url string) *Task {
 	task := s.Prepare("", url)
-	_ = s.Persist(task, nil)
+	if err := s.Persist(task, nil); err != nil {
+		log.Printf("warning: TaskStore.Create: Persist failed: %v", err)
+	}
 	return task
 }
 
@@ -138,7 +144,10 @@ func (s *TaskStore) Delete(id string) error {
 
 func (s *TaskStore) save(task *Task) error {
 	task.UpdatedAt = time.Now().Format(time.RFC3339)
-	data, _ := json.MarshalIndent(task, "", "  ")
+	data, err := json.MarshalIndent(task, "", "  ")
+	if err != nil {
+		return fmt.Errorf("save task marshal: %w", err)
+	}
 	return atomicWriteFile(s.path(task.ID), data, 0644)
 }
 
@@ -169,7 +178,9 @@ func (s *TaskStore) UpdateStep(id, stepName, status string, errMsg ...string) {
 		t.Status = "failed"
 	}
 	t.UpdatedAt = now
-	_ = s.save(t)
+	if err := s.save(t); err != nil {
+		log.Printf("warning: UpdateStep save failed for %s/%s: %v", id, stepName, err)
+	}
 }
 
 // SetBVID 设置任务的 BVID
@@ -186,7 +197,9 @@ func (s *TaskStore) SetBVID(id, bvid string) {
 	}
 	t.BVID = bvid
 	t.UpdatedAt = time.Now().Format(time.RFC3339)
-	_ = s.save(&t)
+	if err := s.save(&t); err != nil {
+		log.Printf("warning: SetBVID save failed for %s: %v", id, err)
+	}
 }
 
 // SetCompleted 标记任务完成
@@ -203,13 +216,19 @@ func (s *TaskStore) SetCompleted(id string) {
 	}
 	t.Status = "completed"
 	t.UpdatedAt = time.Now().Format(time.RFC3339)
-	_ = s.save(&t)
+	if err := s.save(&t); err != nil {
+		log.Printf("warning: SetCompleted save failed for %s: %v", id, err)
+	}
 }
 
 func (s *TaskStore) List() []*Task {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	entries, _ := os.ReadDir(s.dir)
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		log.Printf("warning: List readdir failed: %v", err)
+		return nil
+	}
 	var tasks []*Task
 	for _, e := range entries {
 		if !e.IsDir() && filepath.Ext(e.Name()) == ".json" {
@@ -218,7 +237,10 @@ func (s *TaskStore) List() []*Task {
 				continue
 			}
 			var t Task
-			json.Unmarshal(data, &t)
+			if err := json.Unmarshal(data, &t); err != nil {
+				log.Printf("warning: failed to unmarshal task %s: %v", e.Name(), err)
+				continue
+			}
 			tasks = append(tasks, &t)
 		}
 	}
@@ -238,7 +260,10 @@ func NewCredentialStore(dir string) *CredentialStore {
 }
 
 func (c *CredentialStore) Save(cred interface{}) error {
-	data, _ := json.MarshalIndent(cred, "", "  ")
+	data, err := json.MarshalIndent(cred, "", "  ")
+	if err != nil {
+		return fmt.Errorf("CredentialStore.Save marshal: %w", err)
+	}
 	return atomicWriteFile(c.path, data, 0600)
 }
 

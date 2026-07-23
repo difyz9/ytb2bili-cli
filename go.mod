@@ -3,7 +3,6 @@ module github.com/zolagz/ytb2bili-go
 go 1.26
 
 require (
-	github.com/BurntSushi/toml v1.4.0
 	github.com/chromedp/cdproto v0.0.0-20260321001828-e3e3800016bc
 	github.com/chromedp/chromedp v0.15.1
 	github.com/difyz9/bilibili-go-sdk v0.0.8

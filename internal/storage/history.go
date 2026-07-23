@@ -123,6 +123,9 @@ func (s *HistoryStore) load() ([]SubmittedVideo, error) {
 }
 
 func (s *HistoryStore) save(videos []SubmittedVideo) error {
-	data, _ := json.MarshalIndent(videos, "", "  ")
+	data, err := json.MarshalIndent(videos, "", "  ")
+	if err != nil {
+		return err
+	}
 	return atomicWriteFile(s.path(), data, 0644)
 }

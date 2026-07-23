@@ -3,6 +3,7 @@ package command
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -531,8 +532,12 @@ func statusCommand(cfg *config.Config) *cli.Command {
 			}
 
 			// 获取进程信息
-			proc, _ := os.FindProcess(pid)
-			_ = proc
+			proc, err := os.FindProcess(pid)
+			if err != nil {
+				log.Printf("warning: FindProcess(%d) failed: %v", pid, err)
+			} else {
+				proc.Release()
+			}
 
 			fmt.Println("✅ 服务正在运行")
 			fmt.Printf("   PID:   %d\n", pid)
@@ -738,64 +743,7 @@ func submitCommand(cfg *config.Config) *cli.Command {
 // watchAndUploadSubtitle 异步监听B站视频审核状态，审核通过后上传字幕
 // videoID: 任务/下载目录 ID; dlDir: 字幕文件所在目录
 func watchAndUploadSubtitle(bvid, videoID, dlDir string, cred *auth.LoginInfo, cfg *config.Config) {
-	subStore := storage.NewSubtitleStore(filepath.Join(cfg.DataDir, "subtitles"))
-
-	// 同步最新状态
-	subStore.SyncFromDownload(videoID, bvid, dlDir)
-	pending := subStore.GetPending(videoID)
-	if len(pending) == 0 {
-		return
-	}
-
-	fmt.Printf("\n⏳ [字幕] 监听视频 %s 审核状态 (共 %d 个字幕待上传)...\n", bvid, len(pending))
-
-	// 等待审核通过
-	status, err := bili.WaitForReviewPassed(cred, bvid)
-	if err != nil {
-		fmt.Printf("❌ [字幕] 等待审核失败: %v\n", err)
-		return
-	}
-	if status == nil {
-		fmt.Printf("❌ [字幕] 获取审核状态失败\n")
-		return
-	}
-	fmt.Printf("✅ [字幕] 视频审核通过 (state=%d)\n", status.State)
-
-	// 重新同步（字幕文件可能已更新）
-	subStore.SyncFromDownload(videoID, bvid, dlDir)
-	pending = subStore.GetPending(videoID)
-	if len(pending) == 0 {
-		fmt.Printf("ℹ️ [字幕] 没有待上传的字幕文件\n")
-		return
-	}
-
-	successCount := 0
-	for _, track := range pending {
-		fmt.Printf("  📤 上传字幕: %s (%s)... ", track.FileName, track.Language)
-
-		// 使用 SubtitleUploader 上传字幕
-		err := bili.UploadSubtitle(cred, bvid, track.FilePath, track.Language)
-		if err != nil {
-			fmt.Printf("❌ %v\n", err)
-			subStore.MarkFailed(videoID, track.Language, err.Error())
-			continue
-		}
-
-		subStore.MarkUploaded(videoID, track.Language)
-		fmt.Println("✅")
-		successCount++
-	}
-
-	if successCount > 0 {
-		allDone := subStore.AllUploaded(videoID)
-		if allDone {
-			fmt.Printf("✅ [字幕] 全部字幕上传完成! https://www.bilibili.com/video/%s\n", bvid)
-		} else {
-			fmt.Printf("✅ [字幕] 已上传 %d 个字幕文件，部分仍待处理\n", successCount)
-		}
-	} else {
-		fmt.Printf("❌ [字幕] 所有字幕上传均失败，请稍后重试: ytb2bili subtitle retry %s\n", bvid)
-	}
+	bili.WatchAndUploadSubtitle(bvid, videoID, dlDir, cred, cfg.DataDir, bili.FmtLogger())
 }
 
 // ─── Task Management ────────────────────────────────────────────────────────
