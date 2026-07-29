@@ -24,6 +24,35 @@ type Config struct {
 	FeishuAppSecret string `yaml:"feishu_app_secret"`
 	BitableAppToken string `yaml:"bitable_app_token"`
 	BitableTableID  string `yaml:"bitable_table_id"`
+
+	// 腾讯云 TTS 配置
+	TencentCloud *TencentCloudConfig `yaml:"tencent_cloud"`
+	TTS          *TTSConfig          `yaml:"tts"`
+	Concurrent   *ConcurrentConfig   `yaml:"concurrent"`
+}
+
+// TencentCloudConfig 腾讯云 API 凭证
+type TencentCloudConfig struct {
+	SecretID  string `yaml:"secret_id"`
+	SecretKey string `yaml:"secret_key"`
+	Region    string `yaml:"region"`
+}
+
+// TTSConfig 语音合成参数
+type TTSConfig struct {
+	VoiceType       int64   `yaml:"voice_type"`
+	Volume          float64 `yaml:"volume"`
+	Speed           float64 `yaml:"speed"`
+	PrimaryLanguage int     `yaml:"primary_language"`
+	SampleRate      int64   `yaml:"sample_rate"`
+	Codec           string  `yaml:"codec"`
+}
+
+// ConcurrentConfig 并发处理配置
+type ConcurrentConfig struct {
+	MaxWorkers int `yaml:"max_workers"`
+	RateLimit  int `yaml:"rate_limit"`
+	BatchSize  int `yaml:"batch_size"`
 }
 
 func Default() *Config {
@@ -33,6 +62,19 @@ func Default() *Config {
 		LLMModel:              "deepseek-v4-flash",
 		TranslationTargetLang: "zh-Hans",
 		BiliTid:               122,
+		TTS: &TTSConfig{
+			VoiceType:       101008,
+			Volume:          5,
+			Speed:           1.0,
+			PrimaryLanguage: 1,
+			SampleRate:      16000,
+			Codec:           "mp3",
+		},
+		Concurrent: &ConcurrentConfig{
+			MaxWorkers: 5,
+			RateLimit:  20,
+			BatchSize:  10,
+		},
 	}
 }
 
@@ -79,6 +121,23 @@ func (c *Config) Init() {
 	}
 	if c.BitableTableID == "" {
 		c.BitableTableID = os.Getenv("BITABLE_TABLE_ID")
+	}
+
+	// 腾讯云 TTS 配置
+	if c.TencentCloud == nil {
+		c.TencentCloud = &TencentCloudConfig{}
+	}
+	if c.TencentCloud.SecretID == "" {
+		c.TencentCloud.SecretID = os.Getenv("TENCENTCLOUD_SECRET_ID")
+	}
+	if c.TencentCloud.SecretKey == "" {
+		c.TencentCloud.SecretKey = os.Getenv("TENCENTCLOUD_SECRET_KEY")
+	}
+	if c.TencentCloud.Region == "" {
+		c.TencentCloud.Region = os.Getenv("TENCENTCLOUD_REGION")
+	}
+	if c.TencentCloud.Region == "" {
+		c.TencentCloud.Region = "ap-guangzhou"
 	}
 }
 

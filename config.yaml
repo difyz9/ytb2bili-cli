@@ -5,3 +5,24 @@ llm_model: "deepseek-v4-flash"
 data_dir: "./data"
 bili_tid: 122
 translation_target_lang: zh-Hans
+
+# 腾讯云 TTS 配置
+tencent_cloud:
+  secret_id: "AKIDCYuMk073oNs7GE1bEk3FJKDvPgjZEhw6"
+  secret_key: "37zkMlz30pSvC4pNiqlTSxSr7B86zhFa"
+  region: "ap-beijing"
+
+# TTS 音频参数
+tts:
+  voice_type: 101008        # 音色：101008-智琪(女声), 101007-智慧(女声), 101003-智云(男声)
+  volume: 5                 # 音量：0-10
+  speed: 1.0                # 语速：0.6-1.5
+  primary_language: 1       # 主语言：1-中文，2-英文
+  sample_rate: 16000        # 采样率
+  codec: "mp3"              # 编码格式
+
+# 并发处理配置
+concurrent:
+  max_workers: 5            # 最大并发数
+  rate_limit: 20            # 每秒请求限制
+  batch_size: 10            # 批处理大小
