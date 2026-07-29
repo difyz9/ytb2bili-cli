@@ -154,7 +154,7 @@ func (m *Monitor) RemoveSubscription(channelID string) error {
 	found := false
 	for i, s := range subs {
 		if s.ChannelID == channelID {
-			subs[i].Status = "inactive"
+			subs = append(subs[:i], subs[i+1:]...)
 			found = true
 			break
 		}
