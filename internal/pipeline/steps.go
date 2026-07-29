@@ -81,13 +81,20 @@ func (*transcribeStep) Definition() workflow.Step {
 }
 func (*transcribeStep) Run(ctx context.Context, state *PipelineState) error {
 	if state.Result.SubtitlePath != "" {
+		fmt.Printf("  \U0001f4dd 已有字幕: %s\n", filepath.Base(state.Result.SubtitlePath))
 		return nil
 	}
+	videoSize := "?"
+	if fi, err := os.Stat(state.Result.VideoPath); err == nil {
+		videoSize = fmt.Sprintf("%.0f MB", float64(fi.Size())/(1024*1024))
+	}
+	fmt.Printf("  \U0001f399 音频来源: %s (%s)\n", filepath.Base(state.Result.VideoPath), videoSize)
 	var err error
 	state.Result.SubtitlePath, err = transcriber.BcutASRContext(ctx, state.Result.VideoPath, state.Result.DownloadDir, state.Result.ArtifactID())
 	if err != nil {
 		return fmt.Errorf("转写失败: %w", err)
 	}
+	fmt.Printf("  \u2705 字幕: %s\n", filepath.Base(state.Result.SubtitlePath))
 	return nil
 }
 
@@ -97,11 +104,14 @@ func (*translateStep) Definition() workflow.Step {
 	return workflow.Step{Name: "translate", Description: "翻译字幕", Requires: []string{"transcribe"}}
 }
 func (s *translateStep) Run(ctx context.Context, state *PipelineState) error {
+	fmt.Printf("  \U0001f310 翻译: %s \u2192 %s\n", state.Request.SourceLang, state.Request.TargetLang)
+	fmt.Printf("  \U0001f4c4 来源: %s\n", filepath.Base(state.Result.SubtitlePath))
 	translated, err := translator.SRTContext(ctx, state.Result.SubtitlePath, state.Request.SourceLang, state.Request.TargetLang, s.config)
 	if err != nil {
 		return fmt.Errorf("翻译失败: %w", err)
 	}
 	state.Result.SubtitlePath = translated
+	fmt.Printf("  \u2705 译文: %s\n", filepath.Base(state.Result.SubtitlePath))
 	return nil
 }
 
@@ -170,10 +180,13 @@ func (*metadataStep) Definition() workflow.Step {
 	return workflow.Step{Name: "metadata", Description: "生成标题、简介和标签", Requires: []string{"download"}}
 }
 func (s *metadataStep) Run(ctx context.Context, state *PipelineState) error {
+	fmt.Printf("  \U0001f916 原始标题: %s\n", state.Download.Info.Title)
 	meta, err := metadata.GenerateContext(ctx, state.Download.Info, s.config)
 	if err != nil {
 		meta = &metadata.VideoMeta{Title: state.Download.Info.Title, Description: state.Download.Info.Description}
+		fmt.Printf("  \u26a0 AI 生成失败，使用原标题\n")
 	}
+	fmt.Printf("  \u2705 中文标题: %s\n", meta.Title)
 	state.Metadata, state.Result.Metadata = meta, meta
 	return nil
 }
@@ -193,6 +206,12 @@ func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
 		return fmt.Errorf("请先登录: ytb2bili login")
 	}
 	r, req := state.Result, state.Request
+	videoSize := "?"
+	if fi, err := os.Stat(r.VideoPath); err == nil {
+		videoSize = fmt.Sprintf("%.0f MB", float64(fi.Size())/(1024*1024))
+	}
+	fmt.Printf("  \U0001f4e4 上传视频: %s (%s)\n", filepath.Base(r.VideoPath), videoSize)
+	fmt.Printf("  \U0001f3a8 标题: %s\n", state.Metadata.Title)
 	bvid, err := bili.UploadContext(ctx, &cred, &bili.UploadParams{VideoPath: r.VideoPath, Title: state.Metadata.Title, Desc: state.Metadata.Description, Tags: state.Metadata.Tags, Source: req.URL, Tid: req.Tid, CoverPath: state.Download.CoverPath})
 	if err != nil {
 		return fmt.Errorf("上传失败: %w", err)
@@ -203,5 +222,6 @@ func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
 		return fmt.Errorf("保存投稿历史失败: %w", err)
 	}
 	_, _ = storage.NewSubtitleStore(filepath.Join(s.config.DataDir, "subtitles")).SyncFromDownload(r.ArtifactID(), bvid, r.DownloadDir)
+	fmt.Printf("  \u2705 B站: https://www.bilibili.com/video/%s\n", bvid)
 	return nil
 }
