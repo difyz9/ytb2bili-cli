@@ -6,6 +6,7 @@ DEEPSEEK_API_KEY
 .DS_Store
 ytb2bili
 
+*.mp3
 # generated output files
 ${OUTPUT}
 ytb

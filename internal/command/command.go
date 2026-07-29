@@ -29,6 +29,7 @@ import (
 	"github.com/zolagz/ytb2bili-go/internal/storage"
 	"github.com/zolagz/ytb2bili-go/internal/transcriber"
 	"github.com/zolagz/ytb2bili-go/internal/translator"
+	"github.com/zolagz/ytb2bili-go/internal/tts"
 	"github.com/zolagz/ytb2bili-go/internal/workflow"
 )
 
@@ -57,6 +58,7 @@ func commands(cfg *config.Config) []*cli.Command {
 		extractaudioCommand(cfg),
 		translateCommand(cfg),
 		bcutCommand(cfg),
+		tencentTTSCommand(cfg),
 		chainCommand(cfg),
 		serverCommand(cfg), // 保留但 Hidden=true
 		whoamiCommand(cfg),
@@ -943,6 +945,82 @@ func bcutCommand(cfg *config.Config) *cli.Command {
 
 			fmt.Printf("✅ 听录完成! (耗时: %v)\n", elapsed.Round(time.Second))
 			fmt.Printf("📄 %s\n", srtPath)
+			return nil
+		},
+	}
+}
+
+// ─── Tencent TTS ───────────────────────────────────────────────────────────
+
+func tencentTTSCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:  "tencent-tts",
+		Usage: "腾讯云 TTS 语音合成",
+		Description: `读取 SRT 字幕文件，逐条调用腾讯云 TTS 生成 MP3 音频，
+	按字幕序号命名输出（1.mp3, 2.mp3, ...），供 audio-sync 步骤使用。
+	
+	环境变量:
+	  TENCENTCLOUD_SECRET_ID    腾讯云 API 密钥 ID
+	  TENCENTCLOUD_SECRET_KEY   腾讯云 API 密钥 Key`,
+		ArgsUsage: "<input.srt>",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "音频输出目录（默认同目录下的 voice/）"},
+			&cli.IntFlag{Name: "concurrency", Value: 3, Usage: "并发合成数"},
+			&cli.StringFlag{Name: "region", Value: "ap-guangzhou", Usage: "腾讯云地域"},
+			&cli.Int64Flag{Name: "voice", Value: 0, Usage: "音色: 0=亲和女声, 1=成熟女声, 2=成熟男声, 3=亲和男声"},
+			&cli.Float64Flag{Name: "volume", Value: 2, Usage: "音量: 0-15"},
+			&cli.Float64Flag{Name: "speed", Value: 1, Usage: "语速: 0-2"},
+		},
+		Action: func(c *cli.Context) error {
+			srtPath := c.Args().First()
+			if srtPath == "" {
+				return fmt.Errorf("请输入 SRT 字幕文件路径")
+			}
+			if _, err := os.Stat(srtPath); err != nil {
+				return fmt.Errorf("字幕文件不存在: %s", srtPath)
+			}
+
+			outputDir := c.String("output")
+			if outputDir == "" {
+				outputDir = filepath.Join(filepath.Dir(srtPath), "voice")
+			}
+
+			ttsCfg := tts.FromAppConfig(cfg)
+			if c.IsSet("region") {
+				ttsCfg.Region = c.String("region")
+			}
+			if c.IsSet("voice") {
+				ttsCfg.Voice = c.Int64("voice")
+			}
+			if c.IsSet("volume") {
+				ttsCfg.Volume = c.Float64("volume")
+			}
+			if c.IsSet("speed") {
+				ttsCfg.Speed = c.Float64("speed")
+			}
+
+			fmt.Printf("🎤 腾讯云 TTS 合成: %s\n", srtPath)
+			fmt.Printf("   ├ 输出目录: %s\n", outputDir)
+			fmt.Printf("   ├ 并发数: %d\n", c.Int("concurrency"))
+			fmt.Printf("   ├ 音色: %d\n", ttsCfg.Voice)
+			fmt.Printf("   └ 语速: %.1f  音量: %.0f\n", ttsCfg.Speed, ttsCfg.Volume)
+			fmt.Println()
+
+			ctx := context.Background()
+			results, err := tts.SynthesizeSRT(ctx, srtPath, outputDir, ttsCfg, c.Int("concurrency"))
+			if err != nil {
+				return fmt.Errorf("合成失败: %w", err)
+			}
+
+			success, failed := 0, 0
+			for _, r := range results {
+				if r.Err != nil {
+					failed++
+				} else {
+					success++
+				}
+			}
+			fmt.Printf("\n✅ 合成完成: %d 成功, %d 失败\n", success, failed)
 			return nil
 		},
 	}
