@@ -59,26 +59,24 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 		}
 	}
 
-	// Resolve cookies: prefer task cookies, fallback to global cookies
+	// Resolve cookies: prefer explicit cookie file, fallback to browser session
 	cookiesFile := ""
 	if len(cookiesPath) > 0 && cookiesPath[0] != "" {
 		cookiesFile = cookiesPath[0]
 	}
-	// Fallback to global YouTube cookies if task cookies are empty or have expire=0
+	// If the provided cookie file is empty or has no valid entries, try global YOUTUBE_COOKIES env var.
 	if cookiesFile == "" || !hasValidCookies(cookiesFile) {
-		globalCookies := os.Getenv("YOUTUBE_COOKIES")
-		if globalCookies == "" {
-			globalCookies = filepath.Join(os.Getenv("HOME"), "guan", "code", "ytb2bili-go", "data", "cookies", "youtube_cookies.txt")
-		}
-		if _, err := os.Stat(globalCookies); err == nil {
-			cookiesFile = globalCookies
+		if global := os.Getenv("YOUTUBE_COOKIES"); global != "" {
+			if _, err := os.Stat(global); err == nil {
+				cookiesFile = global
+			}
 		}
 	}
 
-	// Build base args. Prefer a valid exported cookie file. On macOS, fall back
-	// to Chrome's active login so users do not have to export cookies manually.
-	// Set YOUTUBE_COOKIES_FROM_BROWSER to override the browser/profile syntax
-	// accepted by yt-dlp, or to "off" to disable browser-cookie discovery.
+	// On macOS, prefer --cookies-from-browser chrome over a stale cookies file,
+	// since Chrome keeps an active YouTube login session.  Set
+	// YOUTUBE_COOKIES_FROM_BROWSER to override the browser/profile syntax accepted
+	// by yt-dlp, or to "off" to disable browser-cookie discovery entirely.
 	baseArgs := cookieArgs(cookiesFile, os.Getenv("YOUTUBE_COOKIES_FROM_BROWSER"), runtime.GOOS)
 
 	// Get video info first
@@ -119,16 +117,12 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 	}
 
 	// Check subtitle languages
-	subLangs := fmt.Sprintf("%s,zh-Hans,zh-Hant,ja", lang)
-
-	// Download video
+	// Download video (字幕通过 BCut ASR 单独听录，不使用 yt-dlp 下载的字幕)
 	template := filepath.Join(outputDir, "%(id)s.%(ext)s")
 
 	args := append(baseArgs,
 		"-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
 		"--merge-output-format", "mp4",
-		"--write-auto-sub", "--sub-langs", subLangs,
-		"--convert-subs", "srt",
 		"--embed-metadata",
 		"--ignore-errors",
 		"--remote-components", "ejs:github",
@@ -161,14 +155,8 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 		return nil, fmt.Errorf("未找到下载的视频文件")
 	}
 
-	// Find subtitle
+	// Find subtitle：已不再使用 yt-dlp 下载的字幕，统一由 BCut ASR 听录
 	var srtPath string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".srt") {
-			srtPath = filepath.Join(outputDir, e.Name())
-			break
-		}
-	}
 
 	// Download cover
 	var coverPath string

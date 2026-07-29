@@ -6,21 +6,6 @@
  */
 
 /**
- * 飞书机器人配置
- */
-export const FEISHU_CONFIG = {
-  // 飞书应用 ID
-  get APP_ID(): string {
-	return import.meta.env.VITE_FEISHU_APP_ID || '';
-  },
-  
-  // 飞书应用 Secret (注意: 生产环境应通过后端代理，不应暴露在前端)
-  get APP_SECRET(): string {
-    return import.meta.env.VITE_FEISHU_APP_SECRET || '';
-  },
-} as const;
-
-/**
  * 后端服务配置
  */
 export const BACKEND_CONFIG = {
@@ -34,10 +19,6 @@ export const BACKEND_CONFIG = {
   get BASE_URL(): string {
     return import.meta.env.VITE_BACKEND_URL || this.PRODUCTION_URL;
   },
-
-	get API_TOKEN(): string {
-		return import.meta.env.VITE_YTB2BILI_SERVER_TOKEN || '';
-	},
 } as const;
 
 /**
@@ -80,8 +61,8 @@ export function normalizeBackendBaseUrl(url: string): string {
 export const AUTH_CONFIG = {
   APP_ID: import.meta.env.VITE_APP_ID || 'ytb2bili_extension',
   PROJECT_ID: import.meta.env.VITE_PROJECT_ID || '',
-	APP_SECRET: import.meta.env.VITE_APP_SECRET || '',
-	COOKIES_ENCRYPT_KEY: import.meta.env.VITE_COOKIES_ENCRYPT_KEY || '',
+  APP_SECRET: import.meta.env.VITE_APP_SECRET || 'ytb2bili_secret_2026',
+  COOKIES_ENCRYPT_KEY: import.meta.env.VITE_COOKIES_ENCRYPT_KEY || '59e7052041ce4bd6aff82f6a0bca9cde',
 } as const;
 
 /**
@@ -105,30 +86,6 @@ export async function getBackendUrl(): Promise<string> {
   
   // 返回默认配置
   return normalizeBackendBaseUrl(BACKEND_CONFIG.BASE_URL);
-}
-
-/**
- * 保存后端 URL 到 storage
- */
-export async function saveBackendUrl(url: string): Promise<void> {
-  const browserApi: any = (globalThis as any).browser || (globalThis as any).chrome;
-  if (!browserApi?.storage?.local) {
-    return;
-  }
-
-  await browserApi.storage.local.set({ backendUrl: normalizeBackendBaseUrl(url) });
-}
-
-/**
- * 清除后端 URL 配置
- */
-export async function clearBackendUrl(): Promise<void> {
-  const browserApi: any = (globalThis as any).browser || (globalThis as any).chrome;
-  if (!browserApi?.storage?.local) {
-    return;
-  }
-
-  await browserApi.storage.local.remove(['backendUrl']);
 }
 
 /**

@@ -17,7 +17,6 @@ interface ImportMetaEnv {
   readonly VITE_APP_ID?: string;
   readonly VITE_APP_SECRET?: string;
   readonly VITE_BACKEND_URL?: string;
-	readonly VITE_YTB2BILI_SERVER_TOKEN?: string;
   readonly VITE_COOKIES_ENCRYPT_KEY?: string;
   readonly VITE_MEMBERSHIP_URL?: string;
   readonly VITE_PROJECT_ID?: string;

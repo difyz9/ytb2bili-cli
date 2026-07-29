@@ -53,7 +53,12 @@ func commands(cfg *config.Config) []*cli.Command {
 		taskCommand(cfg),
 		channelCommand(cfg),
 		queueCommand(cfg),
+		downloadCommand(cfg),
+		extractaudioCommand(cfg),
+		translateCommand(cfg),
+		bcutCommand(cfg),
 		serverCommand(cfg), // 保留但 Hidden=true
+		whoamiCommand(cfg),
 		debugCommand(cfg),
 		subtitleCommand(cfg),
 		autoCommand(cfg),
@@ -633,15 +638,25 @@ func loginCommand(cfg *config.Config) *cli.Command {
 				return fmt.Errorf("登录失败: %w", err)
 			}
 
+			// 保存凭据
 			store.Save(cred)
 			fmt.Println()
 			fmt.Println("✅ ===== 扫码成功! =====")
 			fmt.Println("   登录凭据已保存")
 
+			// 获取用户信息（若 TokenInfo 中无用户名，补充写入凭据文件）
 			info, _ := auth.GetUserInfo(cred)
 			if name, ok := info["name"].(string); ok {
 				mid, _ := info["mid"].(float64)
 				fmt.Printf("   用户: %s (UID: %.0f)\n", name, mid)
+				// 如果本地 TokenInfo 未记录用户名，补充写入
+				if cred.TokenInfo.Uname == "" || cred.TokenInfo.Uname != name {
+					cred.TokenInfo.Uname = name
+				}
+				if cred.TokenInfo.Mid == 0 && mid > 0 {
+					cred.TokenInfo.Mid = int64(mid)
+				}
+				store.Save(cred)
 			}
 			fmt.Println("✅ =====================")
 			return nil
@@ -678,6 +693,258 @@ func openLoginBrowser(cfg *config.Config, cdpPort int, qrURL, qrPath string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "💡 请手动打开二维码图片: %s\n", qrPath)
+}
+
+// ─── WhoAmI ──────────────────────────────────────────────────────────────────
+
+func whoamiCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:  "whoami",
+		Usage: "查看当前登录的B站账号信息",
+		Action: func(c *cli.Context) error {
+			credDir := filepath.Join(cfg.DataDir, "cookies")
+			cs := storage.NewCredentialStore(credDir)
+
+			if !cs.Exists() {
+				fmt.Println("❌ 未登录")
+				fmt.Println("💡 请先执行: ytb login")
+				return nil
+			}
+
+			var cred auth.LoginInfo
+			if err := cs.Load(&cred); err != nil {
+				return fmt.Errorf("读取登录凭据失败: %w", err)
+			}
+
+			valid, err := auth.ValidateLogin(&cred)
+			if err != nil || !valid {
+				fmt.Println("❌ 登录已过期，请重新登录")
+				fmt.Println("💡 执行: ytb login")
+				return nil
+			}
+
+			fmt.Println("✅ 登录状态有效")
+
+			// 显示 TokenInfo（本地存储的信息，无需 API 调用）
+			if cred.TokenInfo.Uname != "" {
+				fmt.Printf("   用户名: %s\n", cred.TokenInfo.Uname)
+			}
+			if cred.TokenInfo.Mid > 0 {
+				fmt.Printf("   UID: %d\n", cred.TokenInfo.Mid)
+			}
+			fmt.Printf("   凭据文件: %s\n", filepath.Join(credDir, "bilibili.json"))
+			return nil
+		},
+	}
+}
+
+// ─── Download ──────────────────────────────────────────────────────────────
+
+func downloadCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:      "download",
+		Usage:     "下载 YouTube 视频（不含字幕）",
+		ArgsUsage: "<YouTube URL>",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "输出目录（默认 data/downloads/<video_id>）"},
+			&cli.StringFlag{Name: "lang", Value: "en", Usage: "视频语言"},
+		},
+		Action: func(c *cli.Context) error {
+			url := c.Args().First()
+			if url == "" {
+				return fmt.Errorf("请输入 YouTube URL")
+			}
+
+			videoID := search.ExtractVideoID(url)
+			if videoID == "" {
+				return fmt.Errorf("无法从 URL 提取视频 ID")
+			}
+
+			outputDir := c.String("output")
+			if outputDir == "" {
+				outputDir = filepath.Join(cfg.DataDir, "downloads", videoID)
+			}
+
+			cookiesPath := cfg.YouTubeCookies
+			if cookiesPath == "" {
+				cookiesPath = filepath.Join(cfg.DataDir, "youtube_cookies.txt")
+			}
+
+			fmt.Printf("⬇️  下载视频: %s\n", url)
+			fmt.Printf("📁 输出目录: %s\n", outputDir)
+			fmt.Println()
+
+			result, err := download.Video(url, outputDir, c.String("lang"), cookiesPath)
+			if err != nil {
+				return fmt.Errorf("下载失败: %w", err)
+			}
+
+			fmt.Printf("✅ 下载完成\n")
+			fmt.Printf("  视频: %s\n", result.VideoPath)
+			fmt.Printf("  封面: %s\n", result.CoverPath)
+			if result.Info.Title != "" {
+				fmt.Printf("  标题: %s\n", result.Info.Title)
+			}
+			return nil
+		},
+	}
+}
+
+// ─── Extract Audio ─────────────────────────────────────────────────────────
+
+func extractaudioCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:      "extract-audio",
+		Usage:     "从视频中提取音频（用于 BCut ASR 听录）",
+		ArgsUsage: "<video.mp4>",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "输出音频路径（默认同目录）"},
+			&cli.StringFlag{Name: "format", Value: "mp3", Usage: "音频格式: mp3, wav, aac, ogg"},
+		},
+		Action: func(c *cli.Context) error {
+			videoPath := c.Args().First()
+			if videoPath == "" {
+				return fmt.Errorf("请输入视频文件路径")
+			}
+			if _, err := os.Stat(videoPath); err != nil {
+				return fmt.Errorf("视频文件不存在: %s", videoPath)
+			}
+
+			outputPath := c.String("output")
+			if outputPath == "" {
+				ext := filepath.Ext(videoPath)
+				outputPath = strings.TrimSuffix(videoPath, ext) + "." + c.String("format")
+			}
+
+			fmt.Printf("🎵 提取音频: %s\n", videoPath)
+			fmt.Printf("  输出: %s\n", outputPath)
+			fmt.Printf("  格式: %s\n", c.String("format"))
+			fmt.Println()
+
+			args := []string{"-i", videoPath, "-vn", "-y", outputPath}
+			switch c.String("format") {
+			case "wav":
+				args = []string{"-i", videoPath, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", "-y", outputPath}
+			case "aac":
+				args = []string{"-i", videoPath, "-vn", "-acodec", "aac", "-ab", "192k", "-y", outputPath}
+			case "ogg":
+				args = []string{"-i", videoPath, "-vn", "-acodec", "libvorbis", "-ab", "192k", "-y", outputPath}
+			default: // mp3
+				args = []string{"-i", videoPath, "-vn", "-acodec", "libmp3lame", "-ab", "128k", "-ar", "16000", "-ac", "1", "-y", outputPath}
+			}
+
+			cmd := exec.Command("ffmpeg", args...)
+			cmd.Stdout = os.Stderr
+			cmd.Stderr = os.Stderr
+
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("音频提取失败: %w", err)
+			}
+
+			info, err := os.Stat(outputPath)
+			if err != nil {
+				return fmt.Errorf("输出文件未找到: %w", err)
+			}
+
+			fmt.Printf("✅ 提取完成: %s (%.1f MB)\n", outputPath, float64(info.Size())/(1024*1024))
+			return nil
+		},
+	}
+}
+
+// ─── Translate ─────────────────────────────────────────────────────────────
+
+func translateCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:      "translate",
+		Usage:     "翻译 SRT 字幕文件",
+		ArgsUsage: "<input.srt>",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "source-lang", Value: "en", Usage: "源语言"},
+			&cli.StringFlag{Name: "target-lang", Value: cfg.EffectiveTranslationTargetLang(), Usage: "目标语言"},
+			&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "输出路径（默认自动生成）"},
+		},
+		Action: func(c *cli.Context) error {
+			inputPath := c.Args().First()
+			if inputPath == "" {
+				return fmt.Errorf("请输入 SRT 字幕文件路径")
+			}
+			if _, err := os.Stat(inputPath); err != nil {
+				return fmt.Errorf("字幕文件不存在: %s", inputPath)
+			}
+
+			sourceLang := c.String("source-lang")
+			targetLang := c.String("target-lang")
+
+			outputPath := c.String("output")
+			if outputPath == "" {
+				outputPath = translator.TranslatedSRTPath(inputPath, targetLang)
+			}
+
+			fmt.Printf("🌐 翻译字幕: %s\n", inputPath)
+			fmt.Printf("   %s → %s\n", sourceLang, targetLang)
+			fmt.Printf("   输出: %s\n", outputPath)
+			fmt.Println()
+
+			start := time.Now()
+			result, err := translator.SRTContext(context.Background(), inputPath, sourceLang, targetLang, cfg)
+			if err != nil {
+				return fmt.Errorf("翻译失败: %w", err)
+			}
+			elapsed := time.Since(start)
+
+			fmt.Printf("✅ 翻译完成 (耗时: %v)\n", elapsed.Round(time.Second))
+			fmt.Printf("📄 %s\n", result)
+			return nil
+		},
+	}
+}
+
+// ─── BCut ASR ──────────────────────────────────────────────────────────────
+
+func bcutCommand(cfg *config.Config) *cli.Command {
+	return &cli.Command{
+		Name:      "bcut",
+		Usage:     "使用 Bcut ASR 听录音频",
+		ArgsUsage: "<audio.mp3>",
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Usage: "SRT 输出路径（默认同目录）"},
+			&cli.StringFlag{Name: "video-id", Usage: "视频 ID（用于文件名）"},
+		},
+		Action: func(c *cli.Context) error {
+			audioPath := c.Args().First()
+			if audioPath == "" {
+				return fmt.Errorf("请输入音频文件路径")
+			}
+			if _, err := os.Stat(audioPath); err != nil {
+				return fmt.Errorf("音频文件不存在: %s", audioPath)
+			}
+
+			outputDir := filepath.Dir(audioPath)
+			videoID := c.String("video-id")
+			if videoID == "" {
+				videoID = strings.TrimSuffix(filepath.Base(audioPath), filepath.Ext(audioPath))
+			}
+
+			fmt.Printf("🎤 Bcut ASR 听录: %s\n", audioPath)
+			fmt.Printf("   输出目录: %s\n", outputDir)
+			fmt.Println()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+			defer cancel()
+
+			start := time.Now()
+			srtPath, err := transcriber.BcutASRContext(ctx, audioPath, outputDir, videoID)
+			if err != nil {
+				return fmt.Errorf("听录失败: %w", err)
+			}
+			elapsed := time.Since(start)
+
+			fmt.Printf("✅ 听录完成! (耗时: %v)\n", elapsed.Round(time.Second))
+			fmt.Printf("📄 %s\n", srtPath)
+			return nil
+		},
+	}
 }
 
 // ─── Submit ─────────────────────────────────────────────────────────────────
