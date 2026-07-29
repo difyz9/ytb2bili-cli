@@ -47,6 +47,7 @@ func newRootCmd() *cobra.Command {
 
 	// 注册子命令
 	root.AddCommand(
+		newInitCmd(),
 		newLoginCmd(),
 		newWhoamiCmd(),
 		newDownloadCmd(),
