@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,7 +82,7 @@ func (*transcribeStep) Definition() workflow.Step {
 }
 func (*transcribeStep) Run(ctx context.Context, state *PipelineState) error {
 	if state.Result.SubtitlePath != "" {
-		fmt.Printf("  \U0001f4dd 已有字幕: %s\n", filepath.Base(state.Result.SubtitlePath))
+		log.Printf("  📝 已有字幕: %s\n", filepath.Base(state.Result.SubtitlePath))
 		return nil
 	}
 	videoSize := "?"
@@ -104,14 +105,14 @@ func (*translateStep) Definition() workflow.Step {
 	return workflow.Step{Name: "translate", Description: "翻译字幕", Requires: []string{"transcribe"}}
 }
 func (s *translateStep) Run(ctx context.Context, state *PipelineState) error {
-	fmt.Printf("  \U0001f310 翻译: %s \u2192 %s\n", state.Request.SourceLang, state.Request.TargetLang)
-	fmt.Printf("  \U0001f4c4 来源: %s\n", filepath.Base(state.Result.SubtitlePath))
+	log.Printf("  \U0001f310 翻译: %s \u2192 %s", state.Request.SourceLang, state.Request.TargetLang)
+	log.Printf("  \U0001f4c4 来源: %s", filepath.Base(state.Result.SubtitlePath))
 	translated, err := translator.SRTContext(ctx, state.Result.SubtitlePath, state.Request.SourceLang, state.Request.TargetLang, s.config)
 	if err != nil {
 		return fmt.Errorf("翻译失败: %w", err)
 	}
 	state.Result.SubtitlePath = translated
-	fmt.Printf("  \u2705 译文: %s\n", filepath.Base(state.Result.SubtitlePath))
+	log.Printf("  \u2705 译文: %s", filepath.Base(state.Result.SubtitlePath))
 	return nil
 }
 

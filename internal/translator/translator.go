@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -108,7 +109,7 @@ func New(config Config) *Translator {
 
 // TranslateSRTFile 翻译 SRT 文件
 func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath string) error {
-	fmt.Printf("  读取字幕文件: %s\n", inputPath)
+	log.Printf("  读取字幕文件: %s", inputPath)
 
 	// 1. 读取源文件
 	raw, err := os.ReadFile(inputPath)
@@ -124,7 +125,7 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	if len(entries) == 0 {
 		return fmt.Errorf("字幕文件为空")
 	}
-	fmt.Printf("  解析完成: %d 条字幕\n", len(entries))
+	log.Printf("  解析完成: %d 条字幕", len(entries))
 
 	// 3. 建立滚动字幕翻译计划。同一原子文本行只翻译一次，再回填到每个
 	// 原始 cue，从而保持重复片段的译法稳定，同时不改变 SRT 结构。
@@ -132,15 +133,15 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	if err != nil {
 		return fmt.Errorf("建立字幕翻译计划失败: %w", err)
 	}
-	fmt.Printf("  语义翻译单元: %d 条 (回填到 %d 条原始字幕)\n", len(plan.units), len(entries))
+	log.Printf("  语义翻译单元: %d 条 (回填到 %d 条原始字幕)", len(plan.units), len(entries))
 
 	// 4. 批量翻译
-	fmt.Printf("  开始批量翻译 (batch=%d, workers=%d)...\n", t.config.BatchSize, t.config.MaxWorkers)
+	log.Printf("  开始批量翻译 (batch=%d, workers=%d)...", t.config.BatchSize, t.config.MaxWorkers)
 	result, err := t.TranslateTexts(ctx, plan.units)
 	if err != nil {
 		return fmt.Errorf("翻译失败: %w", err)
 	}
-	fmt.Printf("  翻译完成: %d/%d 个语义单元, 耗时 %v\n", len(result.TranslatedTexts), len(plan.units), result.Duration)
+	log.Printf("  翻译完成: %d/%d 个语义单元, 耗时 %v", len(result.TranslatedTexts), len(plan.units), result.Duration)
 	translatedTexts, err := plan.project(result.TranslatedTexts)
 	if err != nil {
 		return fmt.Errorf("回填翻译结果失败: %w", err)
@@ -151,7 +152,7 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	dedupEntries, dedupTexts := DeduplicateTranslations(entries, translatedTexts)
 	removed := len(entries) - len(dedupEntries)
 	if removed > 0 {
-		fmt.Printf("  去重连续重复字幕: 移除 %d 条\n", removed)
+		log.Printf("  去重连续重复字幕: 移除 %d 条", removed)
 	}
 
 	// 6. 生成译文 SRT
@@ -159,13 +160,13 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 		return fmt.Errorf("翻译结果数量不匹配: 输入 %d 条，输出 %d 条", len(dedupEntries), len(dedupTexts))
 	}
 	content := GenerateSRT(dedupEntries, dedupTexts)
-	fmt.Printf("  输出字幕: %d 条\n", len(dedupEntries))
+	log.Printf("  输出字幕: %d 条", len(dedupEntries))
 
 	// 6. 写入输出文件
 	if err := writeFileAtomic(outputPath, []byte(content)); err != nil {
 		return fmt.Errorf("保存翻译字幕失败: %w", err)
 	}
-	fmt.Printf("  保存到: %s\n", outputPath)
+	log.Printf("  保存到: %s", outputPath)
 
 	return nil
 }
@@ -255,7 +256,7 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 	}
 	shouldTranslate, detectedLanguage, decisionErr := t.shouldTranslate(ctx, texts)
 	if decisionErr != nil {
-		fmt.Printf("  翻译语言判定失败，将继续翻译: %v\n", decisionErr)
+		log.Printf("  翻译语言判定失败，将继续翻译: %v", decisionErr)
 		shouldTranslate = true
 	}
 	if !shouldTranslate {
@@ -268,7 +269,7 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 	}
 
 	totalGroups := (len(texts) + t.config.BatchSize - 1) / t.config.BatchSize
-	fmt.Printf("  分组: %d 组, 每组最多 %d 句\n", totalGroups, t.config.BatchSize)
+	log.Printf("  分组: %d 组, 每组最多 %d 句", totalGroups, t.config.BatchSize)
 
 	taskChan := make(chan translateTask)
 	resultChan := make(chan translateResult, totalGroups)
@@ -332,7 +333,7 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 			continue
 		}
 		results[res.groupIndex] = res.texts
-		fmt.Printf("  组 %d/%d 翻译完成\n", res.groupIndex+1, totalGroups)
+		log.Printf("  组 %d/%d 翻译完成", res.groupIndex+1, totalGroups)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -532,7 +533,7 @@ func (t *Translator) shouldTranslate(ctx context.Context, texts []string) (bool,
 	if err := json.Unmarshal([]byte(extractJSON(response)), &decision); err != nil {
 		return false, "", fmt.Errorf("解析翻译语言判定失败: %w", err)
 	}
-	fmt.Printf("  语言判定: detected=%s, translate=%t, reason=%s\n",
+	log.Printf("  语言判定: detected=%s, translate=%t, reason=%s",
 		decision.DetectedLanguage, decision.NeedsTranslation, decision.Reason)
 	return decision.NeedsTranslation, decision.DetectedLanguage, nil
 }
