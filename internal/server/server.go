@@ -639,10 +639,15 @@ func extractVideoID(url string) string {
 }
 
 // corsMiddleware 添加 CORS 头，允许 Chrome 扩展内容脚本跨域请求
+//
+// 当 allowedOrigins 为空时（默认配置），允许任意 Origin——本地服务仅监听
+// 127.0.0.1，外部无法访问，放宽 CORS 是安全的。当配置了明确的允许来源列表
+// 时，仅放行列表内的 Origin。
 func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" {
+
+		if origin != "" && len(allowedOrigins) > 0 {
 			allowed := false
 			for _, candidate := range allowedOrigins {
 				if candidate == origin {
@@ -654,6 +659,10 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 				http.Error(w, "origin not allowed", http.StatusForbidden)
 				return
 			}
+		}
+
+		// 无白名单（默认）= 允许所有来源；有白名单 = 仅放行匹配的
+		if origin != "" {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 		}

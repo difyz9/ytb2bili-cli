@@ -1,9 +1,6 @@
 /**
  * Cookies 工具模块
  * 参考: https://github.com/kairi003/Get-cookies.txt-LOCALLY
- * 
- * 改进: 同时抓取 .youtube.com 和 .google.com 域的 cookies
- * 以确保 yt-dlp 有足够的认证信息
  */
 
 // 定义 Cookie 类型
@@ -41,7 +38,7 @@ async function getCurrentCookieStoreId(): Promise<string | undefined> {
   
   // 如果没有找到活动标签页，返回 undefined 使用默认存储
   if (!tab) return undefined;
-
+  
   if (tab.cookieStoreId) return tab.cookieStoreId;
 
   // Chrome 不支持 tab.cookieStoreId 属性
@@ -70,47 +67,19 @@ async function getAllCookies(details: GetAllDetails): Promise<Cookie[]> {
 
 /**
  * 获取指定URL的cookies
- * 改进: 同时获取 .youtube.com 和 .google.com 域的 cookies
  */
 export async function getCookiesForUrl(url: string): Promise<Cookie[]> {
   try {
     const urlObj = new URL(url);
+    const details: GetAllDetails = {
+      url: urlObj.href,
+      // @ts-ignore - partitionKey 可能不存在于某些版本
+      partitionKey: { topLevelSite: urlObj.origin },
+    };
     
-    // 需要抓取的域名列表
-    const domains = ['.youtube.com', '.google.com', 'accounts.google.com'];
-    
-    // 去重用的 Set
-    const seenCookies = new Set<string>();
-    const allCookies: Cookie[] = [];
-    
-    // 获取当前标签页的 storeId
-    const storeId = await getCurrentCookieStoreId();
-    
-    for (const domain of domains) {
-      try {
-        const details: GetAllDetails = {
-          domain: domain,
-          storeId: storeId,
-        };
-        
-        const cookies = await getAllCookies(details);
-        console.log(`[Cookies] 获取到 ${cookies.length} 个 cookies for ${domain}`);
-        
-        // 去重并添加到结果
-        for (const cookie of cookies) {
-          const key = `${cookie.domain}:${cookie.name}`;
-          if (!seenCookies.has(key)) {
-            seenCookies.add(key);
-            allCookies.push(cookie);
-          }
-        }
-      } catch (error) {
-        console.warn(`[Cookies] 获取 ${domain} cookies 失败:`, error);
-      }
-    }
-    
-    console.log(`[Cookies] 总共获取到 ${allCookies.length} 个 cookies`);
-    return allCookies;
+    const cookies = await getAllCookies(details);
+    console.log(`[Cookies] 获取到 ${cookies.length} 个 cookies for ${urlObj.hostname}`);
+    return cookies;
   } catch (error) {
     console.error('[Cookies] 获取失败:', error);
     return [];
@@ -119,12 +88,10 @@ export async function getCookiesForUrl(url: string): Promise<Cookie[]> {
 
 /**
  * 将 cookies 转换为 Netscape 格式字符串
- * 这是 yt-dlp 需要的格式
  */
 export function cookiesToNetscapeFormat(cookies: Cookie[]): string {
   const netscapeRows = cookies.map(({ domain, expirationDate, path, secure, name, value }) => {
     const includeSubDomain = domain?.startsWith('.') ? 'TRUE' : 'FALSE';
-    // 如果没有过期时间，使用 0（session cookie）
     const expiry = expirationDate?.toFixed() || '0';
     const secureFlag = secure ? 'TRUE' : 'FALSE';
     return [domain, includeSubDomain, path, secureFlag, expiry, name, value].join('\t');
@@ -156,11 +123,4 @@ export function cookiesToObject(cookies: Cookie[]): Record<string, string> {
     result[name] = value;
   });
   return result;
-}
-
-/**
- * 将 cookies 转换为 JSON 格式（用于多维表格存储）
- */
-export function cookiesToJson(cookies: Cookie[]): string {
-  return JSON.stringify(cookies);
 }

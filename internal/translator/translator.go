@@ -146,13 +146,20 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 		return fmt.Errorf("回填翻译结果失败: %w", err)
 	}
 
-	// 5. 一对一生成译文 SRT。翻译器必须保留输入字幕的条数、序号和时间轴；
-	// 滚动字幕清理属于独立的显式预处理步骤，不在翻译过程中执行。
-	if len(translatedTexts) != len(entries) {
-		return fmt.Errorf("翻译结果数量不匹配: 输入 %d 条，输出 %d 条", len(entries), len(translatedTexts))
+	// 5. 清理连续重复的翻译。YouTube 滚动字幕会产生大量相邻的重复 cue，
+	// 翻译后连续多条译文内容一致。去重后保留首次出现的位置。
+	dedupEntries, dedupTexts := DeduplicateTranslations(entries, translatedTexts)
+	removed := len(entries) - len(dedupEntries)
+	if removed > 0 {
+		fmt.Printf("  去重连续重复字幕: 移除 %d 条\n", removed)
 	}
-	content := GenerateSRT(entries, translatedTexts)
-	fmt.Printf("  保留原始字幕结构: %d 条\n", len(entries))
+
+	// 6. 生成译文 SRT
+	if len(dedupTexts) != len(dedupEntries) {
+		return fmt.Errorf("翻译结果数量不匹配: 输入 %d 条，输出 %d 条", len(dedupEntries), len(dedupTexts))
+	}
+	content := GenerateSRT(dedupEntries, dedupTexts)
+	fmt.Printf("  输出字幕: %d 条\n", len(dedupEntries))
 
 	// 6. 写入输出文件
 	if err := writeFileAtomic(outputPath, []byte(content)); err != nil {

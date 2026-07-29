@@ -16,8 +16,7 @@ export default defineConfig({
       'alarms',
     ],
     host_permissions: [
-      "https://*/",
-      "https://open.feishu.cn/*",
+    "https://*/",
     ],
     web_accessible_resources: [
       {
@@ -31,6 +30,5 @@ export default defineConfig({
       48: '/icon/icon48.png',
       128: '/icon/icon128.png',
     },
-    options_page: 'entrypoints/options/index.html',
   },
 });

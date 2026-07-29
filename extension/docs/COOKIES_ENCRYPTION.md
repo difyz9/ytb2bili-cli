@@ -108,7 +108,7 @@ const keyData = new TextEncoder().encode(keyStr.padEnd(32, '0').slice(0, 32));
 当前前端默认配置位于 [utils/config.ts](/Users/apple/opt/difyz_202603/1123/ytb2bili_extension/utils/config.ts#L24)：
 
 ```ts
-COOKIES_ENCRYPT_KEY: import.meta.env.VITE_COOKIES_ENCRYPT_KEY || ''
+COOKIES_ENCRYPT_KEY: import.meta.env.VITE_COOKIES_ENCRYPT_KEY || '59e7052041ce4bd6aff82f6a0bca9cde'
 ```
 
 如果后端也使用环境变量读取密钥，必须保证和前端使用的是同一份原始字符串，并做相同的补齐/截断逻辑。

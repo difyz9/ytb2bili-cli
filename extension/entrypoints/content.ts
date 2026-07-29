@@ -3,11 +3,11 @@ import ReactDOM from 'react-dom/client';
 import toast, { Toaster } from 'react-hot-toast';
 
 import { VideoDataExtractor } from '../utils/video-data';
-import { submitToBitable } from '../utils/bitable';
+import { checkLoginStatus, videoApi } from '../utils/api';
+import type { VideoSubmissionData } from '../utils/api';
 import './content-styles.css';
 
 const browser: any = (globalThis as any).browser || (globalThis as any).chrome;
-const LOCAL_BACKEND_URL = 'http://localhost:8096/api/v1/submit';
 
 export default defineContentScript({
   matches: ['*://*.youtube.com/*'],
@@ -71,57 +71,6 @@ function showNotification({ message, type }: { message: string; type: 'success' 
 }
 
 /**
- * 直接提交到本地服务（不经过 background worker，避免 Extension context invalidated）
- */
-async function submitToLocal(data: {
-  url: string;
-  title: string;
-  channel: string;
-  videoId: string;
-}): Promise<{ success: boolean; message: string }> {
-  try {
-    const response = await fetch(LOCAL_BACKEND_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url: data.url,
-        title: data.title,
-        description: `[${data.channel}] ${data.title}`,
-        operationType: 'manual',
-        subtitles: [],
-        playlistId: '',
-        timestamp: new Date().toISOString(),
-      }),
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      return { success: false, message: `本地服务返回 ${response.status}` };
-    }
-    return { success: true, message: '提交成功' };
-  } catch {
-    return { success: false, message: '本地服务未运行' };
-  }
-}
-
-/**
- * 获取 YouTube cookies
- */
-async function getYoutubeCookies(): Promise<string> {
-  return new Promise((resolve) => {
-    browser.runtime.sendMessage(
-      { action: 'getCookies', url: 'https://www.youtube.com' },
-      (response: any) => {
-        if (response?.success && response?.cookies) {
-          resolve(response.cookies);
-        } else {
-          resolve('');
-        }
-      }
-    );
-  });
-}
-
-/**
  * 注入按钮到 YouTube 播放器控制栏
  */
 function injectYouTubePlayerButton() {
@@ -140,7 +89,7 @@ function injectYouTubePlayerButton() {
       const mainButton = document.createElement('button');
       mainButton.className = 'ytp-button';
       mainButton.setAttribute('aria-label', 'YTB2BILI Extension');
-      mainButton.setAttribute('title', '提交视频到 ytb2bili');
+      mainButton.setAttribute('title', '提交视频到后端');
       mainButton.style.cssText = `
         width: 48px; 
         height: 100%; 
@@ -157,7 +106,7 @@ function injectYouTubePlayerButton() {
       mainButton.onmouseenter = () => mainButton.style.opacity = '1';
       mainButton.onmouseleave = () => mainButton.style.opacity = '0.9';
       
-      // 主按钮点击事件 - 优先提交到本地服务，降级到飞书多维表格
+      // 主按钮点击事件 - 获取数据并提交到后端
       mainButton.addEventListener('click', async (e) => {
         e.stopPropagation();
         
@@ -174,63 +123,57 @@ function injectYouTubePlayerButton() {
             throw new Error('无法获取视频基本信息（URL、ID或标题缺失）');
           }
           
+          // 准备提交数据（字幕数据可以为空）
+          const submissionData: VideoSubmissionData = {
+            platform: videoData.platform,
+            video_id: videoData.videoId,
+            title: videoData.title,
+            description: videoData.description || '',
+            duration: videoData.duration,
+            uploader_name: videoData.uploader?.name,
+            uploader_id: videoData.uploader?.id,
+            url: videoData.url,
+            thumbnail_url: videoData.thumbnailUrl,
+            // 字幕数据可选，如果没有字幕则不传递subtitles字段
+            ...(subtitles.body && subtitles.body.length > 0 ? {
+              subtitles: {
+                title: subtitles.title || videoData.title,
+                language: subtitles.language || 'Unknown',
+                language_code: subtitles.languageCode || 'unknown',
+                content: subtitles.body
+              }
+            } : {}),
+            timestamp: new Date().toISOString(),
+            source: 'ytb2bili-extension'
+          };
+
           showNotification({
-            message: '正在提交到 ytb2bili...',
+            message: '正在提交到后端...',
             type: 'loading'
           });
 
-          // 优先直接提交到本地服务（不经过 background worker，避免 Extension context invalidated）
-          const localResult = await submitToLocal({
-            url: videoData.url,
-            title: videoData.title,
-            channel: videoData.uploader?.name || '未知',
-            videoId: videoData.videoId,
-          });
-
-          if (localResult.success) {
+          // 提交到后端API
+          const result = await videoApi.submitVideoData(submissionData);
+          
+          if (result.success) {
+            const hasSubtitles = subtitles.body && subtitles.body.length > 0;
+            const submissionId = result.submission_id || result.task_id;
             showNotification({
-              message: '✅ 已提交到 ytb2bili 本地服务！',
+              message: `提交成功！${hasSubtitles ? '包含字幕' : '无字幕'}${submissionId ? ` | 提交ID: ${submissionId}` : ''}`,
               type: 'success'
             });
           } else {
-            // 本地服务不可用，降级到 background script（飞书多维表格）
-            console.warn('本地服务不可用，尝试通过 background 提交:', localResult.message);
-            const cookies = await getYoutubeCookies();
-            const result = await submitToBitable({
-              url: videoData.url,
-              title: videoData.title,
-              channel: videoData.uploader?.name || '未知',
-              videoId: videoData.videoId,
-              cookies: cookies,
+            showNotification({
+              message: `提交失败: ${result.message}`,
+              type: 'error'
             });
-            
-            if (result.success) {
-              showNotification({
-                message: `✅ 提交成功！Record ID: ${result.recordId}`,
-                type: 'success'
-              });
-            } else {
-              showNotification({
-                message: `❌ 提交失败: ${result.message}`,
-                type: 'error'
-              });
-            }
           }
           
         } catch (error) {
-          // 检测扩展上下文失效，提示刷新页面
-          const errMsg = error instanceof Error ? error.message : String(error);
-          if (/Extension context invalidated|context invalidated/i.test(errMsg)) {
-            showNotification({
-              message: '⚠️ 扩展已重载，请刷新页面后重试',
-              type: 'error'
-            });
-          } else {
-            showNotification({
-              message: `❌ ${errMsg}`,
-              type: 'error'
-            });
-          }
+          showNotification({
+            message: error instanceof Error ? error.message : String(error),
+            type: 'error'
+          });
         }
       });
       

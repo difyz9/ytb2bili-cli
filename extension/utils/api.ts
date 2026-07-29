@@ -1,4 +1,4 @@
-import { AUTH_CONFIG, BACKEND_CONFIG, getBackendUrl, getMembershipUrl, getWebAppUrl } from './config';
+import { AUTH_CONFIG, getBackendUrl, getMembershipUrl, getWebAppUrl } from './config';
 import { encryptData, generateNonce, generateSignature } from './crypto';
 import { getExtensionContextInvalidatedMessage, isExtensionContextInvalidated } from './extension-context';
 import type { LicenseStatus, LoginTokenInfo, StoredLoginInfo, User } from '../types';
@@ -496,12 +496,6 @@ async function request<T>(
     headers.set('X-Sign', sign);
     headers.set('Authorization', `Bearer ${accessToken}`);
   }
-
-	// A self-hosted ytb2bili server uses its own bearer token. When configured,
-	// it intentionally takes precedence over the membership access token.
-	if (BACKEND_CONFIG.API_TOKEN) {
-		headers.set('Authorization', `Bearer ${BACKEND_CONFIG.API_TOKEN}`);
-	}
   
   try {
     const response = await fetch(url, {
