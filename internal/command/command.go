@@ -1,6 +1,7 @@
 package command
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -608,70 +609,75 @@ func loginCommand(cfg *config.Config) *cli.Command {
 			// 终端二维码（兼容 Hermes+飞书：飞书忽略 ANSI，终端显示二维码）
 			PrintQRCodeTerminal(qr.URL)
 
-			// ── CDP 默认集成 — CDP → 系统打开 → 图片查看器 ──
-			browserOpened := false
-			cdpPort := c.Int("cdp-port")
-
+			// ── 异步打开浏览器（不阻塞终端） ──
 			if !c.Bool("no-browser") {
-				// 方式1: CDP — Connect() 自动处理已有/启动 Chrome
-				cm := cdp.NewChromeManager(
-					cdp.WithPort(cdpPort),
-					cdp.WithUserDataDir(filepath.Join(cfg.DataDir, "browser_data")),
-				)
-				cdp.RegisterCleanup(cm)
-				if ctx, cancel, err := cm.Connect(); err == nil {
-					defer cancel()
-					if err := cdp.OpenURL(ctx, qr.URL); err == nil {
-						fmt.Fprintf(os.Stderr, "🌐 已在 Chrome 中打开扫码页面\n")
-						browserOpened = true
-					}
-				}
-
-				// 方式2: 系统命令打开浏览器
-				if !browserOpened {
-					if err := cdp.OpenURLSystem(qr.URL); err == nil {
-						browserOpened = true
-						fmt.Fprintf(os.Stderr, "🌐 已在浏览器中打开二维码页面\n")
-					}
-				}
-
-				// 方式3: 系统图片查看器
-				if !browserOpened {
-					if err := cdp.ShowImageSystem(qrPath); err == nil {
-						browserOpened = true
-						fmt.Fprintf(os.Stderr, "🖼️ 已打开二维码图片\n")
-					}
-				}
-
-				if !browserOpened {
-					fmt.Fprintf(os.Stderr, "💡 请手动打开二维码图片: %s\n", qrPath)
-				}
+				go openLoginBrowser(cfg, c.Int("cdp-port"), qr.URL, qrPath)
 			}
 
 			// Output paths for Hermes detection (stderr avoids pipe buffering)
 			fmt.Fprintf(os.Stderr, "QRCODE_IMAGE:%s\n", qrPath)
 			fmt.Fprintf(os.Stderr, "QRCODE_URL:%s\n", qr.URL)
-			fmt.Fprintln(os.Stderr, "⏳ 等待扫码...（最长120秒）")
 
 			// Also write auth_code to file for agent polling
 			authFile := filepath.Join(credDir, "auth_code.txt")
 			os.WriteFile(authFile, []byte(qr.AuthCode), 0644)
 
-			cred, err := auth.PollQRCode(qr.AuthCode, 120*time.Second)
+			// ── 扫码轮询（带进度提示） ──
+			fmt.Fprintf(os.Stderr, "⏳ 等待扫码...（最长120秒，扫码后自动确认）\n")
+			pollCtx, pollCancel := context.WithTimeout(context.Background(), 120*time.Second)
+			defer pollCancel()
+
+			cred, err := auth.PollQRCodeContext(pollCtx, qr.AuthCode, 120*time.Second)
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "❌ 扫码失败\n")
 				return fmt.Errorf("登录失败: %w", err)
 			}
 
 			store.Save(cred)
-			fmt.Println("✅ 扫码成功!")
+			fmt.Println()
+			fmt.Println("✅ ===== 扫码成功! =====")
+			fmt.Println("   登录凭据已保存")
 
 			info, _ := auth.GetUserInfo(cred)
 			if name, ok := info["name"].(string); ok {
-				fmt.Printf("👤 用户: %s (UID: %.0f)\n", name, info["mid"])
+				mid, _ := info["mid"].(float64)
+				fmt.Printf("   用户: %s (UID: %.0f)\n", name, mid)
 			}
+			fmt.Println("✅ =====================")
 			return nil
 		},
 	}
+}
+
+// openLoginBrowser 异步在浏览器中打开扫码页面（不阻塞终端主流程）
+func openLoginBrowser(cfg *config.Config, cdpPort int, qrURL, qrPath string) {
+	// 方式1: CDP 自动管理 Chrome（已有则连接，无则启动）
+	cm := cdp.NewChromeManager(
+		cdp.WithPort(cdpPort),
+		cdp.WithUserDataDir(filepath.Join(cfg.DataDir, "browser_data")),
+	)
+	cdp.RegisterCleanup(cm)
+	if ctx, cancel, err := cm.Connect(); err == nil {
+		defer cancel()
+		if err := cdp.OpenURL(ctx, qrURL); err == nil {
+			fmt.Fprintf(os.Stderr, "🌐 已在 Chrome 中打开扫码页面\n")
+			return
+		}
+	}
+
+	// 方式2: 系统命令打开浏览器
+	if err := cdp.OpenURLSystem(qrURL); err == nil {
+		fmt.Fprintf(os.Stderr, "🌐 已在浏览器中打开二维码页面\n")
+		return
+	}
+
+	// 方式3: 系统图片查看器
+	if err := cdp.ShowImageSystem(qrPath); err == nil {
+		fmt.Fprintf(os.Stderr, "🖼️ 已打开二维码图片\n")
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "💡 请手动打开二维码图片: %s\n", qrPath)
 }
 
 // ─── Submit ─────────────────────────────────────────────────────────────────

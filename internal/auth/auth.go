@@ -152,11 +152,21 @@ func PollQRCode(authCode string, timeout time.Duration) (*LoginInfo, error) {
 // PollQRCodeContext 轮询二维码扫描结果，支持 context 取消
 func PollQRCodeContext(ctx context.Context, authCode string, timeout time.Duration) (*LoginInfo, error) {
 	deadline := time.Now().Add(timeout)
+	lastTick := time.Now()
+	start := time.Now()
+
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("扫码轮询被取消: %w", ctx.Err())
 		default:
+		}
+
+		// 每 5 秒输出一次进度，让用户知道轮询还在进行
+		if time.Since(lastTick) >= 5*time.Second {
+			elapsed := int(time.Since(start).Seconds())
+			fmt.Fprintf(os.Stderr, "   ⏳ 等待扫码... %ds/%ds\n", elapsed, int(timeout.Seconds()))
+			lastTick = time.Now()
 		}
 
 		time.Sleep(time.Second)
@@ -183,6 +193,7 @@ func PollQRCodeContext(ctx context.Context, authCode string, timeout time.Durati
 
 		switch int(code) {
 		case 0:
+			fmt.Fprintf(os.Stderr, "   ✅ 扫码已确认，正在获取登录信息...\n")
 			return extractLoginInfo(result)
 		case 86038:
 			return nil, fmt.Errorf("二维码已过期")
@@ -190,7 +201,7 @@ func PollQRCodeContext(ctx context.Context, authCode string, timeout time.Durati
 			return nil, fmt.Errorf("API错误")
 		}
 	}
-	return nil, fmt.Errorf("扫码超时")
+	return nil, fmt.Errorf("扫码超时（%ds）", int(timeout.Seconds()))
 }
 
 func extractLoginInfo(result map[string]interface{}) (*LoginInfo, error) {
