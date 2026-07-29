@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"io"
 	"net/http"
 	"os"
@@ -93,26 +94,26 @@ func BcutASRContext(ctx context.Context, videoPath, outputDir, videoID string) (
 	if err != nil {
 		return "", fmt.Errorf("读取音频失败: %w", err)
 	}
-	fmt.Printf("  音频大小: %d KB\n", len(fileData)/1024)
+	log.Printf("  音频大小: %d KB", len(fileData)/1024)
 
 	// Step 2: Request upload
-	fmt.Print("  申请上传... ")
+	log.Print("  申请上传...")
 	uploadResp, err := requestUpload(ctx, fileData)
 	if err != nil {
 		return "", fmt.Errorf("申请上传失败: %w", err)
 	}
-	fmt.Printf("OK (%d 个分片)\n", len(uploadResp.Data.UploadURLs))
+	log.Printf("  OK (%d 个分片)", len(uploadResp.Data.UploadURLs))
 
 	// Step 3: Upload parts
-	fmt.Print("  上传分片... ")
+	log.Print("  上传分片...")
 	etags, err := uploadParts(ctx, fileData, uploadResp)
 	if err != nil {
 		return "", fmt.Errorf("上传分片失败: %w", err)
 	}
-	fmt.Println("OK")
+	log.Print("  OK")
 
 	// Step 4: Commit upload
-	fmt.Print("  提交上传... ")
+	log.Print("  提交上传...")
 	downloadURL, err := commitUpload(ctx, uploadResp, etags)
 	if err != nil {
 		return "", fmt.Errorf("提交上传失败: %w", err)
@@ -120,20 +121,20 @@ func BcutASRContext(ctx context.Context, videoPath, outputDir, videoID string) (
 	fmt.Println("OK")
 
 	// Step 5: Create task
-	fmt.Print("  创建转录任务... ")
+	log.Print("  创建转录任务...")
 	taskID, err := createTask(ctx, downloadURL)
 	if err != nil {
 		return "", fmt.Errorf("创建任务失败: %w", err)
 	}
-	fmt.Printf("OK (task_id: %s)\n", taskID[:min(16, len(taskID))])
+	log.Printf("  OK (task_id: %s)", taskID[:min(16, len(taskID))])
 
 	// Step 6: Query result
-	fmt.Print("  等待转录结果... ")
+	log.Print("  等待转录结果...")
 	result, err := queryResult(ctx, taskID)
 	if err != nil {
 		return "", fmt.Errorf("查询结果失败: %w", err)
 	}
-	fmt.Printf("OK (%d 条字幕)\n", len(result.Utterances))
+	log.Printf("  OK (%d 条字幕)", len(result.Utterances))
 
 	// Step 7: Generate SRT — use videoID as filename for BuildSubtitleCandidates compatibility
 	if videoID == "" {
@@ -313,7 +314,7 @@ func queryResult(ctx context.Context, taskID string) (*bcutResult, error) {
 		}
 
 		if i%10 == 0 && i > 0 {
-			fmt.Printf("  等待中... (state=%d, %ds)\n", queryResp.Data.State, i*2)
+			log.Printf("  等待中... (state=%d, %ds)", queryResp.Data.State, i*2)
 		}
 		time.Sleep(2 * time.Second)
 	}

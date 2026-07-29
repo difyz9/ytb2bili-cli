@@ -362,8 +362,13 @@ func (s *Server) processVideoTask(task *VideoTask) {
 	processor := &pipeline.Processor{Config: s.cfg, Reporter: func(event pipeline.Event) {
 		task.Status = event.Step
 		task.UpdatedAt = time.Now().Format(time.RFC3339)
-		if event.Err != nil {
+		if event.Status == "running" {
+			log.Printf("[%d/%d] %s...", event.Position, event.Total, event.Step)
+		} else if event.Err != nil {
+			log.Printf("❌ %s: %v", event.Step, event.Err)
 			task.Error = event.Err.Error()
+		} else {
+			log.Printf("✅ %s", event.Step)
 		}
 	}}
 	result, err := processor.Process(context.Background(), pipeline.Request{
