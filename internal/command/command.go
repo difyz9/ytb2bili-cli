@@ -57,6 +57,7 @@ func commands(cfg *config.Config) []*cli.Command {
 		extractaudioCommand(cfg),
 		translateCommand(cfg),
 		bcutCommand(cfg),
+		chainCommand(cfg),
 		serverCommand(cfg), // 保留但 Hidden=true
 		whoamiCommand(cfg),
 		debugCommand(cfg),
@@ -943,6 +944,121 @@ func bcutCommand(cfg *config.Config) *cli.Command {
 			fmt.Printf("✅ 听录完成! (耗时: %v)\n", elapsed.Round(time.Second))
 			fmt.Printf("📄 %s\n", srtPath)
 			return nil
+		},
+	}
+}
+
+// ─── Chain ─────────────────────────────────────────────────────────────────
+
+func chainCommand(cfg *config.Config) *cli.Command {
+	stepCatalog := map[string]string{
+		"download":    "下载视频、字幕和封面",
+		"transcribe":  "BCut ASR 语音转字幕",
+		"translate":   "LLM 翻译字幕",
+		"tts":         "IndexTTS 合成分段中文配音",
+		"audio-sync":  "按字幕时间轴对齐配音并替换音轨",
+		"metadata":    "AI 生成标题、简介和标签",
+		"upload":      "投稿到 B站并记录历史",
+	}
+
+	return &cli.Command{
+		Name:  "chain",
+		Usage: "任务链管理",
+		Subcommands: []*cli.Command{
+			{
+				Name:      "run",
+				Usage:     "运行自定义任务链",
+				ArgsUsage: "<step1,step2,...> <YouTube URL>",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "dry-run", Usage: "仅处理不上传"},
+					&cli.BoolFlag{Name: "skip-translate", Usage: "跳过翻译"},
+					&cli.IntFlag{Name: "tid", Value: cfg.BiliTid, Usage: "B站分区ID"},
+				},
+				Action: func(c *cli.Context) error {
+					args := c.Args().Slice()
+					if len(args) < 2 {
+						return fmt.Errorf("用法: ytb chain run <step1,step2,...> <YouTube URL>")
+					}
+					chain := workflow.ParseChain(args[0])
+					url := args[1]
+
+					fmt.Printf("🔗 任务链: %s\n", strings.Join(chain, " → "))
+					fmt.Printf("📺 %s\n", url)
+					fmt.Println()
+
+					processor := &pipeline.Processor{Config: cfg, Reporter: func(event pipeline.Event) {
+						if event.Status == "running" {
+							fmt.Printf("[%d/%d] %s... ", event.Position, event.Total, event.Step)
+						} else if event.Err != nil {
+							fmt.Printf("❌ %v\n", event.Err)
+						} else {
+							fmt.Println("✅")
+						}
+					}}
+					result, err := processor.Process(c.Context, pipeline.Request{
+						URL:            url,
+						Chain:          chain,
+						DryRun:         c.Bool("dry-run"),
+						SkipTranslate:  c.Bool("skip-translate"),
+						Tid:            c.Int("tid"),
+						Source:         "manual",
+					})
+					if result != nil && result.BVID != "" {
+						fmt.Printf("\n📺 https://www.bilibili.com/video/%s\n", result.BVID)
+					}
+					return err
+				},
+			},
+			{
+				Name:      "plan",
+				Usage:     "查看任务链规划（不执行）",
+				ArgsUsage: "<step1,step2,...> <YouTube URL>",
+				Action: func(c *cli.Context) error {
+					args := c.Args().Slice()
+					if len(args) < 2 {
+						return fmt.Errorf("用法: ytb chain plan <step1,step2,...> <YouTube URL>")
+					}
+					chain := workflow.ParseChain(args[0])
+					url := args[1]
+
+					processor := &pipeline.Processor{Config: cfg}
+					result, err := processor.Process(c.Context, pipeline.Request{
+						URL: url, Chain: chain, PlanOnly: true, Source: "manual",
+					})
+					if err != nil {
+						return err
+					}
+					fmt.Printf("🔗 任务链规划:\n")
+					for i, step := range result.Plan {
+						desc := stepCatalog[step]
+						if desc == "" {
+							desc = step
+						}
+						fmt.Printf("  %d. %s — %s\n", i+1, step, desc)
+					}
+					return nil
+				},
+			},
+			{
+				Name:  "list",
+				Usage: "列出所有可用步骤",
+				Action: func(c *cli.Context) error {
+					fmt.Println("📋 可用步骤:")
+					fmt.Println()
+					for _, step := range []struct{ name, desc string }{
+						{"download", "下载视频、字幕和封面"},
+						{"transcribe", "BCut ASR 语音转字幕"},
+						{"translate", "LLM 翻译字幕"},
+						{"tts", "IndexTTS 合成分段中文配音"},
+						{"audio-sync", "按字幕时间轴对齐配音并替换音轨"},
+						{"metadata", "AI 生成标题、简介和标签"},
+						{"upload", "投稿到 B站并记录历史"},
+					} {
+						fmt.Printf("  %-14s %s\n", step.name, step.desc)
+					}
+					return nil
+				},
+			},
 		},
 	}
 }
