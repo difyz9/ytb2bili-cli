@@ -753,15 +753,16 @@ func downloadCommand(cfg *config.Config) *cli.Command {
 			&cli.StringFlag{Name: "lang", Value: "en", Usage: "视频语言"},
 		},
 		Action: func(c *cli.Context) error {
-			url := c.Args().First()
-			if url == "" {
-				return fmt.Errorf("请输入 YouTube URL")
+			raw := c.Args().First()
+			if raw == "" {
+				return fmt.Errorf("请输入 YouTube URL 或视频 ID")
 			}
 
-			videoID := search.ExtractVideoID(url)
+			videoID := search.ExtractVideoID(raw)
 			if videoID == "" {
-				return fmt.Errorf("无法从 URL 提取视频 ID")
+				return fmt.Errorf("无法提取视频 ID: %s", raw)
 			}
+			cleanURL := "https://www.youtube.com/watch?v=" + videoID
 
 			outputDir := c.String("output")
 			if outputDir == "" {
@@ -773,11 +774,11 @@ func downloadCommand(cfg *config.Config) *cli.Command {
 				cookiesPath = filepath.Join(cfg.DataDir, "youtube_cookies.txt")
 			}
 
-			fmt.Printf("⬇️  下载视频: %s\n", url)
+			fmt.Printf("⬇️  下载视频: %s\n", cleanURL)
 			fmt.Printf("📁 输出目录: %s\n", outputDir)
 			fmt.Println()
 
-			result, err := download.Video(url, outputDir, c.String("lang"), cookiesPath)
+			result, err := download.Video(cleanURL, outputDir, c.String("lang"), cookiesPath)
 			if err != nil {
 				return fmt.Errorf("下载失败: %w", err)
 			}
