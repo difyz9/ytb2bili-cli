@@ -101,24 +101,46 @@ y2b subtitle status BV1xx123
 y2b subtitle retry BV1xx123
 ```
 
-### 🤖 自主模式（批量自动搬运）
+### 🤖 自主模式（智能批量搬运）
 
 ```bash
-# 自动搜索本周高价值视频（按观看数排序）并提交前3个
-y2b auto "AI tutorial" "programming" "tech news"
+# 默认 popular 评分，搜索后入队
+y2b auto "Flutter tutorial" "AI programming"
 
-# 仅查看搜索结果，不上传
-y2b auto --dry-run --max-videos 5 "python tutorial"
+# 均衡评分 + 播放量门槛，查看评分结果
+y2b auto --dry-run --scorer balanced --min-views 1000 "python tutorial"
 
-# 自定义过滤条件
-y2b auto --min-views 5000 --max-duration 600 --date this_month "flutter tutorial"
+# 时效优先，只取本周发布
+y2b auto --dry-run --scorer fresh --upload-date this_week "flutter tutorial"
 
-# 搜索多个关键词，自动去重排序
+# 时长过滤（short <4m / medium 4-20m / long >20m）
+y2b auto --duration long "machine learning"
+
+# 直接提交处理（入队后立即处理，不走 queue work）
+y2b auto --submit --max-videos 5 "golang backend"
+
+# 跳过翻译
+y2b auto --submit --skip-translate "music production"
+
+# 多关键词搜索，自动去重排序
 y2b auto "machine learning" "deep learning" "neural network"
-
-# 跳过翻译（保留原声英文字幕）
-y2b auto --skip-translate "music production"
 ```
+
+**评分策略:**
+
+| 策略 | 权重 | 适用场景 |
+|------|------|---------|
+| `popular` (默认) | 播放量 × 0.7 + 时效 × 0.3 | 追求热门内容 |
+| `fresh` | 时效 × 0.8 + 播放量 × 0.2 | 快速跟进新内容 |
+| `balanced` | 播放量 × 0.34 + 时效 × 0.33 + 时长 × 0.33 | 综合择优 |
+
+**工作模式：**
+
+- **默认**（无 `--submit`）：自动搜索 → 评分筛选 → 接入任务队列（`queue`）。用户后续运行 `queue work` 消费队列，适合批量发现、慢慢处理。
+- **`--submit`**：入队记录后直接处理，适合少量紧急搬运。
+- **`--dry-run`**：仅展示评分结果，不写入任何数据。
+
+**去重机制：** 自动对多关键词结果全局去重，并跳过已提交历史的视频。
 
 字幕采用**异步监听**机制：投稿后立即返回，后台 goroutine 每 30 秒检查一次审核状态，最多等待 24 小时。审核通过后自动用 `SubtitleUploader`（获取 CID → 转换 SRT → 保存草稿）上传字幕。上传状态持久化在 `data/subtitles/` 目录中，重启不丢失。
 

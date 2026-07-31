@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -789,4 +792,162 @@ func ExpandKeyword(keyword string) string {
 // BuildSearchQuery 构建安全的搜索查询（追加负向屏蔽词）
 func BuildSearchQuery(keyword string) string {
 	return ExpandKeyword(keyword) + " " + NegativeSuffix
+}
+
+// ─── Video Scoring ────────────────────────────────────────────────────────────
+
+// ScorerType 评分策略
+type ScorerType string
+
+const (
+	ScorerPopular  ScorerType = "popular"  // 播放量优先（默认）
+	ScorerFresh    ScorerType = "fresh"    // 时效优先
+	ScorerBalanced ScorerType = "balanced" // 均衡评分
+)
+
+// ScoredVideo 带评分的视频
+type ScoredVideo struct {
+	Video
+	Score         float64 `json:"score"`
+	ViewScore     float64 `json:"view_score"`
+	RecencyScore  float64 `json:"recency_score"`
+	DurationScore float64 `json:"duration_score"`
+}
+
+// ScoreVideos 对视频列表进行多维评分并排序
+func ScoreVideos(videos []Video, scorer ScorerType) []ScoredVideo {
+	if len(videos) == 0 {
+		return nil
+	}
+
+	// 计算最大播放量以归一化
+	var maxViews int64
+	for _, v := range videos {
+		if v.ViewCount > maxViews {
+			maxViews = v.ViewCount
+		}
+	}
+	maxLogViews := math.Log(float64(maxViews + 1))
+
+	now := time.Now()
+	scored := make([]ScoredVideo, 0, len(videos))
+
+	for _, v := range videos {
+		sv := ScoredVideo{Video: v}
+
+		// 播放量评分（对数归一化，防止极值倾斜）
+		if maxLogViews > 0 {
+			sv.ViewScore = math.Log(float64(v.ViewCount+1)) / maxLogViews
+		}
+
+		// 新鲜度评分
+		pubTime := parsePublishedTime(v.PublishTime, now)
+		if !pubTime.IsZero() {
+			daysAgo := now.Sub(pubTime).Hours() / 24
+			switch {
+			case daysAgo <= 1:
+				sv.RecencyScore = 1.0
+			case daysAgo <= 7:
+				sv.RecencyScore = 1.0 - (daysAgo-1)*0.5/6
+			case daysAgo <= 30:
+				sv.RecencyScore = 0.5 - (daysAgo-7)*0.4/23
+			case daysAgo <= 90:
+				sv.RecencyScore = 0.1 - max(daysAgo-30, 0)*0.1/60
+			default:
+				sv.RecencyScore = 0
+			}
+		} else {
+			sv.RecencyScore = 0.5 // 无法解析时给默认值
+		}
+
+		// 时长评分（10-30 分钟为最佳）
+		switch {
+		case v.DurationSec <= 0:
+			sv.DurationScore = 0.5
+		case v.DurationSec < 120:
+			sv.DurationScore = 0.1 // < 2 分钟，太短
+		case v.DurationSec <= 600:
+			sv.DurationScore = 0.5 // 2-10 分钟
+		case v.DurationSec <= 1800:
+			sv.DurationScore = 1.0 // 10-30 分钟，最佳区间
+		case v.DurationSec <= 3600:
+			sv.DurationScore = 0.7 // 30-60 分钟
+		default:
+			sv.DurationScore = 0.3 // > 60 分钟，太长
+		}
+
+		// 按评分策略计算综合得分
+		switch scorer {
+		case ScorerPopular:
+			sv.Score = sv.ViewScore*0.7 + sv.RecencyScore*0.3
+		case ScorerFresh:
+			sv.Score = sv.RecencyScore*0.8 + sv.ViewScore*0.2
+		case ScorerBalanced:
+			sv.Score = sv.ViewScore*0.34 + sv.RecencyScore*0.33 + sv.DurationScore*0.33
+		default:
+			sv.Score = sv.ViewScore*0.7 + sv.RecencyScore*0.3
+		}
+
+		scored = append(scored, sv)
+	}
+
+	// 按综合得分降序排列
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].Score > scored[j].Score
+	})
+
+	return scored
+}
+
+// parsePublishedTime 解析 YouTube 发布时间的相对字符串
+// 例如: "3 hours ago", "1 year ago", "2 months ago"
+func parsePublishedTime(s string, now time.Time) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+
+	// 移除常见前缀
+	cleaned := strings.TrimPrefix(s, "Streamed ")
+	cleaned = strings.TrimPrefix(cleaned, "Premiered ")
+	cleaned = strings.TrimPrefix(cleaned, "Started ")
+
+	parts := strings.Fields(cleaned)
+	// 期望格式: "X unit(s) ago"
+	if len(parts) < 3 || parts[len(parts)-1] != "ago" {
+		return time.Time{}
+	}
+
+	numStr := parts[0]
+	unit := strings.TrimSuffix(parts[1], "s") // 复数 → 单数
+
+	num, err := strconv.Atoi(numStr)
+	if err != nil || num <= 0 {
+		return time.Time{}
+	}
+
+	switch unit {
+	case "second":
+		return now.Add(-time.Duration(num) * time.Second)
+	case "minute":
+		return now.Add(-time.Duration(num) * time.Minute)
+	case "hour":
+		return now.Add(-time.Duration(num) * time.Hour)
+	case "day":
+		return now.AddDate(0, 0, -num)
+	case "week":
+		return now.AddDate(0, 0, -num*7)
+	case "month":
+		return now.AddDate(0, -num, 0)
+	case "year":
+		return now.AddDate(-num, 0, 0)
+	}
+
+	return time.Time{}
+}
+
+func max(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
 }
