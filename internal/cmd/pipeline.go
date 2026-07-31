@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/zolagz/ytb2bili-go/internal/config"
 	"github.com/zolagz/ytb2bili-go/internal/channel"
 	"github.com/zolagz/ytb2bili-go/internal/server"
 	"github.com/zolagz/ytb2bili-go/internal/cdp"
@@ -560,59 +561,192 @@ func newCookiesCmd() *cobra.Command {
 func newAutoCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auto <keyword1> [keyword2 ...]",
-		Short: "自主模式：自动搜索高价值视频并批量提交",
+		Short: "自主模式：自动搜索高价值视频并批量处理",
+		Long: `自主模式自动搜索关键词、多维评分筛选、接入任务队列。
+
+支持多种评分策略（popular / fresh / balanced）：
+
+  popular   播放量优先（默认），适合追求热门内容
+  fresh     时效优先，仅取近期发布视频
+  balanced  均衡评分，兼顾播放量、时效和内容时长
+
+示例：
+  ytb auto "flutter tutorial"                              # 默认评分，入队
+  ytb auto --scorer balanced --min-views 1000 "AI"         # 均衡评分 + 播放量门槛
+  ytb auto --dry-run --scorer fresh "golang tutorial"      # 仅查看评分结果
+  ytb auto --submit --max-videos 5 "machine learning"      # 直接提交处理`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return fmt.Errorf("请提供搜索关键词")
 			}
+
 			cfg := loadConfig()
+
 			maxVideos, _ := cmd.Flags().GetInt("max-videos")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
+			submit, _ := cmd.Flags().GetBool("submit")
+			minViews, _ := cmd.Flags().GetInt("min-views")
+			duration, _ := cmd.Flags().GetString("duration")
+			uploadDate, _ := cmd.Flags().GetString("upload-date")
+			skipTranslate, _ := cmd.Flags().GetBool("skip-translate")
+			scorerStr, _ := cmd.Flags().GetString("scorer")
 
-			history := storage.NewHistoryStore(filepath.Join(cfg.DataDir, "history"))
+			scorer := search.ScorerType(scorerStr)
 			searcher := search.New(20)
+			seen := make(map[string]bool) // 跨关键词全局去重
+			var allVideos []search.Video
 
-			fmt.Printf("🤖 自主模式启动\n")
+			fmt.Printf("🤖 自主模式启动（评分策略: %s）\n", scorer)
+
+			// ── Step 1: 搜索所有关键词 ──
 			for _, kw := range args {
 				safeQuery := search.BuildSearchQuery(kw)
-				fmt.Printf("🔍 搜索: %s\n", safeQuery[:min(len(safeQuery), 100)]+"...")
+				queryDisplay := safeQuery
+				if len(queryDisplay) > 100 {
+					queryDisplay = queryDisplay[:100] + "..."
+				}
+				fmt.Printf("🔍 搜索: %s\n", queryDisplay)
 
-				result, err := searcher.SearchWithOptions(kw, search.WithSortBy("view_count"))
+				var opts []search.SearchOption
+				opts = append(opts, search.WithSortBy("view_count"))
+				if uploadDate != "" {
+					opts = append(opts, search.WithUploadDate(uploadDate))
+				}
+				if duration != "" {
+					opts = append(opts, search.WithDuration(duration))
+				}
+
+				result, err := searcher.SearchWithOptions(kw, opts...)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "  ⚠ 搜索失败: %v\n", err)
 					continue
 				}
 
-				for _, v := range result.Videos {
-					if history.IsSubmitted(v.ID) {
+				// ApplySafeSearch: 去重、黑名单、min-views、时长合理性
+				filtered := search.ApplySafeSearch(result.Videos, int64(minViews), 0)
+				for _, v := range filtered {
+					if seen[v.ID] {
 						continue
 					}
-					fmt.Printf("  %s (%s views)\n", v.Title, v.Views)
-
-					if dryRun {
-						continue
-					}
-
-					_, submitErr := (&pipeline.Processor{Config: cfg}).Process(context.Background(), pipeline.Request{
-						URL: v.URL, Source: "auto",
-					})
-					if submitErr != nil {
-						fmt.Printf("  ❌ %v\n", submitErr)
-					} else {
-						fmt.Printf("  ✅ 已提交\n")
-					}
-				}
-
-				if len(result.Videos) >= maxVideos {
-					break
+					seen[v.ID] = true
+					allVideos = append(allVideos, v)
 				}
 			}
+
+			if len(allVideos) == 0 {
+				fmt.Println("📭 没有找到符合条件的视频")
+				return nil
+			}
+
+			// ── Step 2: 多维评分 ──
+			fmt.Printf("\n📊 评分中... (共 %d 个候选视频)\n", len(allVideos))
+			scored := search.ScoreVideos(allVideos, scorer)
+			if len(scored) > maxVideos {
+				scored = scored[:maxVideos]
+			}
+
+			// ── Step 3: 打印评分表格 ──
+			fmt.Println("")
+			fmt.Printf("%-3s %-46s %-8s %-10s %-6s %-6s\n", "#", "标题", "综合分", "播放量", "时效", "时长")
+			fmt.Println(strings.Repeat("─", 85))
+			for i, sv := range scored {
+				title := sv.Title
+				if len([]rune(title)) > 42 {
+					title = string([]rune(title)[:39]) + "..."
+				}
+				views := sv.Views
+				if views == "" {
+					views = fmt.Sprintf("%d", sv.ViewCount)
+				}
+				fmt.Printf("%-3d %-46s %6.2f  %-10s %5.2f  %5.2f\n",
+					i+1, title, sv.Score, views, sv.RecencyScore, sv.DurationScore)
+			}
+
+			if dryRun {
+				fmt.Printf("\n🔍 预览模式，共 %d 个视频\n", len(scored))
+				fmt.Println("   移除 --dry-run 入队，或加 --submit 直接提交处理")
+				return nil
+			}
+
+			// ── Step 4: 接入 Queue ──
+			q := queue.New(cfg.DataDir)
+			queued := 0
+			for _, sv := range scored {
+				added, err := q.Add(sv.ID, sv.URL, sv.Title, sv.ChannelID, "auto")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ⚠ 入队失败 [%s]: %v\n", sv.Title, err)
+					continue
+				}
+				if added {
+					queued++
+					fmt.Printf("  📥 已入队 [%d/%d]: %s\n", queued, len(scored), sv.Title)
+				} else {
+					fmt.Printf("  ⏭️ 已在队列/历史中: %s\n", sv.Title)
+				}
+			}
+
+			stats := q.Stats()
+			fmt.Printf("\n📊 队列状态:\n")
+			fmt.Printf("   ⏳ 排队中: %d\n", stats["queued"])
+			fmt.Printf("   🔄 处理中: %d\n", stats["claimed"])
+			fmt.Printf("   ✅ 已完成: %d\n", stats["completed"])
+			fmt.Printf("   ❌ 已失败: %d\n", stats["failed"])
+			fmt.Println("\n💡 使用 'queue work' 消费队列，或 'queue status' 查看进度")
+
+			// ── Step 5: --submit 模式：直接处理 ──
+			// 注意：--submit 是快捷方式，跳过 queue work 直接处理
+			// queue.Add 已经记录了发现记录，history 记录实际提交
+			if submit {
+				fmt.Println("\n🚀 --submit 模式，开始处理...")
+				for i, sv := range scored {
+					fmt.Printf("\n[%d/%d] %s\n", i+1, len(scored), sv.Title)
+					_, processErr := processSingle(cfg, sv.URL, skipTranslate)
+					if processErr != nil {
+						fmt.Printf("  ❌ %v\n", processErr)
+					} else {
+						fmt.Printf("  ✅ 处理完成\n")
+					}
+				}
+			}
+
 			return nil
 		},
 	}
+
 	cmd.Flags().Int("max-videos", 3, "最多提交视频数")
-	cmd.Flags().Bool("dry-run", false, "仅搜索不上传")
+	cmd.Flags().Bool("dry-run", false, "仅搜索不入队/提交")
+	cmd.Flags().Bool("submit", false, "入队后直接处理（默认只入队到 queue）")
+	cmd.Flags().Int("min-views", 0, "最低播放量过滤")
+	cmd.Flags().String("duration", "", "时长过滤: short(<4m) / medium(4-20m) / long(>20m)")
+	cmd.Flags().String("upload-date", "", "上传日期: last_hour / today / this_week / this_month / this_year")
+	cmd.Flags().Bool("skip-translate", false, "跳过翻译")
+	cmd.Flags().String("scorer", "popular", "评分策略: popular / fresh / balanced")
+
 	return cmd
+}
+
+// processSingle 处理单个视频的完整流水线（auto --submit 内部使用）
+func processSingle(cfg *config.Config, url string, skipTranslate bool) (*pipeline.Result, error) {
+	targetLang := cfg.EffectiveTranslationTargetLang()
+	if skipTranslate {
+		targetLang = ""
+	}
+	return (&pipeline.Processor{
+		Config: cfg,
+		Reporter: func(event pipeline.Event) {
+			if event.Status == "running" {
+				fmt.Printf("  [%d/%d] %s... ", event.Position, event.Total, event.Step)
+			} else if event.Err != nil {
+				fmt.Printf("❌ %v\n", event.Err)
+			} else {
+				fmt.Println("✅")
+			}
+		},
+	}).Process(context.Background(), pipeline.Request{
+		URL:        url,
+		Source:     "auto",
+		TargetLang: targetLang,
+	})
 }
 
 // ─── Server helpers ────────────────────────────────────────────────────────
