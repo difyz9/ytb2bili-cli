@@ -65,9 +65,10 @@ make build          # 产出 ./ytb
 ### 检查环境依赖
 
 ```bash
-ytb init            # 自动检查 ffmpeg / yt-dlp / Python / deno
+ytb init            # 自动检查 ffmpeg / yt-dlp / Python / deno / audio-sync .venv
 ytb init --update   # 同时更新 yt-dlp
 ytb init --pip      # 自动安装 Python 依赖
+ytb init --venv     # 自动创建 audio-video-sync .venv 并安装配音依赖
 ```
 
 ### 搜索视频
@@ -97,6 +98,8 @@ ytb search --history
 ```bash
 # 下载 → 转录 → 翻译 → 元数据 → 上传 → 字幕（审核通过后自动）
 ytb submit "https://www.youtube.com/watch?v=VIDEO_ID"
+# 也支持直接用 videoId（11 位 ID）
+ytb submit yn4MSHbKgmo
 
 # 仅测试（不上传）
 ytb submit --dry-run "https://www.youtube.com/watch?v=VIDEO_ID"
@@ -108,6 +111,16 @@ ytb submit --skip-translate "https://www.youtube.com/watch?v=VIDEO_ID"
 ytb chain run download,transcribe,translate "https://www.youtube.com/watch?v=VIDEO_ID"
 ytb chain list    # 查看可用步骤
 ytb chain plan download,upload "https://www.youtube.com/watch?v=VIDEO_ID"  # 只规划不执行
+```
+
+**幂等续跑**：所有步骤会检查 `data/downloads/<videoId>/` 下的已有产物，存在则跳过——
+download（视频文件）、transcribe（`.srt`）、translate（`.zh-Hans.srt`）、tts（`voice/` 配音）、audio-sync（`.synced.mp4`）。
+重跑 `submit <videoId>` 会自动跳过已完成步骤，只做剩余部分（不会重新下载/转录/翻译/合成配音）。
+
+```bash
+# 单独执行音画同步（对已有产物）
+ytb audio-sync <videoId>
+# 输出 data/downloads/<videoId>/<videoId>.synced.mp4，然后可 submit <videoId> 续跑收尾
 ```
 
 ### 任务管理
@@ -126,9 +139,21 @@ ytb queue work --once                                       # 消费一个视频
 ytb queue work                                              # 持续消费（Ctrl+C 停止）
 ```
 
-### 字幕管理
+### B站投稿管理
 
 ```bash
+# 直接投稿本地视频到 B站（不经 YouTube 流水线）
+ytb publish video.mp4 --title "我的视频" --tags "科技,评测" --desc "简介"
+ytb publish video.mp4 --tid 122 --cover cover.jpg --source "https://..."
+
+# 查看投稿审核状态
+ytb review BV1xx123
+ytb review --wait BV1xx123     # 轮询直到审核通过（最长24小时）
+
+# 上传字幕到已发布的视频
+ytb subtitle upload BV1xx123 subtitle.zh-Hans.srt
+ytb subtitle upload BV1xx123 subtitle.srt --lang en
+
 # 查看所有视频的字幕上传状态
 ytb subtitle status
 ```

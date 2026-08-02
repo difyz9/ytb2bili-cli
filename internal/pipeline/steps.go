@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/zolagz/ytb2bili-go/internal/audiosync"
 	"github.com/zolagz/ytb2bili-go/internal/auth"
@@ -17,6 +18,7 @@ import (
 	"github.com/zolagz/ytb2bili-go/internal/storage"
 	"github.com/zolagz/ytb2bili-go/internal/transcriber"
 	"github.com/zolagz/ytb2bili-go/internal/translator"
+	"github.com/zolagz/ytb2bili-go/internal/tts"
 	"github.com/zolagz/ytb2bili-go/internal/workflow"
 )
 
@@ -66,6 +68,21 @@ func (s *downloadStep) Run(ctx context.Context, state *PipelineState) error {
 	if cookies == "" {
 		cookies = filepath.Join(s.config.DataDir, "youtube_cookies.txt")
 	}
+
+	// 幂等：已存在视频文件则跳过下载，只拉取元数据（标题供 metadata 步骤使用）
+	if video := existingVideo(result.DownloadDir); video != "" {
+		fmt.Printf("  ⏭ 视频已存在，跳过下载: %s\n", filepath.Base(video))
+		subtitle := existingFile(result.DownloadDir, result.ArtifactID()+".srt")
+		cover := existingFile(result.DownloadDir, "cover.jpg")
+		info, err := download.InfoContext(ctx, req.URL, cookies)
+		if err != nil {
+			return fmt.Errorf("获取视频信息失败: %w", err)
+		}
+		state.Download = &download.Result{VideoPath: video, SubtitlePath: subtitle, CoverPath: cover, Info: *info}
+		result.VideoPath, result.SubtitlePath = video, subtitle
+		return nil
+	}
+
 	var err error
 	state.Download, err = download.VideoContext(ctx, req.URL, result.DownloadDir, req.SourceLang, cookies)
 	if err != nil {
@@ -81,6 +98,12 @@ func (*transcribeStep) Definition() workflow.Step {
 	return workflow.Step{Name: "transcribe", Description: "获取或生成源字幕", Requires: []string{"download"}}
 }
 func (*transcribeStep) Run(ctx context.Context, state *PipelineState) error {
+	// 幂等：下载目录已存在 <id>.srt 则跳过 Bcut ASR
+	if state.Result.SubtitlePath == "" {
+		if existing := existingFile(state.Result.DownloadDir, state.Result.ArtifactID()+".srt"); existing != "" {
+			state.Result.SubtitlePath = existing
+		}
+	}
 	if state.Result.SubtitlePath != "" {
 		log.Printf("  📝 已有字幕: %s\n", filepath.Base(state.Result.SubtitlePath))
 		return nil
@@ -107,6 +130,12 @@ func (*translateStep) Definition() workflow.Step {
 func (s *translateStep) Run(ctx context.Context, state *PipelineState) error {
 	log.Printf("  \U0001f310 翻译: %s \u2192 %s", state.Request.SourceLang, state.Request.TargetLang)
 	log.Printf("  \U0001f4c4 来源: %s", filepath.Base(state.Result.SubtitlePath))
+	// 幂等：<id>.<targetLang>.srt 已存在则跳过翻译
+	if existing := existingFile(state.Result.DownloadDir, state.Result.ArtifactID()+"."+state.Request.TargetLang+".srt"); existing != "" {
+		state.Result.SubtitlePath = existing
+		log.Printf("  ⏭ 译文已存在: %s", filepath.Base(existing))
+		return nil
+	}
 	translated, err := translator.SRTContext(ctx, state.Result.SubtitlePath, state.Request.SourceLang, state.Request.TargetLang, s.config)
 	if err != nil {
 		return fmt.Errorf("翻译失败: %w", err)
@@ -118,21 +147,89 @@ func (s *translateStep) Run(ctx context.Context, state *PipelineState) error {
 
 type metadataStep struct{ config *config.Config }
 
-// ttsStep 使用 IndexTTS 将翻译后的字幕合成为中文配音片段
+// ttsStep 将翻译后的字幕合成为分段配音。
+// 优先使用腾讯云 TTS（配置了 TENCENTCLOUD_SECRET_ID/KEY 时），
+// 否则回退到本地 IndexTTS 服务（需要 .venv/bin/python3 + IndexTTS2 HTTP API）。
 type ttsStep struct{ config *config.Config }
 
 func (*ttsStep) Definition() workflow.Step {
-	return workflow.Step{Name: "tts", Description: "使用 IndexTTS 合成分段中文配音", Requires: []string{"translate"}}
+	return workflow.Step{Name: "tts", Description: "合成分段中文配音（腾讯云 TTS / IndexTTS）", Requires: []string{"translate"}}
 }
 
 func (s *ttsStep) Run(ctx context.Context, state *PipelineState) error {
-	script := filepath.Join("skills", "audio-video-sync", "scripts", "synthesize_srt.py")
 	audioDir := filepath.Join(state.Result.DownloadDir, "voice")
+	// 幂等：配音片段已存在则跳过合成（避免重复计费）
+	if hasVoiceClips(audioDir) {
+		fmt.Printf("  ⏭ 配音已存在，跳过合成: %s\n", filepath.Base(audioDir))
+		state.AudioDir = audioDir
+		return nil
+	}
 	// 确保目录存在
 	if err := os.MkdirAll(audioDir, 0755); err != nil {
 		return fmt.Errorf("创建配音目录失败: %w", err)
 	}
 
+	switch selectTTSProvider(s.config) {
+	case "tencent":
+		return s.runTencent(ctx, state, audioDir)
+	default:
+		return s.runIndexTTS(ctx, state, audioDir)
+	}
+}
+
+// selectTTSProvider 决定 tts 步骤使用的合成器。
+// 显式配置 tts.provider (tencent/index) 时强制使用；
+// 否则自动检测：有腾讯云凭据 → tencent，无 → index。
+func selectTTSProvider(cfg *config.Config) string {
+	if cfg != nil && cfg.TTS != nil {
+		switch strings.ToLower(strings.TrimSpace(cfg.TTS.Provider)) {
+		case "tencent":
+			return "tencent"
+		case "index", "index-tts":
+			return "index"
+		}
+	}
+	if tencentConfigured(cfg) {
+		return "tencent"
+	}
+	return "index"
+}
+
+// tencentConfigured 报告腾讯云 TTS 凭据是否可用（配置或环境变量）。
+func tencentConfigured(cfg *config.Config) bool {
+	if cfg != nil && cfg.TencentCloud != nil && cfg.TencentCloud.SecretID != "" && cfg.TencentCloud.SecretKey != "" {
+		return true
+	}
+	return os.Getenv("TENCENTCLOUD_SECRET_ID") != "" && os.Getenv("TENCENTCLOUD_SECRET_KEY") != ""
+}
+
+// runTencent 使用腾讯云 TTS 逐条合成字幕（输出 <n>.mp3，供 audio-sync 使用）。
+func (s *ttsStep) runTencent(ctx context.Context, state *PipelineState, audioDir string) error {
+	ttsCfg := tts.FromAppConfig(s.config)
+	fmt.Printf("  🎙 使用腾讯云 TTS 合成分段配音\n")
+	results, err := tts.SynthesizeSRT(ctx, state.Result.SubtitlePath, audioDir, ttsCfg, 3)
+	if err != nil {
+		return fmt.Errorf("TTS 合成失败: %w", err)
+	}
+	ok, skipped := 0, 0
+	for _, r := range results {
+		switch {
+		case r.Err == nil:
+			ok++
+		case strings.Contains(r.Err.Error(), "空文本"):
+			skipped++
+		default:
+			return fmt.Errorf("TTS 合成失败: 第 %d 条出错: %w", r.Index, r.Err)
+		}
+	}
+	fmt.Printf("  ✅ 腾讯云 TTS 合成完成: %d 成功, %d 跳过空文本\n", ok, skipped)
+	state.AudioDir = audioDir
+	return nil
+}
+
+// runIndexTTS 回退到本地 IndexTTS 服务合成（需要 .venv/bin/python3 + IndexTTS2 API）。
+func (s *ttsStep) runIndexTTS(ctx context.Context, state *PipelineState, audioDir string) error {
+	script := filepath.Join("skills", "audio-video-sync", "scripts", "synthesize_srt.py")
 	cmd := exec.CommandContext(ctx, filepath.Join(s.config.DataDir, "..", ".venv", "bin", "python3"), script,
 		"--srt", state.Result.SubtitlePath,
 		"--output-dir", audioDir,
@@ -156,6 +253,18 @@ func (*audioSyncStep) Definition() workflow.Step {
 	return workflow.Step{Name: "audio-sync", Description: "按字幕时间轴对齐分段配音并替换视频音轨；需要请求提供 audio-dir", Requires: []string{"translate"}}
 }
 func (*audioSyncStep) Run(ctx context.Context, state *PipelineState) error {
+	baseName := state.Result.VideoID
+	if baseName == "" {
+		baseName = state.Result.TaskID
+	}
+	output := filepath.Join(state.Result.DownloadDir, baseName+".synced.mp4")
+	// 幂等：音画同步结果已存在则跳过
+	if fi, err := os.Stat(output); err == nil && !fi.IsDir() && fi.Size() > 0 {
+		fmt.Printf("  ⏭ 音画同步结果已存在: %s\n", filepath.Base(output))
+		state.Result.SyncedVideoPath = output
+		state.Result.VideoPath = output
+		return nil
+	}
 	audioDir := state.Request.AudioDir
 	if audioDir == "" && state.AudioDir != "" {
 		audioDir = state.AudioDir
@@ -163,11 +272,6 @@ func (*audioSyncStep) Run(ctx context.Context, state *PipelineState) error {
 	if audioDir == "" {
 		return fmt.Errorf("audio-sync 需要通过 --audio-dir 提供按字幕编号命名的配音目录，或先执行 tts 步骤")
 	}
-	baseName := state.Result.VideoID
-	if baseName == "" {
-		baseName = state.Result.TaskID
-	}
-	output := filepath.Join(state.Result.DownloadDir, baseName+".synced.mp4")
 	result, err := audiosync.Sync(ctx, audiosync.Options{VideoPath: state.Result.VideoPath, SubtitlePath: state.Result.SubtitlePath, AudioDir: audioDir, OutputPath: output, DisableSpeedAdjust: state.Request.DisableAudioSpeedAdjust, MissingMode: state.Request.AudioMissingMode})
 	if err != nil {
 		return err

@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/zolagz/ytb2bili-go/internal/audiosync"
+	"github.com/zolagz/ytb2bili-go/internal/bili"
 	"github.com/zolagz/ytb2bili-go/internal/config"
 	"github.com/zolagz/ytb2bili-go/internal/channel"
 	"github.com/zolagz/ytb2bili-go/internal/server"
@@ -125,6 +127,59 @@ func newChainCmd() *cobra.Command {
 
 	chain.AddCommand(runCmd, planCmd, listCmd)
 	return chain
+}
+
+// ─── Audio-Sync ─────────────────────────────────────────────────────────────
+
+func newAudioSyncCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "audio-sync <videoId>",
+		Short: "对已有下载产物执行音画同步",
+		Long: `直接使用 data/downloads/<videoId>/ 下的已有产物做音画同步：
+视频 + 译文字幕（优先 zh-Hans，回退源字幕）+ voice/ 配音目录，输出 <videoId>.synced.mp4。
+
+示例:
+  ytb audio-sync yn4MSHbKgmo
+
+配合幂等续跑：audio-sync 生成 synced.mp4 后，再执行 submit <videoId> 会跳过
+已完成的 download/transcribe/translate/tts/audio-sync，直接做元数据生成和投稿。`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("请输入 videoId")
+			}
+			cfg := loadConfig()
+			videoID := args[0]
+
+			video, subtitle, voiceDir, err := pipeline.ResolveSyncArtifacts(cfg.DataDir, videoID)
+			if err != nil {
+				return err
+			}
+			output := filepath.Join(filepath.Dir(video), videoID+".synced.mp4")
+
+			missing, _ := cmd.Flags().GetString("missing")
+			noSpeed, _ := cmd.Flags().GetBool("no-speed-adjust")
+
+			fmt.Printf("🎬 音画同步: %s\n", filepath.Base(video))
+			fmt.Printf("   📄 字幕: %s\n", filepath.Base(subtitle))
+			fmt.Printf("   🎤 配音: %s\n", filepath.Base(voiceDir))
+
+			start := time.Now()
+			result, err := audiosync.Sync(context.Background(), audiosync.Options{
+				VideoPath: video, SubtitlePath: subtitle, AudioDir: voiceDir, OutputPath: output,
+				DisableSpeedAdjust: noSpeed, MissingMode: missing,
+			})
+			if err != nil {
+				return err
+			}
+			fmt.Printf("✅ 音画同步完成 (耗时 %v): %s\n", time.Since(start).Round(time.Second), result.Output)
+			fmt.Printf("   📦 时长 %.0fs | 片段 %d | 调整 %d | 缺失 %d\n",
+				result.Duration, result.Clips, result.Adjusted, result.Missing)
+			return nil
+		},
+	}
+	cmd.Flags().String("missing", "", "缺失配音处理: error(默认) / silence")
+	cmd.Flags().Bool("no-speed-adjust", false, "不调整配音语速")
+	return cmd
 }
 
 // ─── Submit ────────────────────────────────────────────────────────────────
@@ -591,7 +646,39 @@ func newSubtitleCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(statusCmd)
+	uploadCmd := &cobra.Command{
+		Use:   "upload <bvid> <subtitle.srt>",
+		Short: "上传字幕到已发布的视频",
+		Long: `上传 SRT 字幕文件到已发布的 B站视频（获取 CID → 转换 → 保存草稿）。
+语言可用 --lang 指定（默认 zh）。
+
+示例:
+  ytb subtitle upload BV1xx123 subtitle.zh-Hans.srt
+  ytb subtitle upload BV1xx123 subtitle.srt --lang en`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 2 {
+				return fmt.Errorf("用法: ytb subtitle upload <bvid> <subtitle.srt>")
+			}
+			cfg := loadConfig()
+			cred, err := loadCredential(cfg)
+			if err != nil {
+				return err
+			}
+			lang, _ := cmd.Flags().GetString("lang")
+			if lang == "" {
+				lang = "zh"
+			}
+			fmt.Printf("📝 上传字幕 %s → %s (lang=%s)\n", args[1], args[0], lang)
+			if err := bili.UploadSubtitle(cred, args[0], args[1], lang); err != nil {
+				return err
+			}
+			fmt.Printf("✅ 字幕上传成功: %s\n", args[0])
+			return nil
+		},
+	}
+	uploadCmd.Flags().String("lang", "zh", "字幕语言（如 zh / zh-Hans / en）")
+
+	cmd.AddCommand(statusCmd, uploadCmd)
 	return cmd
 }
 

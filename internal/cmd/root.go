@@ -60,6 +60,7 @@ func newRootCmd() *cobra.Command {
 		newTranslateCmd(),
 		newTencentTTSCmd(),
 		newChainCmd(),
+		newAudioSyncCmd(),
 		newSubmitCmd(),
 		newSearchCmd(),
 		newChannelCmd(),
@@ -67,6 +68,8 @@ func newRootCmd() *cobra.Command {
 		newTaskCmd(),
 		newSubtitleCmd(),
 		newCookiesCmd(),
+		newPublishCmd(),
+		newReviewCmd(),
 		newAutoCmd(),
 
 		// server 类命令

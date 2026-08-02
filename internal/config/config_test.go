@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -32,5 +34,28 @@ func TestTranslationTargetEnvironmentOverridesConfig(t *testing.T) {
 	cfg.Init()
 	if got := cfg.EffectiveTranslationTargetLang(); got != "ja" {
 		t.Fatalf("target language=%q", got)
+	}
+}
+
+func TestTTSProviderConfigLoads(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	os.WriteFile(path, []byte("tts:\n  provider: index\n"), 0644)
+	cfg, err := LoadYAML(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TTS == nil || cfg.TTS.Provider != "index" {
+		t.Fatalf("provider=%v, want index", cfg.TTS)
+	}
+}
+
+func TestDefaultTTSProviderIsEmpty(t *testing.T) {
+	cfg := Default()
+	if cfg.TTS == nil {
+		t.Fatal("default TTS config is nil")
+	}
+	if cfg.TTS.Provider != "" {
+		t.Fatalf("default provider=%q, want empty (auto)", cfg.TTS.Provider)
 	}
 }

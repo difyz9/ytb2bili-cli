@@ -97,6 +97,8 @@ func (p *Processor) Process(ctx context.Context, req Request) (*Result, error) {
 
 	started := time.Now()
 	videoID := ExtractYouTubeID(req.URL)
+	// 裸 videoId（如直接传 11 位 ID）归一化为完整 watch URL
+	req.URL = normalizeURL(req.URL, videoID)
 	history := storage.NewHistoryStore(filepath.Join(p.Config.DataDir, "history"))
 	if videoID != "" && history.IsSubmitted(videoID) {
 		submitted := history.GetSubmitted(videoID)
@@ -192,4 +194,12 @@ func (o *taskObserver) StepFinished(name string, err error) {
 
 func ExtractYouTubeID(url string) string {
 	return search.ExtractVideoID(url)
+}
+
+// normalizeURL 将裸 videoId（如直接传 11 位 ID）归一化为完整 watch URL；其余原样返回。
+func normalizeURL(url, videoID string) string {
+	if videoID != "" && url == videoID {
+		return "https://www.youtube.com/watch?v=" + videoID
+	}
+	return url
 }

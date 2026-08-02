@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -20,12 +21,13 @@ func newInitCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			updateFlag, _ := cmd.Flags().GetBool("update")
 			pipFlag, _ := cmd.Flags().GetBool("pip")
+			venvFlag, _ := cmd.Flags().GetBool("venv")
 
 			fmt.Println("🩺 环境依赖检查")
 			fmt.Println(strings.Repeat("=", 40))
 
 			// 1. ffmpeg
-			fmt.Print("\n[1/4] ffmpeg... ")
+			fmt.Print("\n[1/5] ffmpeg... ")
 			ffmpegPath, _ := exec.LookPath("ffmpeg")
 			if ffmpegPath != "" {
 				out, _ := exec.Command("ffmpeg", "-version").Output()
@@ -41,7 +43,7 @@ func newInitCmd() *cobra.Command {
 			}
 
 			// 2. yt-dlp
-			fmt.Print("[2/4] yt-dlp... ")
+			fmt.Print("[2/5] yt-dlp... ")
 			ytdlpPath, _ := exec.LookPath("yt-dlp")
 			if ytdlpPath != "" {
 				out, _ := exec.Command("yt-dlp", "--version").Output()
@@ -61,7 +63,7 @@ func newInitCmd() *cobra.Command {
 			}
 
 			// 3. Python impersonation
-			fmt.Print("[3/4] Python impersonation... ")
+			fmt.Print("[3/5] Python impersonation... ")
 			pythonPath, _ := exec.LookPath("python3")
 			if pythonPath == "" {
 				pythonPath, _ = exec.LookPath("python")
@@ -86,7 +88,7 @@ func newInitCmd() *cobra.Command {
 			}
 
 			// 4. deno
-			fmt.Print("[4/4] deno... ")
+			fmt.Print("[4/5] deno... ")
 			denoPath, _ := exec.LookPath("deno")
 			if denoPath != "" {
 				out, _ := exec.Command("deno", "--version").Output()
@@ -97,6 +99,34 @@ func newInitCmd() *cobra.Command {
 				fmt.Println("   💡 安装: brew install deno")
 			}
 
+			// 5. audio-video-sync .venv
+			fmt.Print("[5/5] audio-video-sync 配音环境... ")
+			venvPython := ".venv/bin/python3"
+			if _, err := os.Stat(venvPython); err != nil {
+				fmt.Println("❌ 未创建 .venv")
+				if venvFlag {
+					fmt.Print("   ⏳ 创建中... ")
+					if out, perr := exec.Command("python3", "-m", "venv", ".venv").CombinedOutput(); perr != nil {
+						fmt.Printf("❌ %s\n", strings.TrimSpace(string(out)))
+					} else if o, ierr := exec.Command(venvPython, "-m", "pip", "install", "-q", "-r", "skills/audio-video-sync/requirements.txt").CombinedOutput(); ierr != nil {
+						fmt.Printf("⚠️  pip 安装失败: %s\n", strings.TrimSpace(string(o)))
+					} else {
+						fmt.Println("✅ 已创建 .venv 并安装依赖")
+					}
+				} else {
+					fmt.Println("   💡 运行: ytb init --venv 自动创建，或")
+					fmt.Println("   python3 -m venv .venv && .venv/bin/pip install -r skills/audio-video-sync/requirements.txt")
+				}
+			} else {
+				out, _ := exec.Command(venvPython, "-c", "import pydub, pysrt; print('ok')").CombinedOutput()
+				if strings.TrimSpace(string(out)) == "ok" {
+					fmt.Println("✅ .venv 已就绪 (pydub + pysrt)")
+				} else {
+					fmt.Println("⚠️  .venv 存在但缺少依赖 (pydub/pysrt)")
+					fmt.Println("   💡 运行: .venv/bin/pip install -r skills/audio-video-sync/requirements.txt")
+				}
+			}
+
 			fmt.Println()
 			fmt.Println(strings.Repeat("=", 40))
 			return nil
@@ -104,5 +134,6 @@ func newInitCmd() *cobra.Command {
 	}
 	cmd.Flags().Bool("update", false, "更新 yt-dlp 到最新版")
 	cmd.Flags().Bool("pip", false, "自动安装 Python 依赖")
+	cmd.Flags().Bool("venv", false, "自动创建 audio-video-sync .venv 并安装依赖")
 	return cmd
 }

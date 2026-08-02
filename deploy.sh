@@ -325,12 +325,12 @@ ok "所有依赖已就绪"
 header "编译项目"
 
 echo ""
-info "正在编译 ytb2bili..."
+info "正在编译 ytb..."
 
-go build -o ytb2bili .
+go build -o ytb .
 
 if [ $? -eq 0 ]; then
-    ok "编译成功 → $(pwd)/ytb2bili ($(du -h ytb2bili | cut -f1))"
+    ok "编译成功 → $(pwd)/ytb ($(du -h ytb | cut -f1))"
 else
     err "编译失败"
     exit 1
@@ -367,10 +367,10 @@ echo -e "${GREEN}╚════════════════════
 echo ""
 
 # 显示可用命令
-echo -e "  ${CYAN}./ytb2bili --help${NC}             查看所有命令"
-echo -e "  ${CYAN}./ytb2bili search --max 5 \"关键词\"${NC}  搜索 YouTube"
-echo -e "  ${CYAN}./ytb2bili login${NC}               B站扫码登录"
-echo -e "  ${CYAN}./ytb2bili submit <URL>${NC}        搬运视频到B站"
+echo -e "  ${CYAN}./ytb --help${NC}             查看所有命令"
+echo -e "  ${CYAN}./ytb search --max 5 \"关键词\"${NC}  搜索 YouTube"
+echo -e "  ${CYAN}./ytb login${NC}               B站扫码登录"
+echo -e "  ${CYAN}./ytb submit <URL>${NC}        搬运视频到B站"
 echo ""
 
 # 提示配置环境变量
@@ -399,7 +399,7 @@ fi
 
 # 建议设置别名
 echo "  建议设置别名："
-echo "  ${CYAN}alias y2b='$(pwd)/ytb2bili'${NC}"
+echo "  ${CYAN}alias y2b='$(pwd)/ytb'${NC}"
 echo "  （建议添加到 ~/.bashrc 或 ~/.zshrc）"
 echo ""
 echo -e "${GREEN}━━━ 部署完成，开始搬运！🚀 ━━━${NC}"
