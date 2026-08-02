@@ -35,88 +35,17 @@ func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) 
 func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath ...string) (*Result, error) {
 	os.MkdirAll(outputDir, 0755)
 
-	// Check yt-dlp
-	if _, err := exec.LookPath("yt-dlp"); err != nil {
-		return nil, fmt.Errorf("yt-dlp 未安装，请先安装: sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp")
-	}
-
-	// Ensure deno is in PATH for yt-dlp YouTube JS challenges
-	env := os.Environ()
-	denoPath := os.Getenv("DENO_PATH")
-	if denoPath == "" {
-		denoPath = filepath.Join(os.Getenv("HOME"), ".deno", "bin")
-	}
-	if runtime.GOOS != "windows" {
-		pathExists := false
-		for _, p := range strings.Split(os.Getenv("PATH"), ":") {
-			if p == denoPath {
-				pathExists = true
-				break
-			}
-		}
-		if !pathExists {
-			env = append(env, "PATH="+denoPath+":"+os.Getenv("PATH"))
-		}
-	}
-
-	// Resolve cookies: prefer explicit cookie file, fallback to browser session
-	cookiesFile := ""
-	if len(cookiesPath) > 0 && cookiesPath[0] != "" {
-		cookiesFile = cookiesPath[0]
-	}
-	// If the provided cookie file is empty or has no valid entries, try global YOUTUBE_COOKIES env var.
-	if cookiesFile == "" || !hasValidCookies(cookiesFile) {
-		if global := os.Getenv("YOUTUBE_COOKIES"); global != "" {
-			if _, err := os.Stat(global); err == nil {
-				cookiesFile = global
-			}
-		}
-	}
-
-	// On macOS, prefer --cookies-from-browser chrome over a stale cookies file,
-	// since Chrome keeps an active YouTube login session.  Set
-	// YOUTUBE_COOKIES_FROM_BROWSER to override the browser/profile syntax accepted
-	// by yt-dlp, or to "off" to disable browser-cookie discovery entirely.
-	baseArgs := cookieArgs(cookiesFile, os.Getenv("YOUTUBE_COOKIES_FROM_BROWSER"), runtime.GOOS)
-
-	// Get video info first
-	infoArgs := append(baseArgs, "--dump-json", "--no-download", "--remote-components", "ejs:github", url)
-	infoCmd := exec.CommandContext(ctx, "yt-dlp", infoArgs...)
-	infoCmd.Env = env
-	var infoStderr bytes.Buffer
-	infoCmd.Stderr = &infoStderr
-	infoOut, err := infoCmd.Output()
+	baseArgs, env, err := prepareYTDLP(cookiesPath...)
 	if err != nil {
-		stderrStr := strings.TrimSpace(infoStderr.String())
-		// Extract the most relevant error line (first ERROR: line)
-		errMsg := err.Error()
-		for _, line := range strings.Split(stderrStr, "\n") {
-			if strings.HasPrefix(line, "ERROR:") {
-				errMsg = strings.TrimSpace(line)
-				break
-			}
-		}
-		if errMsg == err.Error() && stderrStr != "" {
-			lines := strings.Split(stderrStr, "\n")
-			errMsg = strings.TrimSpace(lines[len(lines)-1])
-		}
-		return nil, fmt.Errorf("获取视频信息失败: %s", errMsg)
+		return nil, err
 	}
 
-	var info VideoInfo
-	if err := json.Unmarshal(infoOut, &info); err != nil {
-		// Try just the first line in case yt-dlp prefix metadata on the first line
-		lines := strings.SplitN(string(infoOut), "\n", 2)
-		if len(lines) > 0 {
-			if err2 := json.Unmarshal([]byte(lines[0]), &info); err2 != nil {
-				return nil, fmt.Errorf("解析视频信息 JSON 失败: %w (second attempt: %v)", err, err2)
-			}
-		} else {
-			return nil, fmt.Errorf("解析视频信息 JSON 失败: %w", err)
-		}
+	// Get video info first (轻量元数据，不含视频下载)
+	info, err := InfoContext(ctx, url, cookiesPath...)
+	if err != nil {
+		return nil, err
 	}
 
-	// Check subtitle languages
 	// Download video (字幕通过 BCut ASR 单独听录，不使用 yt-dlp 下载的字幕)
 	template := filepath.Join(outputDir, "%(id)s.%(ext)s")
 
@@ -176,8 +105,100 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 		VideoPath:    videoPath,
 		SubtitlePath: srtPath,
 		CoverPath:    coverPath,
-		Info:         info,
+		Info:         *info,
 	}, nil
+}
+
+// prepareYTDLP 检查 yt-dlp 并构建基础参数（deno PATH + cookies 解析）。
+// 返回 baseArgs（给 yt-dlp 的通用参数）和 env（含 deno PATH）。
+func prepareYTDLP(cookiesPath ...string) (baseArgs, env []string, err error) {
+	if _, err := exec.LookPath("yt-dlp"); err != nil {
+		return nil, nil, fmt.Errorf("yt-dlp 未安装，请先安装: sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp")
+	}
+
+	// Ensure deno is in PATH for yt-dlp YouTube JS challenges
+	env = os.Environ()
+	denoPath := os.Getenv("DENO_PATH")
+	if denoPath == "" {
+		denoPath = filepath.Join(os.Getenv("HOME"), ".deno", "bin")
+	}
+	if runtime.GOOS != "windows" {
+		pathExists := false
+		for _, p := range strings.Split(os.Getenv("PATH"), ":") {
+			if p == denoPath {
+				pathExists = true
+				break
+			}
+		}
+		if !pathExists {
+			env = append(env, "PATH="+denoPath+":"+os.Getenv("PATH"))
+		}
+	}
+
+	// Resolve cookies: prefer explicit cookie file, fallback to browser session
+	cookiesFile := ""
+	if len(cookiesPath) > 0 && cookiesPath[0] != "" {
+		cookiesFile = cookiesPath[0]
+	}
+	// If the provided cookie file is empty or has no valid entries, try global YOUTUBE_COOKIES env var.
+	if cookiesFile == "" || !hasValidCookies(cookiesFile) {
+		if global := os.Getenv("YOUTUBE_COOKIES"); global != "" {
+			if _, err := os.Stat(global); err == nil {
+				cookiesFile = global
+			}
+		}
+	}
+
+	// On macOS, prefer --cookies-from-browser chrome over a stale cookies file,
+	// since Chrome keeps an active YouTube login session.  Set
+	// YOUTUBE_COOKIES_FROM_BROWSER to override the browser/profile syntax accepted
+	// by yt-dlp, or to "off" to disable browser-cookie discovery entirely.
+	baseArgs = cookieArgs(cookiesFile, os.Getenv("YOUTUBE_COOKIES_FROM_BROWSER"), runtime.GOOS)
+	return baseArgs, env, nil
+}
+
+// InfoContext 仅获取视频元数据（不下载视频），返回 VideoInfo。
+func InfoContext(ctx context.Context, url string, cookiesPath ...string) (*VideoInfo, error) {
+	baseArgs, env, err := prepareYTDLP(cookiesPath...)
+	if err != nil {
+		return nil, err
+	}
+	infoArgs := append(baseArgs, "--dump-json", "--no-download", "--remote-components", "ejs:github", url)
+	infoCmd := exec.CommandContext(ctx, "yt-dlp", infoArgs...)
+	infoCmd.Env = env
+	var infoStderr bytes.Buffer
+	infoCmd.Stderr = &infoStderr
+	infoOut, err := infoCmd.Output()
+	if err != nil {
+		stderrStr := strings.TrimSpace(infoStderr.String())
+		// Extract the most relevant error line (first ERROR: line)
+		errMsg := err.Error()
+		for _, line := range strings.Split(stderrStr, "\n") {
+			if strings.HasPrefix(line, "ERROR:") {
+				errMsg = strings.TrimSpace(line)
+				break
+			}
+		}
+		if errMsg == err.Error() && stderrStr != "" {
+			lines := strings.Split(stderrStr, "\n")
+			errMsg = strings.TrimSpace(lines[len(lines)-1])
+		}
+		return nil, fmt.Errorf("获取视频信息失败: %s", errMsg)
+	}
+
+	var info VideoInfo
+	if err := json.Unmarshal(infoOut, &info); err != nil {
+		// Try just the first line in case yt-dlp prefix metadata on the first line
+		lines := strings.SplitN(string(infoOut), "\n", 2)
+		if len(lines) > 0 {
+			if err2 := json.Unmarshal([]byte(lines[0]), &info); err2 != nil {
+				return nil, fmt.Errorf("解析视频信息 JSON 失败: %w (second attempt: %v)", err, err2)
+			}
+		} else {
+			return nil, fmt.Errorf("解析视频信息 JSON 失败: %w", err)
+		}
+	}
+	return &info, nil
 }
 
 func cookieArgs(cookiesFile, browser, goos string) []string {

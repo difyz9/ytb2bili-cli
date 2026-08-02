@@ -50,6 +50,29 @@ which section below applies.
 - **Rate limit**: the translator uses concurrent workers; reduce concurrency or wait
 - Retry just the translation: `./ytb translate <input.srt>`
 
+### tts (配音) fails
+The pipeline `tts` step selects its provider via `config.yaml` → `tts.provider`:
+- `tencent` — Tencent Cloud TTS (needs `tencent_cloud.secret_id/secret_key` or env); no local service
+- `index` — local IndexTTS (needs `.venv/bin/python3` + IndexTTS2 HTTP API at `localhost:18765`)
+- unset/`auto` — auto-detect: Tencent when credentials present, else IndexTTS
+
+Symptoms:
+- `fork/exec .venv/bin/python3: no such file or directory` → `tts.provider` is `index` (or auto fell back) but `.venv` is missing. Set `tts.provider: tencent` in config.yaml.
+- `TENCENTCLOUD_SECRET_ID 未设置` → forced Tencent but credentials missing; set `tencent_cloud.secret_id/secret_key` in config.yaml or env.
+- Tencent TTS API errors → check the secret/region; per-cue failures fail the step (missing clips break audio-sync).
+- Standalone single-step test: `./ytb tencent-tts <input.srt>` (writes `1.mp3`, `2.mp3`, …)
+
+### audio-sync (音画同步) fails
+The audio-sync step runs `skills/audio-video-sync/scripts/audio_processor_v2.py`
+with a Python interpreter resolved as: `$YTB2BILI_PYTHON` → `.venv/bin/python3`
+(repo root) → `python3`. The script needs `pydub`, `pysrt`, and `ffmpeg`/`ffprobe` on PATH.
+
+Symptoms:
+- `missing dependencies: No module named 'pydub'` → the venv is missing or incomplete. Run `./ytb init` (step 5 checks it), or `python3 -m venv .venv && .venv/bin/pip install -r skills/audio-video-sync/requirements.txt`
+- `missing dependencies: No module named 'pysrt'` → same fix
+- Verify the script itself: `.venv/bin/python3 skills/audio-video-sync/scripts/audio_processor_v2.py --check` → `{"ok": true}`
+- `ffmpeg`/`ffprobe` not found → install ffmpeg; the script requires both on PATH
+
 ### upload to Bilibili fails
 - **Not logged in / expired**: `./ytb login`
 - **tid invalid**: use a valid B站分区ID (`./ytb submit --tid 122 ...`)

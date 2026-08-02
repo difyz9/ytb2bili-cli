@@ -40,6 +40,9 @@ type TencentCloudConfig struct {
 
 // TTSConfig 语音合成参数
 type TTSConfig struct {
+	// Provider 指定 pipeline tts 步骤使用的合成器：
+	//   tencent - 腾讯云 TTS；index - 本地 IndexTTS；空/auto - 自动检测（有腾讯云凭据用 tencent，否则用 index）
+	Provider        string  `yaml:"provider"`
 	VoiceType       int64   `yaml:"voice_type"`
 	Volume          float64 `yaml:"volume"`
 	Speed           float64 `yaml:"speed"`

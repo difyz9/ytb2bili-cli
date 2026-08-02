@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/difyz9/bilibili-go-sdk/bilibili"
 	"github.com/zolagz/ytb2bili-go/internal/channel"
 	"github.com/zolagz/ytb2bili-go/internal/search"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
@@ -136,6 +137,41 @@ func renderHistory(videos []storage.SubmittedVideo) string {
 		fmt.Fprintf(&b, "    提交时间: %s\n\n", truncateTime(v.SubmittedAt))
 	}
 	return b.String()
+}
+
+// renderReviewStatus 渲染 B站视频审核状态。
+func renderReviewStatus(s *bilibili.VideoReviewStatus) string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "🎬 审核状态")
+	fmt.Fprintf(&b, "  BVID:   %s\n", s.BVid)
+	if s.Title != "" {
+		fmt.Fprintf(&b, "  标题:   %s\n", s.Title)
+	}
+	switch {
+	case s.Passed:
+		fmt.Fprintln(&b, "  状态:   ✅ 审核通过")
+	case s.Rejected:
+		fmt.Fprintln(&b, "  状态:   ❌ 被驳回")
+		if s.RejectReason != "" {
+			fmt.Fprintf(&b, "  原因:   %s\n", s.RejectReason)
+		}
+	case s.Reviewing:
+		fmt.Fprintln(&b, "  状态:   ⏳ 审核中")
+	default:
+		fmt.Fprintf(&b, "  状态:   %s\n", orDefault(s.StateDesc, "未知"))
+	}
+	fmt.Fprintf(&b, "  State:  %d\n", s.State)
+	if s.StateDesc != "" {
+		fmt.Fprintf(&b, "  详情:   %s\n", s.StateDesc)
+	}
+	return b.String()
+}
+
+func orDefault(v, def string) string {
+	if strings.TrimSpace(v) == "" {
+		return def
+	}
+	return v
 }
 
 // renderDiscoveredVideos 渲染频道发现的视频列表

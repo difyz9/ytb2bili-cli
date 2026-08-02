@@ -35,10 +35,7 @@ func Sync(ctx context.Context, options Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	python := os.Getenv("YTB2BILI_PYTHON")
-	if python == "" {
-		python = "python3"
-	}
+	python := pythonPath()
 	args := []string{script, "--video", options.VideoPath, "--srt", options.SubtitlePath, "--audio-dir", options.AudioDir, "--output", options.OutputPath}
 	if options.DisableSpeedAdjust {
 		args = append(args, "--no-speed-adjust")
@@ -69,6 +66,28 @@ func Sync(ctx context.Context, options Options) (*Result, error) {
 		return nil, fmt.Errorf("音画同步输出文件无效: %s", result.Output)
 	}
 	return &result, nil
+}
+
+// pythonPath 返回运行音画同步脚本的 Python 解释器路径。
+// 优先级：$YTB2BILI_PYTHON > 项目根 .venv/bin/python3（存在时）> python3。
+// 与 scriptPath 的候选搜索方式一致，支持从任意 cwd 运行。
+func pythonPath() string {
+	if configured := os.Getenv("YTB2BILI_PYTHON"); configured != "" {
+		return configured
+	}
+	var candidates []string
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates, filepath.Join(cwd, ".venv", "bin", "python3"))
+	}
+	if executable, err := os.Executable(); err == nil {
+		candidates = append(candidates, filepath.Join(filepath.Dir(executable), ".venv", "bin", "python3"))
+	}
+	for _, candidate := range candidates {
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "python3"
 }
 
 func scriptPath() (string, error) {

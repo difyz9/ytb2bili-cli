@@ -22,10 +22,13 @@ command's syntax, flags, or an example. For end-to-end workflows instead, invoke
 | `translate` | Translate an SRT subtitle file |
 | `tencent-tts` | Tencent Cloud TTS synthesis from SRT |
 | `chain` | Custom task chains (run/plan/list) |
+| `audio-sync` | Run audio-sync on existing downloaded artifacts by videoId |
 | `channel` | YouTube channel monitoring (add/list/remove/sync/videos) |
 | `queue` | Job queue (add/status/work) |
 | `task` | Task management (list/show) |
-| `subtitle` | Subtitle upload status |
+| `subtitle` | Subtitle upload status + upload to BVID |
+| `publish` | Directly publish a local video to Bilibili |
+| `review` | Check Bilibili video review status (--wait to poll) |
 | `cookies` | YouTube cookies (refresh/test) |
 | `auto` | Autonomous batch mode (scored search → queue/submit) |
 | `start`/`stop`/`restart`/`status` | HTTP API server management |
@@ -75,6 +78,15 @@ list                         列出所有可用步骤
 ```
 可用步骤: `download` `transcribe` `translate` `tts` `audio-sync` `metadata` `upload`
 
+### `audio-sync <videoId>`
+对 `data/downloads/<videoId>/` 下已有产物（视频 + 译文字幕/源字幕 + `voice/`）做音画同步，
+输出 `<videoId>.synced.mp4`。用于失败后续跑。
+```
+--missing string         缺失配音处理: error(默认) / silence
+--no-speed-adjust        不调整配音语速
+```
+> 幂等续跑：`submit <videoId>` 会跳过所有已有产物步骤（download/transcribe/translate/tts/audio-sync），只做 metadata+upload。
+
 ### `channel`
 ```
 add [--title name] <channel_id>
@@ -100,7 +112,25 @@ show <task_id>
 
 ### `subtitle`
 ```
-status
+status                                  # 查看字幕上传状态
+upload <bvid> <subtitle.srt> [--lang]   # 上传字幕到已发布视频（默认 lang=zh）
+```
+
+### `publish <video-file>`
+直接投稿本地视频到 B站（不经 YouTube 流水线）。需要先 `ytb login`。
+```
+--title string   标题（默认用文件名）
+--desc string    简介
+--tags string    标签（逗号分隔）
+--tid int        B站分区ID（默认读取配置）
+--cover string   封面图片路径
+--source string  源站 URL
+```
+
+### `review <bvid>`
+查看投稿审核状态（只读）。需要先 `ytb login`。
+```
+--wait   持续轮询直到审核通过（每3分钟，最长24小时）
 ```
 
 ### `cookies`

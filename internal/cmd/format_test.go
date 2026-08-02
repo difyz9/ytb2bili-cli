@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/difyz9/bilibili-go-sdk/bilibili"
 	"github.com/zolagz/ytb2bili-go/internal/channel"
 	"github.com/zolagz/ytb2bili-go/internal/search"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
@@ -179,4 +180,38 @@ func TestTaskCmdHasShow(t *testing.T) {
 		}
 	}
 	t.Fatal("task command missing show subcommand")
+}
+
+func TestRenderReviewStatus(t *testing.T) {
+	t.Run("passed", func(t *testing.T) {
+		got := renderReviewStatus(&bilibili.VideoReviewStatus{BVid: "BV1xx", Title: "T", Passed: true, State: 0})
+		for _, want := range []string{"BV1xx", "审核通过"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("missing %q:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("rejected with reason", func(t *testing.T) {
+		got := renderReviewStatus(&bilibili.VideoReviewStatus{BVid: "BV1xx", Rejected: true, RejectReason: "标题违规", State: -2})
+		for _, want := range []string{"被驳回", "标题违规"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("missing %q:\n%s", want, got)
+			}
+		}
+	})
+
+	t.Run("reviewing", func(t *testing.T) {
+		got := renderReviewStatus(&bilibili.VideoReviewStatus{BVid: "BV1xx", Reviewing: true, State: 1})
+		if !strings.Contains(got, "审核中") {
+			t.Fatalf("missing 审核中:\n%s", got)
+		}
+	})
+
+	t.Run("unknown state uses StateDesc", func(t *testing.T) {
+		got := renderReviewStatus(&bilibili.VideoReviewStatus{BVid: "BV1xx", State: 123, StateDesc: "锁定"})
+		if !strings.Contains(got, "锁定") {
+			t.Fatalf("missing StateDesc:\n%s", got)
+		}
+	})
 }
