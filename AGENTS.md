@@ -3,127 +3,159 @@
 本文档供所有 AI 智能体（Codex、Claude Code、Hermes Agent、Cursor 等）使用。
 
 > **首次安装项目？** 请先阅读 [INSTALL_AGENT.md](./INSTALL_AGENT.md) 获取完整的逐步骤安装指南（含依赖安装、编译、配置）。
+> **Claude Code 用户？** 项目内置 skills（`.claude/skills/`），可用 `/ytb2bili-pipeline` 直接驱动完整工作流。
 
 ## 项目概述
 
-**ytb2bili-go** 是一个 YouTube → Bilibili 视频搬运工具，使用 Go 语言编写。
+**ytb2bili-go** 是一个 YouTube → Bilibili 视频搬运工具，使用 Go 语言编写。CLI 构建产物为 **`ytb`**（cobra 框架），支持搜索、下载、转录、翻译、TTS 配音、投稿、字幕上传完整流水线。
 
 ### 核心功能
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
 | YouTube 搜索 | ✅ | InnerTube API，支持过滤器和分页 |
-| 搜索直接提交 | ✅ | 搜索后直接提交到 B站 |
+| 搜索直接提交 | ✅ | `search --submit N` 直接提交到 B站 |
 | 重复检测 | ✅ | 自动检测已提交的视频，避免重复 |
 | YouTube 下载 | ✅ | yt-dlp + cookies 认证 |
 | 语音转录 | ✅ | Bcut ASR (必剪) 免费 |
 | 批量翻译 | ✅ | DeepSeek LLM 并发 |
+| TTS 配音 | ✅ | 腾讯云 TTS / IndexTTS2 分段合成 |
 | AI 元数据 | ✅ | 自动生成标题/简介/标签 |
 | B站投稿 | ✅ | 视频上传 |
 | 字幕上传 | ✅ | 异步监听审核，通过后自动上传 |
-| 频道监控 | ✅ | RSS 订阅更新 |
+| 频道监控 | ✅ | RSS 订阅 + 自动入队 |
+| 作业队列 | ✅ | 文件状态机，支持批量消费 |
+| HTTP 服务 | ✅ | 内置 API Server（start/stop/status） |
 
 ## 环境配置
 
 ```bash
 # 必需的环境变量
-export DEEPSEEK_API_KEY=*** export YOUTUBE_COOKIES="/home/ubuntu/ytb2bili-cli/cookies/youtube_cookies.txt"
+export DEEPSEEK_API_KEY=***
 
-# 必需的 PATH
-export PATH="/home/ubuntu/.deno/bin:$PATH"
+# 可选：YouTube cookies（防止下载频率限制）
+export YOUTUBE_COOKIES="/path/to/youtube_cookies.txt"
 
-# 别名 (推荐)
-alias y2b="ytb2bili"
+# 可选：自定义 LLM
+export LLM_MODEL="deepseek-v4-flash"
+export LLM_BASE_URL="https://api.deepseek.com"
+
+# 可选：配置文件路径（默认 ./config.yaml）
+export YTB2BILI_CONFIG="/path/to/config.yaml"
 ```
+
+配置文件查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `config.yaml`。找不到时使用默认配置。
 
 ## 项目位置
 
-- **代码目录**: `/home/ubuntu/ytb2bili-go`
-- **可执行文件**: `/home/ubuntu/ytb2bili-go/ytb2bili`
-- **别名**: `y2b`
-- **Gitee 仓库**: https://gitee.com/difyz/ytb2bili-go
+- **二进制**: `ytb`（`make build` 或 `go build -o ytb .` 生成）
+- **配置**: `./config.yaml` 或 `--config` 指定
+- **数据目录**: `./data/`（`config.yaml` 的 `data_dir` 字段可改）
+- **仓库**: https://github.com/zolagz/ytb2bili-go （备选 Gitee: https://gitee.com/difyz/ytb2bili-go ）
 
 ## 快速命令
 
 ### 编译
 
 ```bash
-cd /home/ubuntu/ytb2bili-go && go build -o ytb2bili .
+make build          # 产出 ./ytb
+# 或 go build -o ytb .
+```
+
+### 检查环境依赖
+
+```bash
+ytb init            # 自动检查 ffmpeg / yt-dlp / Python / deno
+ytb init --update   # 同时更新 yt-dlp
+ytb init --pip      # 自动安装 Python 依赖
 ```
 
 ### 搜索视频
 
 ```bash
 # 基本搜索
-y2b search "Flutter tutorial"
+ytb search "Flutter tutorial"
 
 # 带过滤器搜索
-y2b search --sort view_count --duration long "AI tutorial"
+ytb search --sort view_count --duration long "AI tutorial"
 
-# JSON 输出
-y2b search --json --max 5 "Go programming"
+# 按上传时间过滤
+ytb search --upload-date this_week "golang"
+
+# JSON 输出（机器可读）
+ytb search --json --max 5 "Go programming"
 
 # 搜索并直接提交第 1 个视频
-y2b search --submit 1 "Flutter tutorial"
+ytb search --submit 1 "Flutter tutorial"
 
 # 查看已提交的历史记录
-y2b search --history
+ytb search --history
 ```
 
 ### 完整搬运流程
 
 ```bash
-y2b submit "https://www.youtube.com/watch?v=VIDEO_ID"
+# 下载 → 转录 → 翻译 → 元数据 → 上传 → 字幕（审核通过后自动）
+ytb submit "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# 仅测试（不上传）
+ytb submit --dry-run "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# 跳过翻译
+ytb submit --skip-translate "https://www.youtube.com/watch?v=VIDEO_ID"
+
+# 自定义任务链
+ytb chain run download,transcribe,translate "https://www.youtube.com/watch?v=VIDEO_ID"
+ytb chain list    # 查看可用步骤
+ytb chain plan download,upload "https://www.youtube.com/watch?v=VIDEO_ID"  # 只规划不执行
 ```
 
-### 仅测试（不上传）
+### 任务管理
 
 ```bash
-y2b submit --dry-run "https://www.youtube.com/watch?v=VIDEO_ID"
+ytb task list                    # 列出任务（显示真实步骤进度 [n/7]）
+ytb task show <task_id>          # 查看任务详情（各步骤状态/错误）
 ```
 
-### 跳过翻译
+### 作业队列（批量搬运）
 
 ```bash
-y2b submit --skip-translate "https://www.youtube.com/watch?v=VIDEO_ID"
+ytb queue add "https://www.youtube.com/watch?v=VIDEO_ID"   # 加入队列
+ytb queue status                                            # 队列统计
+ytb queue work --once                                       # 消费一个视频后退出
+ytb queue work                                              # 持续消费（Ctrl+C 停止）
 ```
 
 ### 字幕管理
 
 ```bash
 # 查看所有视频的字幕上传状态
-y2b subtitle status
-
-# 查看特定视频的字幕状态 (按 videoID 或 BVID)
-y2b subtitle status BV1xx123
-
-# 重试上传字幕 (审核通过后，按 videoID 或 BVID)
-y2b subtitle retry BV1xx123
+ytb subtitle status
 ```
 
 ### 🤖 自主模式（智能批量搬运）
 
 ```bash
 # 默认 popular 评分，搜索后入队
-y2b auto "Flutter tutorial" "AI programming"
+ytb auto "Flutter tutorial" "AI programming"
 
 # 均衡评分 + 播放量门槛，查看评分结果
-y2b auto --dry-run --scorer balanced --min-views 1000 "python tutorial"
+ytb auto --dry-run --scorer balanced --min-views 1000 "python tutorial"
 
 # 时效优先，只取本周发布
-y2b auto --dry-run --scorer fresh --upload-date this_week "flutter tutorial"
+ytb auto --dry-run --scorer fresh --upload-date this_week "flutter tutorial"
 
 # 时长过滤（short <4m / medium 4-20m / long >20m）
-y2b auto --duration long "machine learning"
+ytb auto --duration long "machine learning"
 
 # 直接提交处理（入队后立即处理，不走 queue work）
-y2b auto --submit --max-videos 5 "golang backend"
+ytb auto --submit --max-videos 5 "golang backend"
 
 # 跳过翻译
-y2b auto --submit --skip-translate "music production"
+ytb auto --submit --skip-translate "music production"
 
 # 多关键词搜索，自动去重排序
-y2b auto "machine learning" "deep learning" "neural network"
+ytb auto "machine learning" "deep learning" "neural network"
 ```
 
 **评分策略:**
@@ -142,26 +174,40 @@ y2b auto "machine learning" "deep learning" "neural network"
 
 **去重机制：** 自动对多关键词结果全局去重，并跳过已提交历史的视频。
 
-字幕采用**异步监听**机制：投稿后立即返回，后台 goroutine 每 30 秒检查一次审核状态，最多等待 24 小时。审核通过后自动用 `SubtitleUploader`（获取 CID → 转换 SRT → 保存草稿）上传字幕。上传状态持久化在 `data/subtitles/` 目录中，重启不丢失。
-
 ### 频道监控
 
 ```bash
 # 添加频道
-y2b channel add --title "频道名称" <channel_id>
+ytb channel add --title "频道名称" <channel_id>
+ytb channel list                  # 列出订阅
+ytb channel remove <channel_id>   # 移除订阅
 
-# 同步更新
-y2b channel sync --lookback 7
+# 同步更新（仅处理最近 N 天发布的视频）
+ytb channel sync --lookback 7
 
-# 查看视频
-y2b channel videos
+# 同步并自动入队（闭环频道监控 → 批量搬运）
+ytb channel sync --lookback 7 --queue
+
+# 查看发现的视频
+ytb channel videos
 ```
 
 ### B站登录
 
 ```bash
-y2b login
-# 扫描二维码完成登录
+ytb login         # 扫码登录（终端打印二维码）
+ytb whoami        # 查看当前账号
+ytb cookies test  # 测试 YouTube cookies 是否有效
+ytb cookies refresh  # 从 Chrome 刷新 YouTube cookies
+```
+
+### HTTP 服务
+
+```bash
+ytb start         # 后台启动 API 服务
+ytb status        # 查看运行状态
+ytb stop          # 停止服务
+ytb restart       # 重启
 ```
 
 ## 项目结构
@@ -170,31 +216,40 @@ y2b login
 ytb2bili-go/
 ├── main.go                    # 入口
 ├── internal/
-│   ├── command/              # CLI 命令
-│   │   └── command.go        # 主命令和工作流
-│   ├── config/               # 配置管理
-│   │   └── config.go
-│   ├── search/               # YouTube 搜索 (InnerTube API)
-│   │   ├── search.go         # 搜索逻辑
-│   │   └── innertube.go      # InnerTube API 和 protobuf 编码
-│   ├── download/             # 视频下载
-│   │   └── download.go       # yt-dlp 封装
-│   ├── transcriber/          # 语音转录
-│   │   └── transcriber.go    # Bcut ASR API
-│   ├── translator/           # 批量翻译
-│   │   └── translator.go     # LLM 翻译
-│   ├── metadata/             # 元数据生成
-│   │   └── metadata.go       # AI 生成标题/简介
-│   ├── bili/                 # B站 API
-│   │   └── bili.go           # 上传/字幕/审核
-│   ├── channel/              # 频道监控
-│   │   └── channel.go        # RSS 订阅
-│   └── storage/              # 存储管理
-│       ├── storage.go        # 任务和凭证存储
-│       └── history.go        # 提交历史记录
-├── CLAUDE.md                 # Claude Code 文档
-├── AGENTS.md                 # 通用智能体文档
-└── README.md                 # 用户文档
+│   ├── cmd/                   # CLI 命令 (cobra)
+│   │   ├── root.go            # 根命令 + 配置加载
+│   │   ├── pipeline.go        # submit/search/channel/queue/task/server 等
+│   │   ├── tools.go           # login/download/bcut/translate/tencent-tts 等
+│   │   ├── init.go            # 环境依赖检查
+│   │   ├── format.go          # 输出格式化辅助
+│   │   └── qrcode.go          # 二维码生成
+│   ├── pipeline/              # 流水线处理器
+│   │   ├── pipeline.go        # Processor (流程编排)
+│   │   └── steps.go           # 各步骤实现
+│   ├── workflow/              # 任务链规划/执行引擎
+│   ├── queue/                 # 作业队列 (文件状态机)
+│   ├── search/                # YouTube 搜索 (InnerTube API)
+│   │   ├── search.go          # 搜索逻辑
+│   │   └── innertube.go       # InnerTube API 和 protobuf 编码
+│   ├── download/              # 视频下载 (yt-dlp 封装)
+│   ├── transcriber/           # 语音转录 (Bcut ASR)
+│   ├── translator/            # 批量翻译 (DeepSeek LLM)
+│   ├── metadata/              # AI 生成标题/简介
+│   ├── bili/                  # B站 API (上传/字幕/审核)
+│   ├── channel/               # 频道监控 (RSS 订阅)
+│   ├── cdp/                   # Chrome DevTools (cookies 刷新)
+│   ├── tts/                   # 腾讯云 TTS
+│   ├── audiosync/             # 音画同步
+│   ├── server/                # HTTP API 服务
+│   ├── storage/               # 任务/凭证/历史/字幕存储
+│   └── config/                # 配置管理
+├── skills/
+│   └── audio-video-sync/      # IndexTTS2 配音技能（运行时被 pipeline 引用）
+├── .claude/skills/            # Claude Code 项目技能
+├── CLAUDE.md                  # Claude Code 文档
+├── AGENTS.md                  # 通用智能体文档
+├── INSTALL_AGENT.md           # 安装指南
+└── README.md                  # 用户文档
 ```
 
 ## 工作流程
@@ -381,33 +436,37 @@ status, err := bili.WaitForReviewPassed(cred, bvid)
 
 编辑 `internal/translator/translator.go`
 
-### 添加新的 CLI 参数
+### 添加新的 CLI 命令或参数
 
-1. 编辑 `internal/command/command.go`
-2. 在对应命令中添加 flag
-3. 使用 `c.Bool("flag")` 或 `c.String("flag")` 获取
+1. 编辑 `internal/cmd/` 下的文件（按命令类型：`pipeline.go` / `tools.go` / `init.go`）
+2. 新建命令用 `&cobra.Command{Use: "...", Short: "...", RunE: func(...) error {...}}` 包裹
+3. 添加 flag 用 `cmd.Flags().String(...)` / `cmd.Flags().Bool(...)` / `cmd.Flags().Int(...)`
+4. 在 `root.go` 的 `root.AddCommand(...)` 中注册
+5. 读取 flag 用 `cmd.Flags().GetString("name")`
 
 ## 测试
 
 ```bash
 # 测试搜索
-y2b search --max 3 "test query"
+ytb search --max 3 "test query"
 
-# 测试转录
-go test -v -run TestBcutASR ./internal/transcriber/ -timeout 3m
+# 运行单元测试
+go test ./...
 
-# 测试翻译
-DEEPSEEK_API_KEY=*** go test -v -run TestTranslateSRT ./internal/translator/ -timeout 2m
+# 只测试某个包
+go test ./internal/cmd/ -v
 ```
 
 ## 调试技巧
 
-1. 使用 `--dry-run` 测试完整流程但不上传
+1. 使用 `submit --dry-run` 测试完整流程但不上传
 2. 检查 `data/downloads/` 查看下载文件
-3. 查看 `data/tasks/` 的任务状态
+3. 运行 `task list` / `task show <id>` 查看任务状态和失败步骤
 4. 查看 `data/history/` 的提交历史
 5. 查看 `data/subtitles/` 的字幕上传状态（持久化，重启不丢失）
-6. 日志输出到 stderr
+6. 检查登录态：`ytb whoami`；检查 cookies：`ytb cookies test`
+7. 日志输出到 stderr，可重定向查看
+8. HTTP 服务日志在 `data/server.log`
 
 ## 依赖工具
 
