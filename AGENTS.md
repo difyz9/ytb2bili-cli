@@ -126,8 +126,10 @@ ytb audio-sync <videoId>
 ### 任务管理
 
 ```bash
-ytb task list                    # 列出任务（显示真实步骤进度 [n/7]）
+ytb task list [--json]           # 列出任务（显示真实步骤进度 [n/7]）
 ytb task show <task_id>          # 查看任务详情（各步骤状态/错误）
+ytb task retry <task_id>         # 重试失败任务（幂等跳过已完成步骤，从失败处续跑）
+ytb task retry --dry-run <id>    # 重试但不投稿
 ```
 
 ### 作业队列（批量搬运）
@@ -135,8 +137,19 @@ ytb task show <task_id>          # 查看任务详情（各步骤状态/错误�
 ```bash
 ytb queue add "https://www.youtube.com/watch?v=VIDEO_ID"   # 加入队列
 ytb queue status                                            # 队列统计
-ytb queue work --once                                       # 消费一个视频后退出
-ytb queue work                                              # 持续消费（Ctrl+C 停止）
+ytb queue list [--json]          # 列出队列中的视频（含失败原因）
+ytb queue remove <videoID>       # 从队列移除
+ytb queue clear                  # 清空整个队列
+ytb queue retry-failed           # 将失败的视频重新排队
+ytb queue work --once            # 消费一个视频后退出
+ytb queue work                   # 持续消费（Ctrl+C 停止）
+```
+
+### 提交历史与诊断
+
+```bash
+ytb history [--json]             # 查看已提交的投稿历史
+ytb debug                        # 环境/登录/数据统计诊断（排查用）
 ```
 
 ### B站投稿管理

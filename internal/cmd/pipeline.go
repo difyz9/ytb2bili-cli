@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/zolagz/ytb2bili-go/internal/audiosync"
+	"github.com/zolagz/ytb2bili-go/internal/auth"
 	"github.com/zolagz/ytb2bili-go/internal/bili"
 	"github.com/zolagz/ytb2bili-go/internal/config"
 	"github.com/zolagz/ytb2bili-go/internal/channel"
@@ -55,15 +56,7 @@ func newChainCmd() *cobra.Command {
 				tid = cfg.BiliTid
 			}
 
-			processor := &pipeline.Processor{Config: cfg, Reporter: func(event pipeline.Event) {
-				if event.Status == "running" {
-					fmt.Printf("[%d/%d] %s... ", event.Position, event.Total, event.Step)
-				} else if event.Err != nil {
-					fmt.Printf("❌ %v\n", event.Err)
-				} else {
-					fmt.Println("✅")
-				}
-			}}
+			processor := &pipeline.Processor{Config: cfg, Reporter: pipelineReporter()}
 			result, err := processor.Process(context.Background(), pipeline.Request{
 				URL: url, Chain: chainSteps, DryRun: dryRun,
 				SkipTranslate: skipTrans, Tid: tid, Source: "manual",
@@ -209,15 +202,7 @@ func newSubmitCmd() *cobra.Command {
 			showPlan, _ := cmd.Flags().GetBool("show-plan")
 			chainStr, _ := cmd.Flags().GetString("chain")
 
-			processor := &pipeline.Processor{Config: cfg, Reporter: func(event pipeline.Event) {
-				if event.Status == "running" {
-					fmt.Printf("[%d/%d] %s... ", event.Position, event.Total, event.Step)
-				} else if event.Err != nil {
-					fmt.Printf("❌ %v\n", event.Err)
-				} else {
-					fmt.Println("✅")
-				}
-			}}
+			processor := &pipeline.Processor{Config: cfg, Reporter: pipelineReporter()}
 			result, err := processor.Process(context.Background(), pipeline.Request{
 				URL: url, SourceLang: sourceLang, TargetLang: targetLang,
 				Tid: tid, DryRun: dryRun, SkipTranslate: skipTrans,
@@ -344,7 +329,102 @@ func newQueueCmd() *cobra.Command {
 	}
 	workCmd.Flags().Bool("once", false, "只处理一个视频后退出")
 
-	queueCmd.AddCommand(addCmd, statusCmd, workCmd)
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出队列中的视频",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			q := queue.New(cfg.DataDir)
+			data, err := q.Status()
+			if err != nil {
+				return err
+			}
+			if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(data)
+			}
+			if len(data.Videos) == 0 {
+				fmt.Println("📭 队列为空")
+				return nil
+			}
+			fmt.Printf("📋 共 %d 个视频:\n\n", len(data.Videos))
+			for _, v := range data.Videos {
+				icon := map[string]string{
+					queue.StatusQueued: "⏳", queue.StatusClaimed: "🔄", queue.StatusCompleted: "✅",
+					queue.StatusFailed: "❌", queue.StatusSkipped: "⏭️", queue.StatusDiscovered: "🔍",
+				}[v.Status]
+				if icon == "" {
+					icon = "❓"
+				}
+				errInfo := ""
+				if v.Status == queue.StatusFailed && v.Error != "" {
+					errInfo = "  " + v.Error
+				}
+				fmt.Printf("  %s %s [%s] %s%s\n", icon, v.VideoID, v.Status, v.Title, errInfo)
+			}
+			return nil
+		},
+	}
+	listCmd.Flags().Bool("json", false, "以 JSON 输出")
+
+	removeCmd := &cobra.Command{
+		Use:   "remove <videoID>",
+		Short: "从队列移除视频",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("请输入 videoID")
+			}
+			cfg := loadConfig()
+			q := queue.New(cfg.DataDir)
+			if err := q.Remove(args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("🗑 已移除: %s\n", args[0])
+			return nil
+		},
+	}
+
+	clearCmd := &cobra.Command{
+		Use:   "clear",
+		Short: "清空整个队列",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			q := queue.New(cfg.DataDir)
+			data, _ := q.Status()
+			if err := q.Clear(); err != nil {
+				return err
+			}
+			fmt.Printf("🗑 已清空队列（%d 条）\n", len(data.Videos))
+			return nil
+		},
+	}
+
+	retryFailedCmd := &cobra.Command{
+		Use:   "retry-failed",
+		Short: "将失败的视频重新排队",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			q := queue.New(cfg.DataDir)
+			data, err := q.Status()
+			if err != nil {
+				return err
+			}
+			reset := 0
+			for _, v := range data.Videos {
+				if v.Status == queue.StatusFailed {
+					if err := q.Reset(v.VideoID); err == nil {
+						reset++
+						fmt.Printf("  🔁 %s\n", v.Title)
+					}
+				}
+			}
+			fmt.Printf("✅ 已重新排队 %d 个失败视频\n", reset)
+			return nil
+		},
+	}
+
+	queueCmd.AddCommand(addCmd, statusCmd, workCmd, listCmd, removeCmd, clearCmd, retryFailedCmd)
 	return queueCmd
 }
 
@@ -360,6 +440,11 @@ func newTaskCmd() *cobra.Command {
 			cfg := loadConfig()
 			ts := storage.NewTaskStore(filepath.Join(cfg.DataDir, "tasks"))
 			tasks := ts.List()
+			if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(tasks)
+			}
 			if len(tasks) == 0 {
 				fmt.Println("暂无任务")
 				return nil
@@ -370,6 +455,7 @@ func newTaskCmd() *cobra.Command {
 			return nil
 		},
 	}
+	listCmd.Flags().Bool("json", false, "以 JSON 输出")
 
 	showCmd := &cobra.Command{
 		Use:   "show <task_id>",
@@ -389,7 +475,47 @@ func newTaskCmd() *cobra.Command {
 		},
 	}
 
-	cmd.AddCommand(listCmd, showCmd)
+	retryCmd := &cobra.Command{
+		Use:   "retry <task_id>",
+		Short: "重试失败的任务（从失败步骤续跑）",
+		Long: `重跑指定任务。幂等步骤会跳过已有产物，只重新执行失败及后续步骤。
+
+示例:
+  ytb task retry task_xxx
+  ytb task retry --dry-run task_xxx`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("请输入任务 ID")
+			}
+			cfg := loadConfig()
+			ts := storage.NewTaskStore(filepath.Join(cfg.DataDir, "tasks"))
+			task, err := ts.Get(args[0])
+			if err != nil {
+				return fmt.Errorf("任务 %s 不存在: %w", args[0], err)
+			}
+			if task.SourceURL == "" {
+				return fmt.Errorf("任务 %s 没有来源 URL，无法重试", args[0])
+			}
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+			fmt.Printf("🔁 重试任务 %s\n", args[0])
+			fmt.Printf("   📺 %s\n", task.SourceURL)
+			processor := &pipeline.Processor{Config: cfg, Reporter: pipelineReporter()}
+			result, err := processor.Process(context.Background(), pipeline.Request{
+				URL: task.SourceURL, TaskID: task.ID, DryRun: dryRun, Source: "retry",
+			})
+			if err != nil {
+				return err
+			}
+			if result != nil && result.BVID != "" {
+				fmt.Printf("\n📺 https://www.bilibili.com/video/%s\n", result.BVID)
+			}
+			return nil
+		},
+	}
+	retryCmd.Flags().Bool("dry-run", false, "仅处理不上传")
+
+	cmd.AddCommand(listCmd, showCmd, retryCmd)
 	return cmd
 }
 
@@ -578,6 +704,38 @@ func newSearchCmd() *cobra.Command {
 	cmd.Flags().Bool("json", false, "以 JSON 输出搜索结果")
 	cmd.Flags().Bool("history", false, "查看已提交历史（无需关键词）")
 	cmd.Flags().Int("submit", 0, "直接提交第 N 个结果")
+	return cmd
+}
+
+// newHistoryCmd 查看已提交的投稿历史。
+func newHistoryCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "history",
+		Short: "查看已提交的投稿历史",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			history := storage.NewHistoryStore(filepath.Join(cfg.DataDir, "history"))
+			videos, err := history.List()
+			if err != nil {
+				if os.IsNotExist(err) {
+					videos = []storage.SubmittedVideo{}
+				} else {
+					return err
+				}
+			}
+			if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+				if videos == nil {
+					videos = []storage.SubmittedVideo{}
+				}
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(videos)
+			}
+			fmt.Print(renderHistory(videos))
+			return nil
+		},
+	}
+	cmd.Flags().Bool("json", false, "以 JSON 输出")
 	return cmd
 }
 
@@ -920,22 +1078,27 @@ func newAutoCmd() *cobra.Command {
 }
 
 // processSingle 处理单个视频的完整流水线（auto --submit 内部使用）
+// pipelineReporter 返回流水线进度输出的统一回调。
+func pipelineReporter() pipeline.Reporter {
+	return func(event pipeline.Event) {
+		if event.Status == "running" {
+			fmt.Printf("[%d/%d] %s... ", event.Position, event.Total, event.Step)
+		} else if event.Err != nil {
+			fmt.Printf("❌ %v\n", event.Err)
+		} else {
+			fmt.Println("✅")
+		}
+	}
+}
+
 func processSingle(cfg *config.Config, url string, skipTranslate bool) (*pipeline.Result, error) {
 	targetLang := cfg.EffectiveTranslationTargetLang()
 	if skipTranslate {
 		targetLang = ""
 	}
 	return (&pipeline.Processor{
-		Config: cfg,
-		Reporter: func(event pipeline.Event) {
-			if event.Status == "running" {
-				fmt.Printf("  [%d/%d] %s... ", event.Position, event.Total, event.Step)
-			} else if event.Err != nil {
-				fmt.Printf("❌ %v\n", event.Err)
-			} else {
-				fmt.Println("✅")
-			}
-		},
+		Config:   cfg,
+		Reporter: pipelineReporter(),
 	}).Process(context.Background(), pipeline.Request{
 		URL:        url,
 		Source:     "auto",
@@ -1119,9 +1282,56 @@ func newServerCmd() *cobra.Command {
 func newDebugCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "debug",
-		Short: "调试模式",
+		Short: "输出环境与运行状态诊断",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("🔍 调试模式 - 待实现")
+			cfg := loadConfig()
+			fmt.Println("🔍 诊断信息")
+			fmt.Println(strings.Repeat("=", 40))
+			fmt.Printf("版本:     %s\n", Version)
+			fmt.Printf("配置:     %s (data_dir=%s)\n", orDefault(configPath, "<默认>"), cfg.DataDir)
+			fmt.Printf("LLM:      %s (%s)\n", cfg.LLMModel, cfg.LLMBaseURL)
+			fmt.Printf("目标语言: %s\n", cfg.EffectiveTranslationTargetLang())
+
+			fmt.Println()
+			fmt.Println("── 环境工具 ──")
+			for _, tool := range []string{"yt-dlp", "ffmpeg", "ffprobe", "deno", "python3", "go"} {
+				if p, err := exec.LookPath(tool); err == nil {
+					fmt.Printf("  %-8s ✅ %s\n", tool, p)
+				} else {
+					fmt.Printf("  %-8s ❌ 未找到\n", tool)
+				}
+			}
+			if p, err := os.Stat(".venv/bin/python3"); err == nil && !p.IsDir() {
+				fmt.Printf("  venv     ✅ .venv/bin/python3\n")
+			} else {
+				fmt.Printf("  venv     ❌ 未创建（ytb init --venv）\n")
+			}
+
+			fmt.Println()
+			fmt.Println("── B站登录 ──")
+			cs := storage.NewCredentialStore(filepath.Join(cfg.DataDir, "cookies"))
+			if cs.Exists() {
+				var cred auth.LoginInfo
+				if err := cs.Load(&cred); err == nil && cred.TokenInfo.Uname != "" {
+					fmt.Printf("  ✅ %s (UID %d)\n", cred.TokenInfo.Uname, cred.TokenInfo.Mid)
+				} else {
+					fmt.Println("  ⚠ 凭据存在但读取失败")
+				}
+			} else {
+				fmt.Println("  ❌ 未登录（ytb login）")
+			}
+
+			fmt.Println()
+			fmt.Println("── 数据统计 ──")
+			fmt.Printf("  任务:   %d\n", len(storage.NewTaskStore(filepath.Join(cfg.DataDir, "tasks")).List()))
+			q := queue.New(cfg.DataDir)
+			stats := q.Stats()
+			fmt.Printf("  队列:   总%d 排队%d 处理中%d 完成%d 失败%d 跳过%d\n",
+				stats["total"], stats["queued"], stats["claimed"], stats["completed"], stats["failed"], stats["skipped"])
+			if entries, err := os.ReadDir(filepath.Join(cfg.DataDir, "history")); err == nil {
+				fmt.Printf("  历史:   %d\n", len(entries))
+			}
+			fmt.Println()
 			return nil
 		},
 	}

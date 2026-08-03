@@ -24,8 +24,10 @@ command's syntax, flags, or an example. For end-to-end workflows instead, invoke
 | `chain` | Custom task chains (run/plan/list) |
 | `audio-sync` | Run audio-sync on existing downloaded artifacts by videoId |
 | `channel` | YouTube channel monitoring (add/list/remove/sync/videos) |
-| `queue` | Job queue (add/status/work) |
-| `task` | Task management (list/show) |
+| `queue` | Job queue (add/status/work/list/remove/clear/retry-failed) |
+| `task` | Task management (list/show/retry) |
+| `history` | Submitted submission history (--json) |
+| `debug` | Environment/login/stats diagnostics |
 | `subtitle` | Subtitle upload status + upload to BVID |
 | `publish` | Directly publish a local video to Bilibili |
 | `review` | Check Bilibili video review status (--wait to poll) |
@@ -101,14 +103,26 @@ videos
 ```
 add <URL>
 status
+list [--json]
+remove <videoID>
+clear
+retry-failed
 work [--once]
 ```
 
 ### `task`
 ```
-list
+list [--json]
 show <task_id>
+retry <task_id> [--dry-run]     # 幂等续跑（跳过已完成步骤，从失败处重试）
 ```
+
+### `history`
+```
+history [--json]    查看已提交的投稿历史
+```
+
+> 命令别名：`transcribe`=bcut、`tts`=tencent-tts、`upload`=publish
 
 ### `subtitle`
 ```

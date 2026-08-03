@@ -63,6 +63,7 @@ func newRootCmd() *cobra.Command {
 		newAudioSyncCmd(),
 		newSubmitCmd(),
 		newSearchCmd(),
+		newHistoryCmd(),
 		newChannelCmd(),
 		newQueueCmd(),
 		newTaskCmd(),

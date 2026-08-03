@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/difyz9/bilibili-go-sdk/bilibili"
+	"github.com/spf13/cobra"
 	"github.com/zolagz/ytb2bili-go/internal/channel"
 	"github.com/zolagz/ytb2bili-go/internal/search"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
@@ -180,6 +181,55 @@ func TestTaskCmdHasShow(t *testing.T) {
 		}
 	}
 	t.Fatal("task command missing show subcommand")
+}
+
+func TestTaskCmdHasRetry(t *testing.T) {
+	c := newTaskCmd()
+	for _, sub := range c.Commands() {
+		if sub.Name() == "retry" {
+			if sub.Flags().Lookup("dry-run") == nil {
+				t.Fatal("task retry missing --dry-run flag")
+			}
+			return
+		}
+	}
+	t.Fatal("task command missing retry subcommand")
+}
+
+func TestQueueCmdHasOps(t *testing.T) {
+	c := newQueueCmd()
+	names := map[string]bool{}
+	for _, sub := range c.Commands() {
+		names[sub.Name()] = true
+	}
+	for _, want := range []string{"list", "remove", "clear", "retry-failed"} {
+		if !names[want] {
+			t.Fatalf("queue command missing %q subcommand", want)
+		}
+	}
+}
+
+func TestHistoryCmdHasJSON(t *testing.T) {
+	c := newHistoryCmd()
+	if c.Flags().Lookup("json") == nil {
+		t.Fatal("history command missing --json flag")
+	}
+}
+
+func TestPublishCmdHasUploadAlias(t *testing.T) {
+	c := newPublishCmd()
+	if !hasAlias(c, "upload") {
+		t.Fatal("publish missing upload alias")
+	}
+}
+
+func hasAlias(c *cobra.Command, name string) bool {
+	for _, a := range c.Aliases {
+		if a == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRenderReviewStatus(t *testing.T) {

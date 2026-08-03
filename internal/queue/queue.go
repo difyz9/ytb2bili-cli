@@ -319,6 +319,51 @@ func (q *Queue) Skip(videoID string) error {
 	})
 }
 
+// Remove 从队列中删除一个视频（任意状态）。
+func (q *Queue) Remove(videoID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll(f)
+	if err != nil {
+		return err
+	}
+
+	for i, v := range data.Videos {
+		if v.VideoID != videoID {
+			continue
+		}
+		data.Videos = append(data.Videos[:i], data.Videos[i+1:]...)
+		return q.writeAll(data)
+	}
+	return fmt.Errorf("视频 %s 不在队列中", videoID)
+}
+
+// Clear 清空整个队列（所有视频记录）。
+func (q *Queue) Clear() error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll(f)
+	if err != nil {
+		return err
+	}
+	data.Videos = nil
+	return q.writeAll(data)
+}
+
 // transition 通用状态转移辅助函数
 func (q *Queue) transition(videoID string, fn func(v *Video) (bool, string)) error {
 	q.mu.Lock()

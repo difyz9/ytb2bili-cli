@@ -35,8 +35,9 @@ func loadCredential(cfg *config.Config) (*auth.LoginInfo, error) {
 // newPublishCmd 直接投稿本地视频到 B站（不经 YouTube 流水线）。
 func newPublishCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "publish <video-file>",
-		Short: "直接投稿本地视频到 B站",
+		Use:     "publish <video-file>",
+		Aliases: []string{"upload"},
+		Short:   "直接投稿本地视频到 B站",
 		Long: `直接投稿本地视频文件到 B站，无需经过 YouTube 下载流水线。
 
 示例:
