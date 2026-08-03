@@ -57,6 +57,7 @@ func newRootCmd() *cobra.Command {
 		newWhoamiCmd(),
 		newDownloadCmd(),
 		newBcutCmd(),
+		newWhisperCmd(),
 		newTranslateCmd(),
 		newTencentTTSCmd(),
 		newChainCmd(),

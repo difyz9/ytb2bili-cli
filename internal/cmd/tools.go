@@ -226,6 +226,77 @@ func newBcutCmd() *cobra.Command {
 	return cmd
 }
 
+// ─── Whisper.cpp 本地转录 ──────────────────────────────────────────────────
+
+func newWhisperCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "whisper <audio/video file>",
+		Aliases: []string{"transcribe-local"},
+		Short:   "使用 whisper.cpp 本地听录音频",
+		Long: `使用本地 whisper.cpp（whisper-cli）听录音频并生成 SRT 字幕。
+
+默认模型/线程取自 config.yaml 的 transcriber.whisper，可用 --model/--threads 覆盖。
+示例:
+  ytb whisper video.mp4
+  ytb whisper --model models/ggml-small.bin -l en video.mp4`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("请输入音频或视频文件路径")
+			}
+			audioPath := args[0]
+			if _, err := os.Stat(audioPath); err != nil {
+				return fmt.Errorf("文件不存在: %s", audioPath)
+			}
+
+			wcfg := loadConfig().Transcriber.Whisper
+
+			outputDir, _ := cmd.Flags().GetString("out")
+			if outputDir == "" {
+				outputDir = filepath.Dir(audioPath)
+			}
+			videoID := strings.TrimSuffix(filepath.Base(audioPath), filepath.Ext(audioPath))
+			lang, _ := cmd.Flags().GetString("lang")
+			if m, _ := cmd.Flags().GetString("model"); m != "" {
+				wcfg.Model = m
+			}
+			if t, _ := cmd.Flags().GetInt("threads"); t > 0 {
+				wcfg.Threads = t
+			}
+
+			fmt.Printf("🎤 whisper.cpp 听录: %s\n", audioPath)
+			fmt.Printf("   模型: %s\n", wcfg.Model)
+			fmt.Printf("   语言: %s\n", langOrAuto(lang))
+			fmt.Printf("   输出目录: %s\n", outputDir)
+			fmt.Println()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+			defer cancel()
+
+			start := time.Now()
+			srtPath, err := transcriber.WhisperContext(ctx, wcfg, audioPath, outputDir, videoID, lang)
+			if err != nil {
+				return fmt.Errorf("听录失败: %w", err)
+			}
+
+			fmt.Printf("✅ 听录完成! (耗时: %v)\n", time.Since(start).Round(time.Second))
+			fmt.Printf("📄 %s\n", srtPath)
+			return nil
+		},
+	}
+	cmd.Flags().String("model", "", "GGML 模型路径（默认取 config 的 transcriber.whisper.model）")
+	cmd.Flags().StringP("lang", "l", "", "语言代码 en/zh/auto（默认 auto）")
+	cmd.Flags().Int("threads", 0, "推理线程数（默认取 config）")
+	cmd.Flags().StringP("out", "o", "", "输出目录（默认与输入文件同目录）")
+	return cmd
+}
+
+func langOrAuto(lang string) string {
+	if strings.TrimSpace(lang) == "" {
+		return "auto"
+	}
+	return lang
+}
+
 // ─── Translate ─────────────────────────────────────────────────────────────
 
 func newTranslateCmd() *cobra.Command {

@@ -29,6 +29,27 @@ type Config struct {
 	TencentCloud *TencentCloudConfig `yaml:"tencent_cloud"`
 	TTS          *TTSConfig          `yaml:"tts"`
 	Concurrent   *ConcurrentConfig   `yaml:"concurrent"`
+
+	// 转录后端配置
+	Transcriber *TranscriberConfig `yaml:"transcriber"`
+}
+
+// TranscriberConfig 转录后端配置
+type TranscriberConfig struct {
+	// Provider 指定 pipeline transcribe 步骤使用的转录器：
+	//   bcut - Bcut ASR 云服务；whisper - 本地 whisper.cpp（whisper-cli）；空/未配置 - 默认 whisper
+	Provider string         `yaml:"provider"`
+	Whisper  *WhisperConfig `yaml:"whisper"`
+}
+
+// WhisperConfig whisper.cpp 本地转录参数
+type WhisperConfig struct {
+	// Binary whisper-cli 可执行文件路径（默认 "whisper-cli"，按 PATH 查找）
+	Binary string `yaml:"binary"`
+	// Model GGML 模型文件路径（默认 "models/ggml-base.bin"）
+	Model string `yaml:"model"`
+	// Threads 推理线程数（默认 4）
+	Threads int `yaml:"threads"`
 }
 
 // TencentCloudConfig 腾讯云 API 凭证
@@ -77,6 +98,14 @@ func Default() *Config {
 			MaxWorkers: 5,
 			RateLimit:  20,
 			BatchSize:  10,
+		},
+		Transcriber: &TranscriberConfig{
+			Provider: "whisper",
+			Whisper: &WhisperConfig{
+				Binary:  "whisper-cli",
+				Model:   "models/ggml-base.bin",
+				Threads: 4,
+			},
 		},
 	}
 }
@@ -142,6 +171,39 @@ func (c *Config) Init() {
 	if c.TencentCloud.Region == "" {
 		c.TencentCloud.Region = "ap-guangzhou"
 	}
+
+	// 转录后端配置
+	if c.Transcriber == nil {
+		c.Transcriber = &TranscriberConfig{Provider: "whisper"}
+	}
+	if c.Transcriber.Whisper == nil {
+		c.Transcriber.Whisper = &WhisperConfig{Binary: "whisper-cli", Model: "models/ggml-base.bin", Threads: 4}
+	}
+	if c.Transcriber.Whisper.Binary == "" {
+		c.Transcriber.Whisper.Binary = "whisper-cli"
+	}
+	if c.Transcriber.Whisper.Model == "" {
+		c.Transcriber.Whisper.Model = "models/ggml-base.bin"
+	}
+	if c.Transcriber.Whisper.Threads <= 0 {
+		c.Transcriber.Whisper.Threads = 4
+	}
+	if binary := os.Getenv("YTB2BILI_WHISPER_BINARY"); binary != "" {
+		c.Transcriber.Whisper.Binary = binary
+	}
+	if model := os.Getenv("YTB2BILI_WHISPER_MODEL"); model != "" {
+		c.Transcriber.Whisper.Model = model
+	}
+}
+
+func (c *Config) EffectiveTranscriberProvider() string {
+	if c != nil && c.Transcriber != nil {
+		switch strings.ToLower(strings.TrimSpace(c.Transcriber.Provider)) {
+		case "bcut":
+			return "bcut"
+		}
+	}
+	return "whisper"
 }
 
 func (c *Config) EffectiveTranslationTargetLang() string {

@@ -1,6 +1,6 @@
 ---
 name: ytb2bili-commands
-description: Complete command and flag reference for the ytb2bili CLI. Use when you need the exact syntax, subcommands, or flags of any ytb command (search, submit, chain, channel, queue, task, subtitle, cookies, auto, login, download, bcut, translate, tencent-tts, server, init, whoami).
+description: Complete command and flag reference for the ytb2bili CLI. Use when you need the exact syntax, subcommands, or flags of any ytb command (search, submit, chain, channel, queue, task, subtitle, cookies, auto, login, download, bcut, whisper, translate, tencent-tts, server, init, whoami).
 ---
 
 # ytb2bili-commands
@@ -19,6 +19,7 @@ command's syntax, flags, or an example. For end-to-end workflows instead, invoke
 | `submit` | Full pipeline: download→transcribe→translate→metadata→upload→subtitle |
 | `download` | Download a single YouTube video |
 | `bcut` | Bcut ASR transcribe an audio/video file |
+| `whisper` | whisper.cpp local transcribe (default provider) |
 | `translate` | Translate an SRT subtitle file |
 | `tencent-tts` | Tencent Cloud TTS synthesis from SRT |
 | `chain` | Custom task chains (run/plan/list) |
@@ -173,7 +174,17 @@ test      测试 cookies 是否有效
 ```
 
 ### `bcut <audio/video file>`
-无参数，直接传文件路径。
+无参数，直接传文件路径。别名 `transcribe`（Bcut ASR 云服务）。
+
+### `whisper <audio/video file>`
+使用本地 whisper.cpp（whisper-cli）听录，输出标准 SRT。
+```
+--model string    GGML 模型路径（默认取 config transcriber.whisper.model）
+-l, --lang string 语言代码 en/zh/auto（默认 auto）
+--threads int     推理线程数（默认取 config）
+-o, --out string  输出目录（默认与输入同目录）
+```
+> 转录后端由 `config.yaml` 的 `transcriber.provider` 控制：`whisper`（默认，本地）/ `bcut`（云 ASR）。
 
 ### `translate <input.srt>`
 ```

@@ -17,7 +17,8 @@ func newInitCmd() *cobra.Command {
   - yt-dlp：检查安装状态，可选更新到最新版
   - ffmpeg：检查是否可用
   - Python 依赖：安装 requests（yt-dlp impersonation 支持）
-  - deno：检查是否安装（可选）`,
+  - deno：检查是否安装（可选）
+  - whisper.cpp：检查 whisper-cli 与模型（可选，转录 provider=whisper 时必需）`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			updateFlag, _ := cmd.Flags().GetBool("update")
 			pipFlag, _ := cmd.Flags().GetBool("pip")
@@ -27,7 +28,7 @@ func newInitCmd() *cobra.Command {
 			fmt.Println(strings.Repeat("=", 40))
 
 			// 1. ffmpeg
-			fmt.Print("\n[1/5] ffmpeg... ")
+			fmt.Print("\n[1/6] ffmpeg... ")
 			ffmpegPath, _ := exec.LookPath("ffmpeg")
 			if ffmpegPath != "" {
 				out, _ := exec.Command("ffmpeg", "-version").Output()
@@ -43,7 +44,7 @@ func newInitCmd() *cobra.Command {
 			}
 
 			// 2. yt-dlp
-			fmt.Print("[2/5] yt-dlp... ")
+			fmt.Print("[2/6] yt-dlp... ")
 			ytdlpPath, _ := exec.LookPath("yt-dlp")
 			if ytdlpPath != "" {
 				out, _ := exec.Command("yt-dlp", "--version").Output()
@@ -63,7 +64,7 @@ func newInitCmd() *cobra.Command {
 			}
 
 			// 3. Python impersonation
-			fmt.Print("[3/5] Python impersonation... ")
+			fmt.Print("[3/6] Python impersonation... ")
 			pythonPath, _ := exec.LookPath("python3")
 			if pythonPath == "" {
 				pythonPath, _ = exec.LookPath("python")
@@ -88,7 +89,7 @@ func newInitCmd() *cobra.Command {
 			}
 
 			// 4. deno
-			fmt.Print("[4/5] deno... ")
+			fmt.Print("[4/6] deno... ")
 			denoPath, _ := exec.LookPath("deno")
 			if denoPath != "" {
 				out, _ := exec.Command("deno", "--version").Output()
@@ -100,7 +101,7 @@ func newInitCmd() *cobra.Command {
 			}
 
 			// 5. audio-video-sync .venv
-			fmt.Print("[5/5] audio-video-sync 配音环境... ")
+			fmt.Print("[5/6] audio-video-sync 配音环境... ")
 			venvPython := ".venv/bin/python3"
 			if _, err := os.Stat(venvPython); err != nil {
 				fmt.Println("❌ 未创建 .venv")
@@ -124,6 +125,26 @@ func newInitCmd() *cobra.Command {
 				} else {
 					fmt.Println("⚠️  .venv 存在但缺少依赖 (pydub/pysrt)")
 					fmt.Println("   💡 运行: .venv/bin/pip install -r skills/audio-video-sync/requirements.txt")
+				}
+			}
+
+			// 6. whisper.cpp 本地转录
+			fmt.Print("[6/6] whisper.cpp 转录... ")
+			whisperPath, _ := exec.LookPath("whisper-cli")
+			if whisperPath == "" {
+				fmt.Println("❌ 未安装 whisper-cli")
+				fmt.Println("   💡 安装: brew install whisper-cpp（Debian/Ubuntu: sudo apt install whisper-cpp）")
+				fmt.Println("   💡 或配置 transcriber.provider: bcut 使用云转录")
+			} else {
+				model := "models/ggml-base.bin"
+				if cfg := loadConfig(); cfg.Transcriber != nil && cfg.Transcriber.Whisper != nil && cfg.Transcriber.Whisper.Model != "" {
+					model = cfg.Transcriber.Whisper.Model
+				}
+				if _, err := os.Stat(model); err != nil {
+					fmt.Printf("⚠️  %s（模型缺失）\n", whisperPath)
+					fmt.Printf("   💡 下载: curl -L -o %s https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin\n", model)
+				} else {
+					fmt.Printf("✅ %s (模型: %s)\n", whisperPath, model)
 				}
 			}
 

@@ -85,36 +85,40 @@ detect_pkg_manager() {
 pkg_names() {
     local dep=$1
     case "$PKG_MGR" in
-        apt)      
+        apt)
             case "$dep" in
                 go)     echo "golang" ;;
                 yt-dlp) echo "yt-dlp" ;;
                 ffmpeg) echo "ffmpeg" ;;
                 deno)   echo "" ;;  # apt 没有 deno
+                whisper-cli) echo "whisper-cpp" ;;
             esac
             ;;
-        dnf|yum)  
+        dnf|yum)
             case "$dep" in
                 go)     echo "golang" ;;
                 yt-dlp) echo "yt-dlp" ;;
                 ffmpeg) echo "ffmpeg" ;;
                 deno)   echo "" ;;
+                whisper-cli) echo "whisper-cpp" ;;
             esac
             ;;
-        pacman)   
+        pacman)
             case "$dep" in
                 go)     echo "go" ;;
                 yt-dlp) echo "yt-dlp" ;;
                 ffmpeg) echo "ffmpeg" ;;
                 deno)   echo "deno" ;;
+                whisper-cli) echo "whisper-cpp" ;;
             esac
             ;;
-        brew)     
+        brew)
             case "$dep" in
                 go)     echo "go" ;;
                 yt-dlp) echo "yt-dlp" ;;
                 ffmpeg) echo "ffmpeg" ;;
                 deno)   echo "deno" ;;
+                whisper-cli) echo "whisper-cpp" ;;
             esac
             ;;
         winget)   
@@ -265,6 +269,7 @@ check_dep "go"     "Go"      || MISSING_DEPS+=("go")
 check_dep "yt-dlp" "yt-dlp"  || MISSING_DEPS+=("yt-dlp")
 check_dep "ffmpeg" "ffmpeg"  || MISSING_DEPS+=("ffmpeg")
 check_dep "deno"   "Deno"    || MISSING_DEPS+=("deno")
+check_dep "whisper-cli" "whisper.cpp" || MISSING_DEPS+=("whisper-cli")  # 转录 provider=whisper 时必需
 
 # ─── 第二步：尝试自动安装缺失依赖 ─────────────────────────────────────
 

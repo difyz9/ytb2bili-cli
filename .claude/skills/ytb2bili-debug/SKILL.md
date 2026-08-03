@@ -39,11 +39,22 @@ which section below applies.
 - **Network blocked**: set `HTTP_PROXY`/`HTTPS_PROXY`; verify `curl -I https://www.youtube.com`
 - **Age-restricted / region-locked**: needs valid cookies; download may be impossible without them
 
-### transcribe (Bcut ASR) fails
+### transcribe fails
+The transcriber is chosen by `config.yaml` → `transcriber.provider` (`whisper` default / `bcut`).
+
+**Bcut ASR (cloud) failures:**
 - Check the audio file exists: `ls data/downloads/<videoID>/`
 - Bcut ASR may be rate-limited or unavailable; retry the single step:
   `./ytb bcut <audio file>`
 - Long videos may exceed the ASR session — split audio or retry
+
+**whisper.cpp (local) failures:**
+- `未找到 whisper-cli` → install: `brew install whisper-cpp` (Debian/Ubuntu: `sudo apt install whisper-cpp`), or set `transcriber.provider: bcut`
+- `whisper 模型不存在` → download the model:
+  `curl -L -o models/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin`
+  (path set by `transcriber.whisper.model`)
+- `提取音频失败` → check ffmpeg is on PATH and the input file is decodable
+- Standalone single-step test: `./ytb whisper <audio/video file>`
 
 ### translate fails
 - **LLM API key missing/invalid**: verify `DEEPSEEK_API_KEY`, `./ytb --config` points at the right config

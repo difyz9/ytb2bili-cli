@@ -36,7 +36,7 @@ type stepDeps struct {
 func buildRegistry(state *PipelineState, deps stepDeps) (*workflow.Registry, error) {
 	steps := []pipelineStep{
 		&downloadStep{config: deps.config},
-		&transcribeStep{},
+		&transcribeStep{config: deps.config},
 		&translateStep{config: deps.config},
 		&ttsStep{config: deps.config},
 		&audioSyncStep{},
@@ -92,13 +92,13 @@ func (s *downloadStep) Run(ctx context.Context, state *PipelineState) error {
 	return nil
 }
 
-type transcribeStep struct{}
+type transcribeStep struct{ config *config.Config }
 
 func (*transcribeStep) Definition() workflow.Step {
 	return workflow.Step{Name: "transcribe", Description: "获取或生成源字幕", Requires: []string{"download"}}
 }
-func (*transcribeStep) Run(ctx context.Context, state *PipelineState) error {
-	// 幂等：下载目录已存在 <id>.srt 则跳过 Bcut ASR
+func (s *transcribeStep) Run(ctx context.Context, state *PipelineState) error {
+	// 幂等：下载目录已存在 <id>.srt 则跳过转录
 	if state.Result.SubtitlePath == "" {
 		if existing := existingFile(state.Result.DownloadDir, state.Result.ArtifactID()+".srt"); existing != "" {
 			state.Result.SubtitlePath = existing
@@ -114,12 +114,35 @@ func (*transcribeStep) Run(ctx context.Context, state *PipelineState) error {
 	}
 	fmt.Printf("  \U0001f399 音频来源: %s (%s)\n", filepath.Base(state.Result.VideoPath), videoSize)
 	var err error
-	state.Result.SubtitlePath, err = transcriber.BcutASRContext(ctx, state.Result.VideoPath, state.Result.DownloadDir, state.Result.ArtifactID())
+	switch selectTranscriberProvider(s.config) {
+	case "bcut":
+		state.Result.SubtitlePath, err = transcriber.BcutASRContext(ctx, state.Result.VideoPath, state.Result.DownloadDir, state.Result.ArtifactID())
+	default: // whisper
+		var wcfg *config.WhisperConfig
+		if s.config != nil && s.config.Transcriber != nil {
+			wcfg = s.config.Transcriber.Whisper
+		}
+		state.Result.SubtitlePath, err = transcriber.WhisperContext(ctx, wcfg,
+			state.Result.VideoPath, state.Result.DownloadDir, state.Result.ArtifactID(), state.Request.SourceLang)
+	}
 	if err != nil {
 		return fmt.Errorf("转写失败: %w", err)
 	}
 	fmt.Printf("  \u2705 字幕: %s\n", filepath.Base(state.Result.SubtitlePath))
 	return nil
+}
+
+// selectTranscriberProvider 决定 transcribe 步骤使用的转录器。
+// 显式配置 transcriber.provider (bcut/whisper) 时按配置；
+// 否则默认本地 whisper.cpp。
+func selectTranscriberProvider(cfg *config.Config) string {
+	if cfg != nil {
+		switch strings.ToLower(strings.TrimSpace(cfg.EffectiveTranscriberProvider())) {
+		case "bcut":
+			return "bcut"
+		}
+	}
+	return "whisper"
 }
 
 type translateStep struct{ config *config.Config }
