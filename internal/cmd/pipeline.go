@@ -1174,6 +1174,11 @@ func newServerCmd() *cobra.Command {
 				}
 			}
 
+			// 确保 data 目录存在
+			if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+				return fmt.Errorf("无法创建数据目录: %w", err)
+			}
+
 			cmdObj := serverDaemonCommand(addr)
 			logF, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 			if err != nil {
