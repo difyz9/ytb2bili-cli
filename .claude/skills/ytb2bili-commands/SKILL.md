@@ -33,7 +33,7 @@ command's syntax, flags, or an example. For end-to-end workflows instead, invoke
 | `review` | Check Bilibili video review status (--wait to poll) |
 | `cookies` | YouTube cookies (refresh/test) |
 | `auto` | Autonomous batch mode (scored search → queue/submit) |
-| `start`/`stop`/`restart`/`status` | HTTP API server management |
+| `server` (start/stop/restart/status/run) | HTTP API server management |
 
 ## Per-command reference
 
@@ -197,10 +197,11 @@ whoami     查看当前账号（未登录会提示）
 
 ### `server` management
 ```
-start      后台守护进程启动 HTTP API
-stop       停止服务
-restart    重启
-status     查看运行状态
+server start         后台守护进程启动 HTTP API
+server stop          停止服务
+server restart       重启
+server status        查看运行状态
+server run [--addr]  前台运行（内部，供后台模式调用）
 ```
 
 ## Data layout

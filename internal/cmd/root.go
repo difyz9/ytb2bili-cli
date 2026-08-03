@@ -73,11 +73,7 @@ func newRootCmd() *cobra.Command {
 		newReviewCmd(),
 		newAutoCmd(),
 
-		// server 类命令
-		newStartCmd(),
-		newStopCmd(),
-		newRestartCmd(),
-		newStatusCmd(),
+		// server 类命令（server start/stop/restart/status/run）
 		newServerCmd(),
 
 		// 调试
