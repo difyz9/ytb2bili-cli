@@ -63,14 +63,17 @@ type queryResponse struct {
 	} `json:"data"`
 }
 
+// Segment 单个转写片段（带秒级时间戳）。Bcut 与 whisper 共用此结构生成 SRT。
+type Segment struct {
+	Transcript string  `json:"transcript"`
+	StartTime  float64 `json:"start_time"`
+	EndTime    float64 `json:"end_time"`
+}
+
 // BCut 结果
 type bcutResult struct {
-	Language   string `json:"language"`
-	Utterances []struct {
-		Transcript string  `json:"transcript"`
-		StartTime  float64 `json:"start_time"`
-		EndTime    float64 `json:"end_time"`
-	} `json:"utterances"`
+	Language   string    `json:"language"`
+	Utterances []Segment `json:"utterances"`
 }
 
 func BcutASR(videoPath, outputDir, videoID string) (string, error) {

@@ -27,3 +27,11 @@ concurrent:
   max_workers: 5            # 最大并发数
   rate_limit: 20            # 每秒请求限制
   batch_size: 10            # 批处理大小
+
+# 转录后端配置
+transcriber:
+  provider: whisper          # bcut(云ASR) | whisper(本地whisper.cpp)
+  whisper:
+    binary: whisper-cli      # whisper-cli 可执行路径（按 PATH 查找）
+    model: models/ggml-base.bin   # GGML 模型文件路径
+    threads: 4               # 推理线程数
