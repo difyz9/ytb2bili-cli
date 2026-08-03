@@ -91,12 +91,14 @@ list                         列出所有可用步骤
 
 ### `channel`
 ```
-add [--title name] <channel_id>
+add [--title name] [--lookback N] <channel_id>
 list
 remove <channel_id>
 sync [--lookback N] [--queue]
 videos
 ```
+`add` 支持频道(`UC...`)与播放列表(`PL...`)，自动识别类型并获取名称；添加后按
+`--lookback`（默认 7 天，`0`=不限）同步并自动将新视频加入任务队列（队列与历史双重去重）。
 `sync --lookback` 默认 7 天；`--queue` 自动将新视频加入处理队列。
 
 ### `queue`

@@ -68,13 +68,18 @@ After submit, monitor progress:
 ### 3. Channel monitoring
 
 ```bash
-./ytb channel add --title "MKBHD" UC_BJycsmduvYEL83R_U4JriQ
+./ytb channel add UCBJcsmduvYEL83R_U4JriQ                      # 频道；自动同步+入队最近 7 天
+./ytb channel add --lookback 14 PLlYbQHffs-L9VmQDOMgRb9ASHPCmieBlK   # 播放列表，最近 14 天
+./ytb channel add --lookback 0 <id>                            # 不限制时间范围
 ./ytb channel list
 ./ytb channel sync --lookback 7            # discover new videos
 ./ytb channel sync --lookback 7 --queue    # auto-enqueue discovered videos
 ./ytb channel videos                       # view discovered videos
 ./ytb channel remove <channel_id>
 ```
+
+`channel add` 支持频道(`UC...`)与播放列表(`PL...`)，添加后按 `--lookback`（默认 7 天，
+`0`=不限）同步并自动将新视频加入任务队列（队列与历史双重去重）。
 
 ### 4. Batch / auto mode
 
