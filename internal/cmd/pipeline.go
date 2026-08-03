@@ -1106,14 +1106,61 @@ func processSingle(cfg *config.Config, url string, skipTranslate bool) (*pipelin
 	})
 }
 
-// ─── Server helpers ────────────────────────────────────────────────────────
+// ─── Server ────────────────────────────────────────────────────────────────
 
-func newStartCmd() *cobra.Command {
-	return &cobra.Command{
+// serverDaemonCommand 构建以后台方式启动 HTTP 服务的 exec.Cmd（前台进程跑在 server run）。
+func serverDaemonCommand(addr string) *exec.Cmd {
+	selfPath, _ := os.Executable()
+	args := []string{"server", "run"}
+	if addr != "" {
+		args = append(args, "--addr", addr)
+	}
+	cmd := exec.Command(selfPath, args...)
+	cmd.Env = os.Environ()
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
+func newServerCmd() *cobra.Command {
+	srvCmd := &cobra.Command{
+		Use:   "server",
+		Short: "HTTP API 服务器管理",
+		Long:  "启动、停止、重启和查看 HTTP API 服务器状态。",
+	}
+
+	runCmd := &cobra.Command{
+		Use:    "run",
+		Short:  "前台运行 HTTP API 服务器（供后台模式调用）",
+		Hidden: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			addr, _ := cmd.Flags().GetString("addr")
+			if addr == "" {
+				addr = "127.0.0.1:8096"
+			}
+
+			srv := server.New(cfg)
+			fmt.Printf("🚀 启动 ytb2bili HTTP 服务器\n")
+			fmt.Printf("   地址: %s\n", addr)
+			fmt.Printf("\n📡 API 端点:\n")
+			fmt.Printf("   POST /api/v1/submit     - 提交视频\n")
+			fmt.Printf("   GET  /api/v1/tasks      - 查看任务列表\n")
+			fmt.Printf("   GET  /api/v1/history    - 查看历史记录\n")
+			fmt.Printf("   GET  /health            - 健康检查\n")
+			fmt.Println()
+
+			return srv.Start(addr)
+		},
+	}
+	runCmd.Flags().String("addr", "127.0.0.1:8096", "监听地址")
+
+	startCmd := &cobra.Command{
 		Use:   "start",
 		Short: "以后台守护进程方式启动 HTTP API 服务器",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			addr, _ := cmd.Flags().GetString("addr")
 			pidFile := filepath.Join(cfg.DataDir, "server.pid")
 			logFile := filepath.Join(cfg.DataDir, "server.log")
 
@@ -1127,12 +1174,7 @@ func newStartCmd() *cobra.Command {
 				}
 			}
 
-			selfPath, _ := os.Executable()
-			cmdObj := exec.Command(selfPath, "server")
-			cmdObj.Env = os.Environ()
-			cmdObj.Stdin = nil
-			cmdObj.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
+			cmdObj := serverDaemonCommand(addr)
 			logF, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 			if err != nil {
 				return fmt.Errorf("无法创建日志文件: %w", err)
@@ -1149,10 +1191,9 @@ func newStartCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
+	startCmd.Flags().String("addr", "", "监听地址（默认 127.0.0.1:8096）")
 
-func newStopCmd() *cobra.Command {
-	return &cobra.Command{
+	stopCmd := &cobra.Command{
 		Use:   "stop",
 		Short: "停止后台 HTTP API 服务器",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1179,14 +1220,13 @@ func newStopCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
 
-func newRestartCmd() *cobra.Command {
-	return &cobra.Command{
+	restartCmd := &cobra.Command{
 		Use:   "restart",
 		Short: "重启 HTTP API 服务器",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			addr, _ := cmd.Flags().GetString("addr")
 			pidFile := filepath.Join(cfg.DataDir, "server.pid")
 			logFile := filepath.Join(cfg.DataDir, "server.log")
 
@@ -1202,11 +1242,7 @@ func newRestartCmd() *cobra.Command {
 			}
 
 			// start
-			selfPath, _ := os.Executable()
-			cmdObj := exec.Command(selfPath, "server")
-			cmdObj.Env = os.Environ()
-			cmdObj.Stdin = nil
-			cmdObj.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			cmdObj := serverDaemonCommand(addr)
 			logF, _ := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 			defer logF.Close()
 			cmdObj.Stderr = logF
@@ -1218,10 +1254,9 @@ func newRestartCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
+	restartCmd.Flags().String("addr", "", "监听地址（默认 127.0.0.1:8096）")
 
-func newStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	statusCmd := &cobra.Command{
 		Use:   "status",
 		Short: "查看服务运行状态",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1248,35 +1283,9 @@ func newStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
-}
 
-func newServerCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:    "server",
-		Short:  "启动 HTTP API 服务器（前台运行）",
-		Hidden: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg := loadConfig()
-			addr, _ := cmd.Flags().GetString("addr")
-			if addr == "" {
-				addr = "127.0.0.1:8096"
-			}
-
-			srv := server.New(cfg)
-			fmt.Printf("🚀 启动 ytb2bili HTTP 服务器\n")
-			fmt.Printf("   地址: %s\n", addr)
-			fmt.Printf("\n📡 API 端点:\n")
-			fmt.Printf("   POST /api/v1/submit     - 提交视频\n")
-			fmt.Printf("   GET  /api/v1/tasks      - 查看任务列表\n")
-			fmt.Printf("   GET  /api/v1/history    - 查看历史记录\n")
-			fmt.Printf("   GET  /health            - 健康检查\n")
-			fmt.Println()
-
-			return srv.Start(addr)
-		},
-	}
-	cmd.Flags().String("addr", "127.0.0.1:8096", "监听地址")
-	return cmd
+	srvCmd.AddCommand(runCmd, startCmd, stopCmd, restartCmd, statusCmd)
+	return srvCmd
 }
 
 func newDebugCmd() *cobra.Command {

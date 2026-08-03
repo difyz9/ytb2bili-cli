@@ -98,9 +98,9 @@ queues them or submits directly.
 ### 6. HTTP API server (optional)
 
 ```bash
-./ytb start      # background daemon
-./ytb status
-./ytb stop
+./ytb server start      # background daemon
+./ytb server status
+./ytb server stop
 ```
 
 ## Verification checklist

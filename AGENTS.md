@@ -242,10 +242,11 @@ ytb cookies refresh  # 从 Chrome 刷新 YouTube cookies
 ### HTTP 服务
 
 ```bash
-ytb start         # 后台启动 API 服务
-ytb status        # 查看运行状态
-ytb stop          # 停止服务
-ytb restart       # 重启
+ytb server start      # 后台启动 API 服务
+ytb server status     # 查看运行状态
+ytb server stop       # 停止服务
+ytb server restart    # 重启
+ytb server run        # 前台运行（内部）
 ```
 
 ## 项目结构
