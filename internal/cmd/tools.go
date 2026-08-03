@@ -190,8 +190,9 @@ func newDownloadCmd() *cobra.Command {
 
 func newBcutCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "bcut <audio/video file>",
-		Short: "使用 Bcut ASR 听录音频",
+		Use:     "bcut <audio/video file>",
+		Aliases: []string{"transcribe"},
+		Short:   "使用 Bcut ASR 听录音频",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入音频或视频文件路径")
@@ -271,8 +272,9 @@ func newTranslateCmd() *cobra.Command {
 
 func newTencentTTSCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "tencent-tts <input.srt>",
-		Short: "腾讯云 TTS 语音合成",
+		Use:     "tencent-tts <input.srt>",
+		Aliases: []string{"tts"},
+		Short:   "腾讯云 TTS 语音合成",
 		Long: `读取 SRT 字幕文件，逐条调用腾讯云 TTS 生成 MP3 音频。
 按字幕序号命名输出（1.mp3, 2.mp3, ...），供 audio-sync 步骤使用。
 
