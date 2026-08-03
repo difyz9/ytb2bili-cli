@@ -37,6 +37,8 @@ func WhisperContext(ctx context.Context, wcfg *config.WhisperConfig, videoPath, 
 	if threads <= 0 {
 		threads = 4
 	}
+	// 支持 ~/ 开头的主目录路径（config 或 --model flag 均可写 ~/...）
+	model = config.ExpandHome(model)
 	if videoID == "" {
 		videoID = "subtitle"
 	}
@@ -49,7 +51,7 @@ func WhisperContext(ctx context.Context, wcfg *config.WhisperConfig, videoPath, 
 		return "", fmt.Errorf("未找到 %s，请先安装 whisper.cpp（macOS: brew install whisper-cpp；Debian/Ubuntu: sudo apt install whisper-cpp）", binary)
 	}
 	if _, err := os.Stat(model); err != nil {
-		return "", fmt.Errorf("whisper 模型不存在: %s\n  请下载: curl -L -o %s https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin", model, model)
+		return "", fmt.Errorf("whisper 模型不存在: %s\n  请下载: mkdir -p %s && curl -L -o %s https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin", model, filepath.Dir(model), model)
 	}
 
 	// Step 1: 提取 16kHz 单声道 PCM WAV（whisper 最佳输入，参考 whisper_with_go ConvertToWAV）

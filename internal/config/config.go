@@ -2,10 +2,28 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// ExpandHome 将路径开头的 ~/ 展开为用户主目录（~ 单独出现时也处理）。
+// 便于在配置里写 ~/.biliup/models/ggml-base.bin 这类复用系统模型的路径。
+func ExpandHome(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return path
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
 
 // Config 配置
 type Config struct {
@@ -194,6 +212,7 @@ func (c *Config) Init() {
 	if model := os.Getenv("YTB2BILI_WHISPER_MODEL"); model != "" {
 		c.Transcriber.Whisper.Model = model
 	}
+	c.Transcriber.Whisper.Model = ExpandHome(c.Transcriber.Whisper.Model)
 }
 
 func (c *Config) EffectiveTranscriberProvider() string {
