@@ -530,24 +530,58 @@ func newChannelCmd() *cobra.Command {
 	addCmd := &cobra.Command{
 		Use:   "add <channel_id>",
 		Short: "添加频道订阅",
+		Long: `添加频道(UC...)或播放列表(PL...)订阅，并在时间范围内将发现的视频加入任务队列。
+
+示例:
+  ytb channel add UCBJcsmduvYEL83R_U4JriQ
+  ytb channel add --lookback 14 PLlYbQHffs-L9VmQDOMgRb9ASHPCmieBlK   # 同步最近 14 天
+  ytb channel add --lookback 0 <id>                                  # 不限制时间范围`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入频道 ID")
 			}
 			cfg := loadConfig()
+			lookback, _ := cmd.Flags().GetInt("lookback")
 			monitor := channel.NewMonitor(cfg.DataDir)
 			title, _ := cmd.Flags().GetString("title")
+			if title == "" {
+				// 未指定 --title 时从 RSS feed 自动获取名称
+				title = channel.FetchTitle(args[0])
+			}
+			if title == "" {
+				title = args[0]
+			}
 			sub, err := monitor.AddSubscription(args[0], title)
 			if err != nil && sub == nil {
 				return err
 			}
-			if sub != nil {
+			if err != nil && sub != nil {
+				fmt.Printf("ℹ️ %v\n", err)
+			} else {
 				fmt.Printf("✅ 已添加频道: %s (%s)\n", sub.ChannelTitle, sub.ChannelID)
+			}
+
+			// 同步该订阅：时间范围内的新视频加入任务队列（队列自身去重）
+			fmt.Printf("🔄 同步新视频 (lookback=%d 天)...\n", lookback)
+			q := queue.New(cfg.DataDir)
+			newCount, serr := monitor.SyncSubscription(*sub, lookback, func(v *channel.DiscoveredVideo) error {
+				_, qerr := q.Add(v.VideoID, v.URL, v.Title, v.ChannelID, "channel")
+				return qerr
+			})
+			if serr != nil {
+				fmt.Fprintf(os.Stderr, "⚠ 同步失败: %v\n", serr)
+				return nil
+			}
+			if newCount > 0 {
+				fmt.Printf("✅ 发现 %d 个新视频并已加入任务队列\n", newCount)
+			} else {
+				fmt.Println("ℹ️ 时间范围内没有新视频")
 			}
 			return nil
 		},
 	}
 	addCmd.Flags().StringP("title", "t", "", "频道名称")
+	addCmd.Flags().Int("lookback", 7, "同步最近 N 天发布的视频 (0=不限)")
 
 	listCmd := &cobra.Command{
 		Use:   "list",
