@@ -15,7 +15,7 @@ tencent_cloud:
 # TTS 音频参数
 tts:
   provider: "tencent"       # 合成器: tencent(腾讯云) / index(本地IndexTTS) / 空=自动检测
-  voice_type: 101008        # 音色：101008-智琪(女声), 101007-智慧(女声), 101003-智云(男声)
+  voice_type: 502005        # 音色：101008-智琪(女声), 101007-智慧(女声), 101003-智云(男声)
   volume: 5                 # 音量：0-10
   speed: 1.0                # 语速：0.6-1.5
   primary_language: 1       # 主语言：1-中文，2-英文
@@ -33,5 +33,5 @@ transcriber:
   provider: whisper          # bcut(云ASR) | whisper(本地whisper.cpp)
   whisper:
     binary: whisper-cli      # whisper-cli 可执行路径（按 PATH 查找）
-    model: models/ggml-base.bin   # GGML 模型文件路径
+    model: ~/.biliup/models/ggml-base.bin   # GGML 模型文件路径（支持 ~/ 展开）
     threads: 4               # 推理线程数
