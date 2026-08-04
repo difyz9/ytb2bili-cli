@@ -731,7 +731,8 @@ func newChannelCmd() *cobra.Command {
 			scoredList := make([]scored, 0, len(videos))
 			for _, v := range videos {
 				vv := effectiveViews(v.Views, obsViews[v.VideoID])
-				base := baselines[v.ChannelID]
+				bl := baselines[v.ChannelID]
+				base := bl.Baseline
 				if base <= 0 {
 					base = ref
 				}
@@ -1227,7 +1228,7 @@ func newAutoCmd() *cobra.Command {
 			var scored []search.ScoredVideo
 			if scorer == search.ScorerNowcast {
 				baselines := loadChannelBaselines(cfg.DataDir)
-				scored = search.ScoreVideosNowcast(allVideos, baselines)
+				scored = search.ScoreVideosNowcastFull(allVideos, baselines)
 			} else {
 				scored = search.ScoreVideos(allVideos, scorer)
 			}
@@ -1326,8 +1327,9 @@ func newAutoCmd() *cobra.Command {
 }
 
 // loadChannelBaselines 读取 channel rank 的评分缓存（data/channel_scores.json），
-// 返回 map[channel_id]baseline 供 nowcast 评分使用。
-func loadChannelBaselines(dataDir string) map[string]float64 {
+// 返回 map[channel_id]NowcastBaseline 供 nowcast 评分使用。
+// 基线时间戳取缓存文件 mtime（近似），粉丝数暂缺（reach 退化为绝对播放量）。
+func loadChannelBaselines(dataDir string) map[string]search.NowcastBaseline {
 	path := filepath.Join(dataDir, "channel_scores.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1339,9 +1341,18 @@ func loadChannelBaselines(dataDir string) map[string]float64 {
 		fmt.Fprintf(os.Stderr, "  ⚠ 解析频道基线缓存失败: %v\n", err)
 		return nil
 	}
-	baselines := make(map[string]float64, len(stats))
+	// 缓存文件修改时间作为基线采集时间（近似）
+	updatedAt := time.Time{}
+	if fi, err := os.Stat(path); err == nil {
+		updatedAt = fi.ModTime()
+	}
+	baselines := make(map[string]search.NowcastBaseline, len(stats))
 	for _, s := range stats {
-		baselines[s.ChannelID] = s.Baseline
+		baselines[s.ChannelID] = search.NowcastBaseline{
+			Baseline:    s.Baseline,
+			UpdatedAt:   updatedAt,
+			HasBaseline: s.Baseline > 0,
+		}
 	}
 	return baselines
 }

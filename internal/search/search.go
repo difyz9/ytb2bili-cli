@@ -815,6 +815,11 @@ type ScoredVideo struct {
 	DurationScore float64 `json:"duration_score"`
 	NowcastScore  float64 `json:"nowcast_score,omitempty"` // 播放 vs 频道基线
 	VelocityScore float64 `json:"velocity_score,omitempty"` // 播放速率 vs 期望斜率（起势）
+	ReachScore    float64 `json:"reach_score,omitempty"`    // 播放/粉丝数（对数饱和）
+	Confidence    float64 `json:"confidence_multiplier,omitempty"` // 置信度乘数 0.75-1.05
+	BreakoutBoost float64 `json:"breakout_boost,omitempty"`       // Early Breakout 加成
+	ExpectedViews float64 `json:"expected_views_now,omitempty"`   // 按年龄曲线预期的播放量
+	Predicted48h  float64 `json:"predicted_views_48h,omitempty"`  // 预测 48h 播放量
 }
 
 // ScoreVideos 对视频列表进行多维评分并排序
@@ -912,48 +917,223 @@ func videoBaseScores(v Video, maxLogViews float64, now time.Time) (viewScore, re
 	return viewScore, recencyScore, durationScore
 }
 
-// ScoreVideosNowcast 按 ytsubs nowcast 哲学评分：
-// 把单视频播放量与其所属频道的基线（baseline，来自 channel rank 的 channel_scores.json）比较，
-// 挑出"超出频道常态"和"正在起势"的视频。
-// baselines: map[channelID]baseline；频道缺失时退化为纯播放/时效评分。
+// ─── ytsubs nowcast 完整算法（Phase 1）─────────────────────────
+// 参考 https://github.com/shayne/ytsubs generate_feed.py
+// 核心分数 = (0.55*nowcast + 0.20*velocity + 0.15*reach + 0.05*duration) * confidence + breakout
+
+// ageCurveFraction48h 48h 年龄曲线：视频发布后各时段应达到的基线播放比例。
+//   0-8h：线性爬升到 60%；8-48h：缓升到 95%；48h+：平台期。
+func ageCurveFraction48h(ageHours float64) float64 {
+	switch {
+	case ageHours <= 0:
+		return 0.03
+	case ageHours <= 8:
+		return math.Max(0.03, 0.6*(ageHours/8.0))
+	case ageHours < 48:
+		return 0.6 + 0.35*((ageHours-8.0)/40.0)
+	default:
+		return 0.95
+	}
+}
+
+// ageCurveExpectedSlope 期望播放速率斜率（每小时应新增的基线比例）。
+//   0-8h：高速期 7.5%/h；8-48h：缓速期 0.875%/h；48h+：长尾 0.1%/h。
+func ageCurveExpectedSlope(ageHours float64) float64 {
+	switch {
+	case ageHours <= 0:
+		return 0.075
+	case ageHours <= 8:
+		return 0.075
+	case ageHours < 48:
+		return 0.00875
+	default:
+		return 0.001
+	}
+}
+
+// clamp 数值限幅。
+func clampF(v, lo, hi float64) float64 {
+	return math.Max(lo, math.Min(hi, v))
+}
+
+// normRatio 对数饱和归一化：value 越大越接近 1，cap 处为 1（默认 6 倍）。
+func normRatio(value, cap float64) float64 {
+	if value <= 0 {
+		return 0
+	}
+	return clampF(math.Log1p(value)/math.Log1p(cap), 0, 1)
+}
+
+// normReach 播放/粉丝数归一化：sqrt(reach*10)，小频道高转化也能浮上来。
+func normReach(reach float64) float64 {
+	if reach <= 0 {
+		return 0
+	}
+	return clampF(math.Sqrt(reach*10.0), 0, 1)
+}
+
+// confidenceMultiplier 置信度乘数（0.75-1.05）：
+//   - 数据完整度：时长/发布时间缺失 → 降权
+//   - 基线新鲜度：baselineUpdatedAt 距今 <24h → 1.0；越旧越低（>7 天 → 0.78）
+//   - 基线规模：样本太少或基线为 0 → 降权
+func confidenceMultiplier(v Video, baselineUpdatedAt time.Time, now time.Time, hasBaseline bool) float64 {
+	confidence := 1.0
+
+	// 数据完整度
+	if v.DurationSec <= 0 {
+		confidence -= 0.10
+	}
+	if v.PublishTime == "" {
+		confidence -= 0.10
+	}
+
+	// 基线新鲜度（有基线时）
+	if hasBaseline && !baselineUpdatedAt.IsZero() {
+		age := now.Sub(baselineUpdatedAt).Hours()
+		switch {
+		case age < 24:
+			confidence *= 1.0
+		case age < 72:
+			confidence *= 0.95
+		case age < 168:
+			confidence *= 0.88
+		default:
+			confidence *= 0.78
+		}
+	} else if !hasBaseline {
+		// 无频道基线（用候选集参照）→ 保守降权（映射后 <1.0）
+		confidence *= 0.80
+	}
+
+	// 映射到 0.75-1.05 区间
+	return clampF(0.75+0.30*clampF(confidence, 0, 1), 0.75, 1.05)
+}
+
+// earlyBreakoutBoost 早期爆发加成（+0~0.12）：
+//   新视频（<24h）同时 nowcast 强（>1.2 倍基线）且 velocity 强（>1.2 倍期望）→ 加成。
+//   公式 0.03*ln(1+nowcast*velocity)，封顶 0.12。
+func earlyBreakoutBoost(ageHours, relativeNowcast, velocityShock float64) float64 {
+	if ageHours > 24 || relativeNowcast < 1.2 || velocityShock < 1.2 {
+		return 0
+	}
+	return clampF(0.03*math.Log1p(relativeNowcast*velocityShock), 0, 0.12)
+}
+
+// NowcastBaseline 频道基线信息（扩展：含粉丝数、基线时间戳）。
+type NowcastBaseline struct {
+	Baseline     float64   // 48h 预期播放量（频道常态）
+	Subscribers  int64     // 频道粉丝数
+	UpdatedAt    time.Time // 基线采集时间（用于置信度）
+	HasBaseline  bool      // 是否有真实基线
+}
+
+// ScoreVideosNowcast 按 ytsubs nowcast 完整算法评分（Phase 1 增强版）。
+// baselines: map[channelID]NowcastBaseline；频道缺失时退化为纯播放/时效评分。
 func ScoreVideosNowcast(videos []Video, baselines map[string]float64) []ScoredVideo {
+	// 兼容旧签名：包装为完整版（无粉丝数/时间戳信息）
+	full := make(map[string]NowcastBaseline, len(baselines))
+	for cid, b := range baselines {
+		full[cid] = NowcastBaseline{Baseline: b, HasBaseline: b > 0}
+	}
+	return ScoreVideosNowcastFull(videos, full)
+}
+
+// ScoreVideosNowcastFull ytsubs nowcast 完整评分（Phase 1）。
+func ScoreVideosNowcastFull(videos []Video, baselines map[string]NowcastBaseline) []ScoredVideo {
 	if len(videos) == 0 {
 		return nil
 	}
+	now := time.Now()
+	scored := make([]ScoredVideo, 0, len(videos))
+
+	// 候选集播放量中位数作为"频道基线缺失"时的参照
+	var viewCounts []float64
 	var maxViews int64
 	for _, v := range videos {
+		viewCounts = append(viewCounts, float64(v.ViewCount))
 		if v.ViewCount > maxViews {
 			maxViews = v.ViewCount
 		}
 	}
-	maxLogViews := math.Log(float64(maxViews + 1))
-	now := time.Now()
-	scored := make([]ScoredVideo, 0, len(videos))
-
-	// 候选集播放量中位数作为"频道基线缺失"时的参照（搜索返回的多非订阅频道）
-	var viewCounts []float64
-	for _, v := range videos {
-		viewCounts = append(viewCounts, float64(v.ViewCount))
-	}
 	setReference := medianF(viewCounts)
+	maxLogViews := math.Log(float64(maxViews + 1))
 
 	for _, v := range videos {
+		// 基础分（view/recency/duration）
 		viewScore, recencyScore, durationScore := videoBaseScores(v, maxLogViews, now)
-		baseline := baselines[v.ChannelID]
-		if baseline <= 0 {
-			baseline = setReference // 无频道基线 → 用候选集参照
+
+		// 基线解析
+		bl, hasBaseline := baselines[v.ChannelID]
+		baseline := bl.Baseline
+		if !hasBaseline || baseline <= 0 {
+			baseline = setReference
+			bl = NowcastBaseline{Baseline: baseline, HasBaseline: false}
 		}
-		nowcastScore, velocityScore := nowcastComponents(v, baseline, recencyScore, now)
+
+		// 年龄
+		pubTime := parsePublishedTime(v.PublishTime, now)
+		ageHours := 24.0
+		if !pubTime.IsZero() {
+			ageHours = math.Max(0.5, now.Sub(pubTime).Hours())
+		}
+
+		// 1. Nowcast vs Expected（55%）：当前播放 / 按年龄曲线预期的播放
+		expectedFraction := ageCurveFraction48h(ageHours)
+		expectedViewsNow := math.Max(1.0, baseline*expectedFraction)
+		relativeNowcast := float64(v.ViewCount+1) / expectedViewsNow
+		nowcastScore := normRatio(relativeNowcast, 6.0)
+
+		// 2. Velocity Shock（20%）：实际播放速率 vs 期望斜率
+		expectedSlope := ageCurveExpectedSlope(ageHours)
+		expectedVPH := math.Max(1.0, baseline*expectedSlope)
+		actualVPH := float64(v.ViewCount+1) / math.Max(ageHours, 1.0)
+		velocityShock := actualVPH / expectedVPH
+		velocityScore := normRatio(velocityShock, 4.0) * recencyScore
+
+		// 3. Subscriber Reach（15%）：播放/粉丝数（对数饱和）
+		var reachScore float64
+		if bl.Subscribers > 0 {
+			reach := float64(v.ViewCount) / float64(bl.Subscribers)
+			reachScore = normReach(reach)
+		} else {
+			reachScore = viewScore // 无粉丝数 → 退化为绝对播放量
+		}
+
+		// 4. Duration Prior（5%）
+		// 复用 durationScore（10-30 分钟最佳）
+
+		// 置信度乘数
+		confidence := confidenceMultiplier(v, bl.UpdatedAt, now, bl.HasBaseline)
+
+		// Early Breakout Boost
+		breakout := earlyBreakoutBoost(ageHours, relativeNowcast, velocityShock)
+
+		// 综合（对齐 ytsubs 权重）
+		baseScore := 0.55*nowcastScore + 0.20*velocityScore + 0.15*reachScore + 0.05*durationScore
+		coreScore := (baseScore * confidence) + breakout
+
+		// 预测 48h 播放（复盘/阈值用）
+		var predicted48h float64
+		if ageHours >= 48 {
+			predicted48h = float64(v.ViewCount)
+		} else {
+			predicted48h = float64(v.ViewCount) * 0.95 / math.Max(expectedFraction, 0.03)
+		}
+
 		sv := ScoredVideo{
 			Video:         v,
+			Score:         coreScore,
 			ViewScore:     viewScore,
 			RecencyScore:  recencyScore,
 			DurationScore: durationScore,
 			NowcastScore:  nowcastScore,
 			VelocityScore: velocityScore,
+			ReachScore:    reachScore,
+			Confidence:    confidence,
+			BreakoutBoost: breakout,
+			ExpectedViews: expectedViewsNow,
+			Predicted48h:  predicted48h,
 		}
-		// Nowcast vs Expected 55% / Velocity 25% / 播放规模 15% / 时长 5%
-		sv.Score = nowcastScore*0.55 + velocityScore*0.25 + viewScore*0.15 + durationScore*0.05
 		scored = append(scored, sv)
 	}
 
@@ -975,27 +1155,6 @@ func medianF(xs []float64) float64 {
 		return sorted[n/2]
 	}
 	return (sorted[n/2-1] + sorted[n/2]) / 2
-}
-
-// nowcastComponents 计算 nowcast 与 velocity 分量。
-//   - nowcast：视频播放 / 频道基线（达 2 倍基线即满分）
-//   - velocity：播放速率(播放/小时) vs 期望斜率(基线/48h)，且与新鲜度相乘（新 + 起势）
-func nowcastComponents(v Video, baseline float64, recencyScore float64, now time.Time) (nowcast, velocity float64) {
-	if baseline <= 0 {
-		baseline = 1 // 无基线退化为"相对自身播放"
-	}
-	ratio := float64(v.ViewCount+1) / baseline
-	nowcast = math.Min(1, ratio/2)
-
-	pubTime := parsePublishedTime(v.PublishTime, now)
-	ageHours := 24.0
-	if !pubTime.IsZero() {
-		ageHours = math.Max(1, now.Sub(pubTime).Hours())
-	}
-	expectedRate := math.Max(baseline/48, 1) // 期望：48h 内达到基线
-	actualRate := float64(v.ViewCount+1) / ageHours
-	velocity = math.Min(1, actualRate/expectedRate/4) * recencyScore
-	return nowcast, velocity
 }
 
 // parsePublishedTime 解析 YouTube 发布时间的相对字符串
