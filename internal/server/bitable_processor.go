@@ -83,7 +83,7 @@ func (p *BitableProcessor) processTask(ctx context.Context, task *feishu.VideoTa
 	log.Printf("\n🔄 处理任务: %s (%s)", task.Title, task.VideoID)
 	cookiesPath := ""
 	if task.Cookies != "" {
-		outputDir := filepath.Join(p.cfg.DataDir, "downloads", task.VideoID)
+		outputDir := filepath.Join(p.cfg.EffectiveDownloadDir(), task.VideoID)
 		if err := os.MkdirAll(outputDir, 0755); err != nil {
 			_ = p.client.UpdateTaskStatus(p.config, task.RecordID, "failed", err.Error(), "")
 			return

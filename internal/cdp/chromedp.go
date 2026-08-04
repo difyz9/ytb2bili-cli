@@ -555,22 +555,28 @@ func networkGetAllCookies(ctx context.Context) ([]map[string]interface{}, error)
 
 // TestYouTubeCookies 测试 cookies 是否有效（尝试获取一个视频的信息）
 func TestYouTubeCookies(cookiesPath string) error {
-	cmd := exec.Command("yt-dlp",
-		"--impersonate", "chrome",
-		"--cookies", cookiesPath,
-		"--dump-json", "--no-download",
-		"--remote-components", "ejs:github",
-		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("cookies 验证失败（可能需要重新登录 YouTube）: %w", err)
+	// 先尝试带 impersonate（需要 curl_cffi，可能未安装）；失败则回退到不带 impersonate，
+	// 避免 "impersonate 不可用" 掩盖 cookies 过期等真实原因。
+	for _, withImpersonate := range []bool{true, false} {
+		args := []string{
+			"--cookies", cookiesPath,
+			"--dump-json", "--no-download",
+			"--remote-components", "ejs:github",
+			"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		}
+		if withImpersonate {
+			args = append([]string{"--impersonate", "chrome"}, args...)
+		}
+		out, err := exec.Command("yt-dlp", args...).Output()
+		if err != nil {
+			continue
+		}
+		// 返回数据异常（未包含 title）也视为失败，继续回退
+		if strings.Contains(string(out), `"title"`) {
+			return nil
+		}
 	}
-	// 检查是否包含 title
-	if !strings.Contains(string(out), `"title"`) {
-		return fmt.Errorf("cookies 验证失败：返回数据异常")
-	}
-	return nil
+	return fmt.Errorf("cookies 验证失败（cookies 已过期或被轮换，请运行 ytb cookies refresh 重新获取）")
 }
 
 // ShowImageSystem 使用系统图片查看器显示图片

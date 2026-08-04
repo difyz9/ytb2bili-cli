@@ -60,13 +60,10 @@ func (*downloadStep) Definition() workflow.Step {
 }
 func (s *downloadStep) Run(ctx context.Context, state *PipelineState) error {
 	req, result := state.Request, state.Result
-	result.DownloadDir = filepath.Join(s.config.DataDir, "downloads", result.ArtifactID())
+	result.DownloadDir = filepath.Join(s.config.EffectiveDownloadDir(), result.ArtifactID())
 	cookies := req.CookiesPath
 	if cookies == "" {
-		cookies = s.config.YouTubeCookies
-	}
-	if cookies == "" {
-		cookies = filepath.Join(s.config.DataDir, "youtube_cookies.txt")
+		cookies = s.config.EffectiveCookiesPath()
 	}
 
 	// 幂等：已存在视频文件则跳过下载，只拉取元数据（标题供 metadata 步骤使用）
@@ -311,7 +308,7 @@ func (s *metadataStep) Run(ctx context.Context, state *PipelineState) error {
 	fmt.Printf("  \U0001f916 原始标题: %s\n", state.Download.Info.Title)
 	meta, err := metadata.GenerateContext(ctx, state.Download.Info, s.config)
 	if err != nil {
-		meta = &metadata.VideoMeta{Title: state.Download.Info.Title, Description: state.Download.Info.Description}
+		meta = &metadata.VideoMeta{Title: metadata.ClampTitle(state.Download.Info.Title), Description: state.Download.Info.Description}
 		fmt.Printf("  \u26a0 AI 生成失败，使用原标题\n")
 	}
 	fmt.Printf("  \u2705 中文标题: %s\n", meta.Title)

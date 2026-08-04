@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zolagz/ytb2bili-go/internal/config"
 )
 
 func TestExistingVideo(t *testing.T) {
@@ -80,15 +82,14 @@ func TestHasVoiceClips(t *testing.T) {
 
 func TestResolveSyncArtifacts(t *testing.T) {
 	t.Run("all artifacts present, prefers zh-Hans", func(t *testing.T) {
-		dataDir := t.TempDir()
-		dlDir := filepath.Join(dataDir, "downloads", "abc123")
+		dlDir := filepath.Join(t.TempDir(), "abc123")
 		os.MkdirAll(filepath.Join(dlDir, "voice"), 0755)
 		os.WriteFile(filepath.Join(dlDir, "abc123.mp4"), []byte("v"), 0644)
 		os.WriteFile(filepath.Join(dlDir, "abc123.srt"), []byte("s"), 0644)
 		os.WriteFile(filepath.Join(dlDir, "abc123.zh-Hans.srt"), []byte("t"), 0644)
 		os.WriteFile(filepath.Join(dlDir, "voice", "1.mp3"), []byte("a"), 0644)
 
-		video, subtitle, voiceDir, err := ResolveSyncArtifacts(dataDir, "abc123")
+		video, subtitle, voiceDir, err := ResolveSyncArtifacts(dlDir, "abc123")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,14 +105,13 @@ func TestResolveSyncArtifacts(t *testing.T) {
 	})
 
 	t.Run("falls back to source srt when no translation", func(t *testing.T) {
-		dataDir := t.TempDir()
-		dlDir := filepath.Join(dataDir, "downloads", "abc123")
+		dlDir := filepath.Join(t.TempDir(), "abc123")
 		os.MkdirAll(filepath.Join(dlDir, "voice"), 0755)
 		os.WriteFile(filepath.Join(dlDir, "abc123.mp4"), []byte("v"), 0644)
 		os.WriteFile(filepath.Join(dlDir, "abc123.srt"), []byte("s"), 0644)
 		os.WriteFile(filepath.Join(dlDir, "voice", "1.mp3"), []byte("a"), 0644)
 
-		_, subtitle, _, err := ResolveSyncArtifacts(dataDir, "abc123")
+		_, subtitle, _, err := ResolveSyncArtifacts(dlDir, "abc123")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -121,19 +121,91 @@ func TestResolveSyncArtifacts(t *testing.T) {
 	})
 
 	t.Run("missing video errors", func(t *testing.T) {
-		if _, _, _, err := ResolveSyncArtifacts(t.TempDir(), "nope123"); err == nil {
+		if _, _, _, err := ResolveSyncArtifacts(filepath.Join(t.TempDir(), "nope123"), "nope123"); err == nil {
 			t.Fatal("expected error for missing video")
 		}
 	})
 
 	t.Run("missing voice errors", func(t *testing.T) {
-		dataDir := t.TempDir()
-		dlDir := filepath.Join(dataDir, "downloads", "abc123")
+		dlDir := filepath.Join(t.TempDir(), "abc123")
 		os.MkdirAll(dlDir, 0755)
 		os.WriteFile(filepath.Join(dlDir, "abc123.mp4"), []byte("v"), 0644)
 		os.WriteFile(filepath.Join(dlDir, "abc123.srt"), []byte("s"), 0644)
-		if _, _, _, err := ResolveSyncArtifacts(dataDir, "abc123"); err == nil {
+		if _, _, _, err := ResolveSyncArtifacts(dlDir, "abc123"); err == nil {
 			t.Fatal("expected error for missing voice")
+		}
+	})
+}
+
+func TestResolveVideoDir(t *testing.T) {
+	dlDir := filepath.Join(t.TempDir(), "dl")
+	os.MkdirAll(dlDir, 0755)
+	cfg := &config.Config{DataDir: t.TempDir(), DownloadDir: dlDir}
+
+	t.Run("existing dir returned as-is", func(t *testing.T) {
+		if got := ResolveVideoDir(cfg, cfg.DownloadDir); got != cfg.DownloadDir {
+			t.Fatalf("got %q, want %q", got, cfg.DownloadDir)
+		}
+	})
+
+	t.Run("existing file returns its dir", func(t *testing.T) {
+		vidDir := filepath.Join(cfg.DownloadDir, "abc123")
+		os.MkdirAll(vidDir, 0755)
+		f := filepath.Join(vidDir, "abc123.mp4")
+		os.WriteFile(f, []byte("x"), 0644)
+		if got := ResolveVideoDir(cfg, f); got != vidDir {
+			t.Fatalf("got %q, want %q", got, vidDir)
+		}
+	})
+
+	t.Run("videoId resolves under download dir", func(t *testing.T) {
+		want := filepath.Join(cfg.DownloadDir, "abc123")
+		if got := ResolveVideoDir(cfg, "abc123"); got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+}
+
+func TestResolveInput(t *testing.T) {
+	cfg := &config.Config{DataDir: t.TempDir(), DownloadDir: filepath.Join(t.TempDir(), "dl")}
+	vidDir := filepath.Join(cfg.DownloadDir, "abc123")
+	os.MkdirAll(vidDir, 0755)
+	os.WriteFile(filepath.Join(vidDir, "abc123.mp4"), []byte("v"), 0644)
+	os.WriteFile(filepath.Join(vidDir, "abc123.srt"), []byte("s"), 0644)
+	os.WriteFile(filepath.Join(vidDir, "abc123.zh-Hans.srt"), []byte("t"), 0644)
+
+	t.Run("full path returned as-is", func(t *testing.T) {
+		p := filepath.Join(vidDir, "abc123.zh-Hans.srt")
+		got, err := ResolveInput(cfg, p, "zh-srt")
+		if err != nil || got != p {
+			t.Fatalf("got %q, %v", got, err)
+		}
+	})
+
+	t.Run("videoId resolves to video", func(t *testing.T) {
+		got, err := ResolveInput(cfg, "abc123", "video")
+		if err != nil || !strings.HasSuffix(got, "abc123.mp4") {
+			t.Fatalf("got %q, %v", got, err)
+		}
+	})
+
+	t.Run("videoId prefers zh-Hans srt", func(t *testing.T) {
+		got, err := ResolveInput(cfg, "abc123", "zh-srt")
+		if err != nil || !strings.HasSuffix(got, "abc123.zh-Hans.srt") {
+			t.Fatalf("got %q, %v", got, err)
+		}
+	})
+
+	t.Run("videoId resolves source srt", func(t *testing.T) {
+		got, err := ResolveInput(cfg, "abc123", "srt")
+		if err != nil || !strings.HasSuffix(got, "abc123.srt") {
+			t.Fatalf("got %q, %v", got, err)
+		}
+	})
+
+	t.Run("missing videoId errors", func(t *testing.T) {
+		if _, err := ResolveInput(cfg, "nope123", "video"); err == nil {
+			t.Fatal("expected error")
 		}
 	})
 }

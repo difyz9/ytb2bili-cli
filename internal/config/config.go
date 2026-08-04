@@ -27,8 +27,9 @@ func ExpandHome(path string) string {
 
 // Config 配置
 type Config struct {
-	DataDir               string   `yaml:"data_dir"`
-	LLMAPIKey             string   `yaml:"llm_api_key"`
+	DataDir    string `yaml:"data_dir"`
+	DownloadDir string `yaml:"download_dir"` // 视频下载根目录（默认 <data_dir>/downloads）
+	LLMAPIKey  string `yaml:"llm_api_key"`
 	LLMBaseURL            string   `yaml:"llm_base_url"`
 	LLMModel              string   `yaml:"llm_model"`
 	TranslationTargetLang string   `yaml:"translation_target_lang"`
@@ -36,6 +37,7 @@ type Config struct {
 	YouTubeCookies        string   `yaml:"youtube_cookies"`
 	ServerToken           string   `yaml:"server_token"`
 	AllowedOrigins        []string `yaml:"allowed_origins"`
+	ChromeDebugPort       int      `yaml:"chrome_debug_port"` // Chrome 远程调试起始端口（0=默认 9222，被占用自动 +1 找空闲）
 
 	// 飞书多维表格配置
 	FeishuAppID     string `yaml:"feishu_app_id"`
@@ -147,6 +149,9 @@ func (c *Config) Init() {
 	if cookies := os.Getenv("YOUTUBE_COOKIES"); cookies != "" {
 		c.YouTubeCookies = cookies
 	}
+	if dir := os.Getenv("YTB2BILI_DOWNLOAD_DIR"); dir != "" {
+		c.DownloadDir = dir
+	}
 	if c.ServerToken == "" {
 		c.ServerToken = os.Getenv("YTB2BILI_SERVER_TOKEN")
 	}
@@ -213,6 +218,45 @@ func (c *Config) Init() {
 		c.Transcriber.Whisper.Model = model
 	}
 	c.Transcriber.Whisper.Model = ExpandHome(c.Transcriber.Whisper.Model)
+}
+
+// EffectiveDownloadDir 返回视频下载根目录：显式配置 download_dir 优先，
+// 否则回退到 <data_dir>/downloads。
+// DefaultCookiesFile 统一的 YouTube cookies 文件名（写入与读取都用它）。
+const DefaultCookiesFile = "youtube_cookies_from_meta.txt"
+
+// EffectiveCookiesPath 返回 YouTube cookies 文件路径：
+// 显式配置 youtube_cookies 优先（支持 ~/ 展开），否则 <data_dir>/cookies/youtube_cookies_from_meta.txt。
+// EffectiveChromeDebugPort 返回 Chrome 远程调试起始端口（默认 9222）。
+func (c *Config) EffectiveChromeDebugPort() int {
+	if c != nil && c.ChromeDebugPort > 0 {
+		return c.ChromeDebugPort
+	}
+	return 9222
+}
+
+func (c *Config) EffectiveCookiesPath() string {
+	if c != nil {
+		if p := strings.TrimSpace(c.YouTubeCookies); p != "" {
+			return ExpandHome(p)
+		}
+		if dir := strings.TrimSpace(c.DataDir); dir != "" {
+			return filepath.Join(dir, "cookies", DefaultCookiesFile)
+		}
+	}
+	return filepath.Join("data", "cookies", DefaultCookiesFile)
+}
+
+func (c *Config) EffectiveDownloadDir() string {
+	if c != nil {
+		if dir := strings.TrimSpace(c.DownloadDir); dir != "" {
+			return ExpandHome(dir)
+		}
+		if dir := strings.TrimSpace(c.DataDir); dir != "" {
+			return filepath.Join(dir, "downloads")
+		}
+	}
+	return "data/downloads"
 }
 
 func (c *Config) EffectiveTranscriberProvider() string {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -138,12 +139,13 @@ func newAudioSyncCmd() *cobra.Command {
 已完成的 download/transcribe/translate/tts/audio-sync，直接做元数据生成和投稿。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("请输入 videoId")
+				return fmt.Errorf("请输入 videoId 或视频路径")
 			}
 			cfg := loadConfig()
-			videoID := args[0]
+			videoDir := pipeline.ResolveVideoDir(cfg, args[0])
+			videoID := filepath.Base(videoDir)
 
-			video, subtitle, voiceDir, err := pipeline.ResolveSyncArtifacts(cfg.DataDir, videoID)
+			video, subtitle, voiceDir, err := pipeline.ResolveSyncArtifacts(videoDir, videoID)
 			if err != nil {
 				return err
 			}
@@ -887,17 +889,15 @@ func newCookiesCmd() *cobra.Command {
 		Short: "从 Chrome 刷新 YouTube cookies",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
-			cookiesFile := cfg.YouTubeCookies
-			if cookiesFile == "" {
-				cookiesFile = filepath.Join(cfg.DataDir, "cookies", "youtube_cookies.txt")
-			}
+			cookiesFile := cfg.EffectiveCookiesPath()
 			os.MkdirAll(filepath.Dir(cookiesFile), 0755)
 
+			port := readChromePort(cfg)
 			fmt.Printf("🍪 刷新 YouTube cookies → %s\n", cookiesFile)
-			fmt.Println("🔗 连接到 Chrome...")
+			fmt.Printf("🔗 连接到 Chrome (端口 %d)...\n", port)
 
-			cm := cdp.NewChromeManager(cdp.WithPort(9222))
-			ctx, cancel, err := cm.ConnectExisting(9222)
+			cm := cdp.NewChromeManager(cdp.WithPort(port))
+			ctx, cancel, err := cm.ConnectExisting(port)
 			if err != nil {
 				return fmt.Errorf("连接 Chrome 失败: %w", err)
 			}
@@ -923,10 +923,7 @@ func newCookiesCmd() *cobra.Command {
 		Short: "测试 cookies 是否有效",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
-			cookiesFile := cfg.YouTubeCookies
-			if cookiesFile == "" {
-				cookiesFile = filepath.Join(cfg.DataDir, "cookies", "youtube_cookies.txt")
-			}
+			cookiesFile := cfg.EffectiveCookiesPath()
 			if _, err := os.Stat(cookiesFile); err != nil {
 				return fmt.Errorf("cookies 文件不存在: %s", cookiesFile)
 			}
@@ -1156,6 +1153,93 @@ func serverDaemonCommand(addr string) *exec.Cmd {
 	return cmd
 }
 
+// ─── Chrome 调试进程管理 ──────────────────────────────────────────────────
+// 供 ytb cookies refresh 连接 localhost:9222 提取 YouTube cookies。
+
+func chromePidFile(dataDir string) string {
+	return filepath.Join(dataDir, "chrome.pid")
+}
+
+func chromePortFile(dataDir string) string {
+	return filepath.Join(dataDir, "chrome.port")
+}
+
+// readChromePort 读取上次启动记录的 Chrome 调试端口，无记录则用配置起始端口。
+func readChromePort(cfg *config.Config) int {
+	dataDir := cfg.DataDir
+	if data, err := os.ReadFile(chromePortFile(dataDir)); err == nil {
+		var port int
+		if n, _ := fmt.Sscanf(string(data), "%d", &port); n == 1 && port > 0 {
+			return port
+		}
+	}
+	return cfg.EffectiveChromeDebugPort()
+}
+
+// startChromeDebug 以远程调试模式启动 Chrome 并记录其 PID 与端口。
+// 已在运行则跳过；返回是否本次新启动。
+// 说明：macOS 上 `open -a` 在 Chrome 已运行时只会激活现有实例、忽略调试参数，
+// 因此这里直接执行 Chrome 二进制，并用独立 --user-data-dir 启动一个单独的调试实例，
+// 与用户日常的 Chrome 互不干扰，且能独立启停。端口用 FindAvailablePort 自动避开占用。
+func startChromeDebug(cfg *config.Config) (started bool, err error) {
+	dataDir := cfg.DataDir
+	// 已在运行（pid 文件 + 进程存活）则跳过
+	if pidData, rerr := os.ReadFile(chromePidFile(dataDir)); rerr == nil {
+		var pid int
+		fmt.Sscanf(string(pidData), "%d", &pid)
+		if proc, perr := os.FindProcess(pid); perr == nil && proc.Signal(syscall.Signal(0)) == nil {
+			return false, nil
+		}
+	}
+
+	if runtime.GOOS != "darwin" {
+		return false, fmt.Errorf("Chrome 调试进程管理目前仅支持 macOS")
+	}
+	chromeBin := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+	if _, statErr := os.Stat(chromeBin); statErr != nil {
+		return false, fmt.Errorf("未找到 Chrome: %s", chromeBin)
+	}
+	port := cdp.FindAvailablePort(cfg.EffectiveChromeDebugPort())
+	profileDir, _ := filepath.Abs(filepath.Join(dataDir, "chrome-profile"))
+	cmd := exec.Command(chromeBin,
+		"--remote-debugging-port="+fmt.Sprint(port),
+		"--user-data-dir="+profileDir,
+		"--no-first-run", "--no-default-browser-check")
+	if err := cmd.Start(); err != nil {
+		return false, fmt.Errorf("启动 Chrome 失败: %w", err)
+	}
+	go cmd.Wait() // 回收进程，让 Chrome 独立存活
+	os.WriteFile(chromePidFile(dataDir), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
+	os.WriteFile(chromePortFile(dataDir), []byte(fmt.Sprintf("%d", port)), 0644)
+	return true, nil
+}
+
+// stopChromeDebug 停止 Chrome 调试进程并清理 pid/port 文件。
+func stopChromeDebug(cfg *config.Config) (stopped bool, err error) {
+	dataDir := cfg.DataDir
+	pidFile := chromePidFile(dataDir)
+	pidData, rerr := os.ReadFile(pidFile)
+	os.Remove(pidFile)
+	os.Remove(chromePortFile(dataDir))
+	if rerr != nil {
+		return false, nil // 无记录
+	}
+	var pid int
+	fmt.Sscanf(string(pidData), "%d", &pid)
+	if pid <= 0 {
+		return false, nil
+	}
+	proc, perr := os.FindProcess(pid)
+	if perr != nil {
+		return false, nil
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		return false, nil // 已退出
+	}
+	time.Sleep(300 * time.Millisecond)
+	return true, nil
+}
+
 func newServerCmd() *cobra.Command {
 	srvCmd := &cobra.Command{
 		Use:   "server",
@@ -1227,6 +1311,15 @@ func newServerCmd() *cobra.Command {
 			os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmdObj.Process.Pid)), 0644)
 			fmt.Printf("🚀 服务已启动 (PID: %d)\n", cmdObj.Process.Pid)
 			fmt.Printf("   日志: %s\n", logFile)
+
+			// 启动 Chrome 调试进程（供 cookies refresh 使用）
+			if started, cerr := startChromeDebug(cfg); cerr != nil {
+				fmt.Printf("   ⚠ Chrome 调试进程启动失败: %v\n", cerr)
+			} else if started {
+				fmt.Printf("   🌐 Chrome 调试进程已启动 (端口 %d)\n", readChromePort(cfg))
+			} else {
+				fmt.Printf("   🌐 Chrome 调试进程已在运行\n")
+			}
 			return nil
 		},
 	}
@@ -1256,6 +1349,13 @@ func newServerCmd() *cobra.Command {
 			time.Sleep(500 * time.Millisecond)
 			os.Remove(pidFile)
 			fmt.Printf("✅ 服务已停止 (PID: %d)\n", pid)
+
+			// 同步关闭 Chrome 调试进程
+			if stopped, cerr := stopChromeDebug(cfg); cerr != nil {
+				fmt.Printf("   ⚠ Chrome 调试进程停止失败: %v\n", cerr)
+			} else if stopped {
+				fmt.Printf("   🌐 Chrome 调试进程已关闭\n")
+			}
 			return nil
 		},
 	}
@@ -1269,7 +1369,7 @@ func newServerCmd() *cobra.Command {
 			pidFile := filepath.Join(cfg.DataDir, "server.pid")
 			logFile := filepath.Join(cfg.DataDir, "server.log")
 
-			// stop
+			// stop（服务 + Chrome 调试进程）
 			if pidData, err := os.ReadFile(pidFile); err == nil {
 				var pid int
 				fmt.Sscanf(string(pidData), "%d", &pid)
@@ -1279,8 +1379,13 @@ func newServerCmd() *cobra.Command {
 				}
 				os.Remove(pidFile)
 			}
+			if stopped, cerr := stopChromeDebug(cfg); cerr != nil {
+				fmt.Printf("   ⚠ Chrome 调试进程停止失败: %v\n", cerr)
+			} else if stopped {
+				fmt.Printf("   🌐 Chrome 调试进程已关闭\n")
+			}
 
-			// start
+			// start（服务 + Chrome 调试进程）
 			cmdObj := serverDaemonCommand(addr)
 			logF, _ := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 			defer logF.Close()
@@ -1290,6 +1395,14 @@ func newServerCmd() *cobra.Command {
 			}
 			os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", cmdObj.Process.Pid)), 0644)
 			fmt.Printf("🚀 服务已重启 (PID: %d)\n", cmdObj.Process.Pid)
+
+			if started, cerr := startChromeDebug(cfg); cerr != nil {
+				fmt.Printf("   ⚠ Chrome 调试进程启动失败: %v\n", cerr)
+			} else if started {
+				fmt.Printf("   🌐 Chrome 调试进程已启动 (端口 %d)\n", readChromePort(cfg))
+			} else {
+				fmt.Printf("   🌐 Chrome 调试进程已在运行\n")
+			}
 			return nil
 		},
 	}
