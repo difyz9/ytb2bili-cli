@@ -15,26 +15,39 @@ command's syntax, flags, or an example. For end-to-end workflows instead, invoke
 |---------|---------|
 | `init` | Check/fix environment dependencies |
 | `login` / `whoami` | Bilibili QR login / verify account |
-| `search` | Search YouTube (filters, JSON, history, direct submit) |
-| `submit` | Full pipeline: download→transcribe→translate→metadata→upload→subtitle |
-| `download` | Download a single YouTube video |
-| `bcut` | Bcut ASR transcribe an audio/video file |
-| `whisper` | whisper.cpp local transcribe (default provider) |
-| `translate` | Translate an SRT subtitle file |
-| `tencent-tts` | Tencent Cloud TTS synthesis from SRT |
-| `chain` | Custom task chains (run/plan/list) |
-| `audio-sync` | Run audio-sync on existing downloaded artifacts by videoId |
-| `channel` | YouTube channel monitoring (add/list/remove/sync/videos) |
-| `queue` | Job queue (add/status/work/list/remove/clear/retry-failed) |
-| `task` | Task management (list/show/retry) |
-| `history` | Submitted submission history (--json) |
-| `debug` | Environment/login/stats diagnostics |
-| `subtitle` | Subtitle upload status + upload to BVID |
-| `publish` | Directly publish a local video to Bilibili |
-| `review` | Check Bilibili video review status (--wait to poll) |
-| `cookies` | YouTube cookies (refresh/test) |
-| `auto` | Autonomous batch mode (scored search → queue/submit) |
-| `server` (start/stop/restart/status/run) | HTTP API server management |
+`ytb --help` 按 5 个逻辑分组展示：**核心流程 / 频道与订阅 / 流水线步骤 / B站管理 / 系统与工具**。
+
+| 命令 | 说明 |
+|------|------|
+| **核心流程** | |
+| `submit` | 一键搬运：download→transcribe→translate→metadata→upload→subtitle |
+| `auto` | 自主批量：评分搜索 → 队列/直提（--scorer popular/fresh/balanced/nowcast） |
+| `search` | 搜索 YouTube（过滤器、JSON、--submit 直提） |
+| `queue` | 作业队列（add/status/work/list/remove/clear/retry-failed） |
+| **频道与订阅** | |
+| `channel` | 频道监控（add/list/remove/sync/videos/rank） |
+| `yt-oauth` | YouTube OAuth 授权 + 订阅同步（login/sync/watch/status/logout） |
+| `cookies` | YouTube cookies（refresh/test） |
+| **流水线步骤** | |
+| `transcribe` | 听录生成字幕（默认本地 whisper，`--provider bcut` 用云） |
+| `download` | 下载单个视频 |
+| `translate` | 翻译 SRT 字幕 |
+| `metadata` | 根据字幕生成B站标题/描述/标签（JSON） |
+| `tencent-tts` | 腾讯云 TTS 合成 |
+| `audio-sync` | 音画同步（videoId/路径） |
+| `bcut` / `whisper` | 旧转录命令，已由 `transcribe --provider` 取代（隐藏但可直接调用） |
+| **B站管理** | |
+| `login` / `whoami` | B站扫码登录 / 查看账号 |
+| `publish` | 直接投稿本地视频 |
+| `review` | 查看审核状态（--wait 轮询） |
+| `subtitle` | 字幕上传状态 + 投稿字幕 |
+| `history` | 提交历史（--json） |
+| `task` | 任务管理（list/show/retry） |
+| **系统与工具** | |
+| `init` | 检查/修复环境依赖 |
+| `server` | HTTP API 服务器（start/stop/restart/status/run） |
+| `chain` | 自定义任务链（run/plan/list） |
+| `debug` | 环境/登录/状态诊断 |
 
 ## Per-command reference
 
@@ -208,18 +221,17 @@ watch [--interval 24h] [--once]  常驻定时检测 / 单次检测
 --output string   输出目录
 ```
 
-### `bcut <audio/video file>`
-无参数，直接传文件路径。别名 `transcribe`（Bcut ASR 云服务）。
-
-### `whisper <audio/video file>`
-使用本地 whisper.cpp（whisper-cli）听录，输出标准 SRT。
+### `transcribe <audio/video file>`
+统一转录命令：默认本地 whisper.cpp，`--provider bcut` 用云 ASR。参数支持 videoId/路径。
 ```
---model string    GGML 模型路径（默认取 config transcriber.whisper.model）
--l, --lang string 语言代码 en/zh/auto（默认 auto）
---threads int     推理线程数（默认取 config）
--o, --out string  输出目录（默认与输入同目录）
+--provider string  转录后端: whisper(默认)/bcut（空=取 config transcriber.provider）
+--model string     whisper GGML 模型路径（覆盖 config）
+-l, --lang string  whisper 语言 en/zh/auto（默认 auto）
+--threads int      whisper 推理线程数（覆盖 config）
+-o, --out string   输出目录（默认与输入同目录）
 ```
-> 转录后端由 `config.yaml` 的 `transcriber.provider` 控制：`whisper`（默认，本地）/ `bcut`（云 ASR）。
+> 旧 `bcut`/`whisper` 命令仍可直接调用（已从 `--help` 隐藏）：`ytb bcut <file>` = `ytb transcribe --provider bcut <file>`，
+> `ytb whisper <file>` = `ytb transcribe --provider whisper <file>`。
 
 ### `metadata <videoId or path-to-srt>`
 读取字幕内容，调用 LLM 生成 B站中文标题/描述/标签，保存 JSON。
