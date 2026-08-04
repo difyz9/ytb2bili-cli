@@ -74,6 +74,7 @@ func newRootCmd() *cobra.Command {
 		newPublishCmd(),
 		newReviewCmd(),
 		newAutoCmd(),
+		newYtOAuthCmd(),
 
 		// server 类命令（server start/stop/restart/status/run）
 		newServerCmd(),

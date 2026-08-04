@@ -50,8 +50,19 @@ type Config struct {
 	TTS          *TTSConfig          `yaml:"tts"`
 	Concurrent   *ConcurrentConfig   `yaml:"concurrent"`
 
+	// YouTube OAuth 授权配置
+	YouTubeOAuth *YouTubeOAuthConfig `yaml:"youtube_oauth"`
+
 	// 转录后端配置
 	Transcriber *TranscriberConfig `yaml:"transcriber"`
+}
+
+// YouTubeOAuthConfig Google OAuth 客户端凭证
+type YouTubeOAuthConfig struct {
+	// ClientID Google OAuth 客户端 ID（Google Cloud Console 创建）
+	ClientID string `yaml:"client_id"`
+	// ClientSecret Google OAuth 客户端密钥
+	ClientSecret string `yaml:"client_secret"`
 }
 
 // TranscriberConfig 转录后端配置
