@@ -1,6 +1,6 @@
 ---
 name: ytb2bili-commands
-description: Complete command and flag reference for the ytb2bili CLI. Use when you need the exact syntax, subcommands, or flags of any ytb command (search, submit, chain, channel, queue, task, subtitle, cookies, auto, login, download, bcut, whisper, translate, tencent-tts, server, init, whoami).
+description: Complete command and flag reference for the ytb2bili CLI. Use when you need the exact syntax, subcommands, or flags of any ytb command (search, submit, chain, channel, queue, task, subtitle, cookies, yt-oauth, auto, login, download, bcut, whisper, translate, tencent-tts, server, init, whoami).
 ---
 
 # ytb2bili-commands
@@ -171,6 +171,20 @@ upload <bvid> <subtitle.srt> [--lang]   # 上传字幕到已发布视频（默�
 refresh   从 Chrome 刷新 YouTube cookies
 test      测试 cookies 是否有效
 ```
+
+### `yt-oauth <subcommand>`
+YouTube OAuth 授权（设备码流程）→ 拉取订阅频道 → 定时检测更新自动搬运。
+```
+login              发起设备码授权登录（浏览器打开 URL 输码）
+status             查看登录状态
+logout             清除凭证
+sync [--queue] [--lookback N]   拉取订阅频道（可选并入队最近 N 天新视频）
+watch [--interval 24h] [--once]  常驻定时检测 / 单次检测
+```
+> 前置：config.yaml `youtube_oauth.client_id/secret`（或环境变量
+> `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`）。OAuth 客户端**必须**是
+> **"TV and Limited Input devices"** 类型——Web/Desktop 类型设备码端点会拒绝
+> （`invalid_client`）。token 存 `data/yt_oauth_token.json`。
 
 ### `auto <keyword...>`
 ```
