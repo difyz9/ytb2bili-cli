@@ -96,6 +96,7 @@ type YTID struct {
 type Monitor struct {
 	subDir    string
 	videoDir  string
+	obsDir    string
 	subPath   string
 	videoPath string
 	mu        sync.Mutex
@@ -104,12 +105,15 @@ type Monitor struct {
 func NewMonitor(dataDir string) *Monitor {
 	subDir := filepath.Join(dataDir, "subscriptions")
 	videoDir := filepath.Join(dataDir, "monitored_videos")
+	obsDir := filepath.Join(dataDir, "observations")
 	os.MkdirAll(subDir, 0755)
 	os.MkdirAll(videoDir, 0755)
+	os.MkdirAll(obsDir, 0755)
 
 	return &Monitor{
 		subDir:    subDir,
 		videoDir:  videoDir,
+		obsDir:    obsDir,
 		subPath:   filepath.Join(subDir, "subscriptions.json"),
 		videoPath: filepath.Join(videoDir, "videos.json"),
 	}
@@ -351,6 +355,23 @@ func (m *Monitor) syncChannel(sub Subscription, lookbackDays int, callback func(
 	var feed YouTubeFeed
 	if err := xml.Unmarshal(body, &feed); err != nil {
 		return 0, fmt.Errorf("解析 RSS XML 失败: %w", err)
+	}
+
+	// 观测快照：记录本次 RSS 里所有视频的播放量（point-in-time，供 velocity 计算）
+	var obs []Observation
+	for _, e := range feed.Entries {
+		if id := m.extractVideoID(e); id != "" {
+			obs = append(obs, Observation{
+				VideoID:    id,
+				ChannelID:  sub.ChannelID,
+				Title:      e.Title,
+				Views:      e.MediaGroup.Community.Statistics.Views,
+				ObservedAt: time.Now(),
+			})
+		}
+	}
+	if err := m.RecordObservation(obs); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ 记录观测快照失败: %v\n", err)
 	}
 
 	cutoff := time.Now()
