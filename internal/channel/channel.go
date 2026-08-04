@@ -1,6 +1,8 @@
 package channel
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -43,6 +46,35 @@ func (s Subscription) feedURL() string {
 		return fmt.Sprintf("https://www.youtube.com/feeds/videos.xml?playlist_id=%s", s.ChannelID)
 	}
 	return fmt.Sprintf("https://www.youtube.com/feeds/videos.xml?channel_id=%s", s.ChannelID)
+}
+
+// ChannelURL 返回该订阅的频道主页 URL（供 yt-dlp 抓取）。
+func (s Subscription) ChannelURL() string {
+	if s.Type == "playlist" {
+		return fmt.Sprintf("https://www.youtube.com/playlist?list=%s", s.ChannelID)
+	}
+	return fmt.Sprintf("https://www.youtube.com/channel/%s", s.ChannelID)
+}
+
+// ResolveHandle 将 @handle 解析为 channel_id（用 yt-dlp 查询）。
+func ResolveHandle(ctx context.Context, handle string) (string, error) {
+	handle = strings.TrimPrefix(handle, "@")
+	url := "https://www.youtube.com/@" + handle
+	cmd := exec.CommandContext(ctx, "yt-dlp",
+		"--skip-download", "--no-warnings",
+		"--print", "%(channel_id)s",
+		url)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &bytes.Buffer{}
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("yt-dlp 解析 @%s 失败: %w", handle, err)
+	}
+	id := strings.TrimSpace(out.String())
+	if id == "" || !strings.HasPrefix(id, "UC") {
+		return "", fmt.Errorf("无法从 @%s 解析出有效频道 ID", handle)
+	}
+	return id, nil
 }
 
 // DiscoveredVideo 表示通过 RSS 发现的视频
