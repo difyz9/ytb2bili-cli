@@ -50,40 +50,61 @@ func newRootCmd() *cobra.Command {
 
 	root.PersistentFlags().String("config", "", "配置文件路径（默认 ./config.yaml 或 $YTB2BILI_CONFIG）")
 
+	// 命令分组（--help 按逻辑分区展示，不改命令可调用性）
+	root.AddGroup(
+		&cobra.Group{ID: "workflow", Title: "核心流程"},
+		&cobra.Group{ID: "subscribe", Title: "频道与订阅"},
+		&cobra.Group{ID: "steps", Title: "流水线步骤"},
+		&cobra.Group{ID: "bili", Title: "B站管理"},
+		&cobra.Group{ID: "system", Title: "系统与工具"},
+	)
+
 	// 注册子命令
 	root.AddCommand(
-		newInitCmd(),
-		newLoginCmd(),
-		newWhoamiCmd(),
-		newDownloadCmd(),
-		newBcutCmd(),
-		newWhisperCmd(),
-		newMetadataCmd(),
-		newTranslateCmd(),
-		newTencentTTSCmd(),
-		newChainCmd(),
-		newAudioSyncCmd(),
-		newSubmitCmd(),
-		newSearchCmd(),
-		newHistoryCmd(),
-		newChannelCmd(),
-		newQueueCmd(),
-		newTaskCmd(),
-		newSubtitleCmd(),
-		newCookiesCmd(),
-		newPublishCmd(),
-		newReviewCmd(),
-		newAutoCmd(),
-		newYtOAuthCmd(),
+		// 核心流程
+		group(newSubmitCmd(), "workflow"),
+		group(newAutoCmd(), "workflow"),
+		group(newSearchCmd(), "workflow"),
+		group(newQueueCmd(), "workflow"),
 
-		// server 类命令（server start/stop/restart/status/run）
-		newServerCmd(),
+		// 频道与订阅
+		group(newChannelCmd(), "subscribe"),
+		group(newYtOAuthCmd(), "subscribe"),
+		group(newCookiesCmd(), "subscribe"),
 
-		// 调试
-		newDebugCmd(),
+		// 流水线步骤
+		group(newDownloadCmd(), "steps"),
+		group(newBcutCmd(), "steps"),
+		group(newWhisperCmd(), "steps"),
+		group(newTranscribeCmd(), "steps"),
+		group(newMetadataCmd(), "steps"),
+		group(newTranslateCmd(), "steps"),
+		group(newTencentTTSCmd(), "steps"),
+		group(newAudioSyncCmd(), "steps"),
+
+		// B站管理
+		group(newLoginCmd(), "bili"),
+		group(newWhoamiCmd(), "bili"),
+		group(newPublishCmd(), "bili"),
+		group(newReviewCmd(), "bili"),
+		group(newSubtitleCmd(), "bili"),
+		group(newHistoryCmd(), "bili"),
+		group(newTaskCmd(), "bili"),
+
+		// 系统与工具
+		group(newInitCmd(), "system"),
+		group(newServerCmd(), "system"),
+		group(newChainCmd(), "system"),
+		group(newDebugCmd(), "system"),
 	)
 
 	return root
+}
+
+// group 设置命令所属分组（用于 --help 逻辑分区）。
+func group(c *cobra.Command, id string) *cobra.Command {
+	c.GroupID = id
+	return c
 }
 
 // resolveConfigPath 按优先级解析配置文件路径：

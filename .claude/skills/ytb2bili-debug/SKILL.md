@@ -45,7 +45,7 @@ The transcriber is chosen by `config.yaml` → `transcriber.provider` (`whisper`
 **Bcut ASR (cloud) failures:**
 - Check the audio file exists: `ls data/downloads/<videoID>/`
 - Bcut ASR may be rate-limited or unavailable; retry the single step:
-  `./ytb bcut <audio file>`
+  `./ytb transcribe --provider bcut <audio file>`
 - Long videos may exceed the ASR session — split audio or retry
 
 **whisper.cpp (local) failures:**
@@ -54,7 +54,8 @@ The transcriber is chosen by `config.yaml` → `transcriber.provider` (`whisper`
   `curl -L -o models/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin`
   (path set by `transcriber.whisper.model`)
 - `提取音频失败` → check ffmpeg is on PATH and the input file is decodable
-- Standalone single-step test: `./ytb whisper <audio/video file>`
+- Standalone single-step test: `./ytb transcribe --provider whisper <audio/video file>`
+  (旧 `./ytb bcut` / `./ytb whisper` 仍可直接调用，等价于带 `--provider` 的 transcribe)
 
 ### translate fails
 - **LLM API key missing/invalid**: verify `DEEPSEEK_API_KEY`, `./ytb --config` points at the right config
