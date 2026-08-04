@@ -1342,9 +1342,9 @@ func readChromePort(cfg *config.Config) int {
 
 // startChromeDebug 以远程调试模式启动 Chrome 并记录其 PID 与端口。
 // 已在运行则跳过；返回是否本次新启动。
-// 说明：macOS 上 `open -a` 在 Chrome 已运行时只会激活现有实例、忽略调试参数，
-// 因此这里直接执行 Chrome 二进制，并用独立 --user-data-dir 启动一个单独的调试实例，
+// 说明：直接执行 Chrome 二进制，并用独立 --user-data-dir 启动一个单独的调试实例，
 // 与用户日常的 Chrome 互不干扰，且能独立启停。端口用 FindAvailablePort 自动避开占用。
+// 支持平台: macOS（/Applications/...）、Linux（google-chrome / chromium 等）。
 func startChromeDebug(cfg *config.Config) (started bool, err error) {
 	dataDir := cfg.DataDir
 	// 已在运行（pid 文件 + 进程存活）则跳过
@@ -1356,12 +1356,9 @@ func startChromeDebug(cfg *config.Config) (started bool, err error) {
 		}
 	}
 
-	if runtime.GOOS != "darwin" {
-		return false, fmt.Errorf("Chrome 调试进程管理目前仅支持 macOS")
-	}
-	chromeBin := "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-	if _, statErr := os.Stat(chromeBin); statErr != nil {
-		return false, fmt.Errorf("未找到 Chrome: %s", chromeBin)
+	chromeBin, err := findChromeBinary()
+	if err != nil {
+		return false, err
 	}
 	port := cdp.FindAvailablePort(cfg.EffectiveChromeDebugPort())
 	profileDir, _ := filepath.Abs(filepath.Join(dataDir, "chrome-profile"))
@@ -1376,6 +1373,42 @@ func startChromeDebug(cfg *config.Config) (started bool, err error) {
 	os.WriteFile(chromePidFile(dataDir), []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
 	os.WriteFile(chromePortFile(dataDir), []byte(fmt.Sprintf("%d", port)), 0644)
 	return true, nil
+}
+
+// findChromeBinary 查找本机 Chrome/Chromium 可执行文件路径。
+// 按平台顺序探测：macOS 固定路径 → Linux 常见命令/路径 → Windows 常见路径。
+func findChromeBinary() (string, error) {
+	candidates := []string{}
+	switch runtime.GOOS {
+	case "darwin":
+		candidates = []string{"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
+	case "windows":
+		candidates = []string{
+			`C:\Program Files\Google\Chrome\Application\chrome.exe`,
+			`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
+			`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
+		}
+	default: // linux 及类 unix
+		candidates = []string{
+			"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
+			"/usr/bin/google-chrome",
+			"/usr/bin/google-chrome-stable",
+			"/usr/bin/chromium",
+			"/usr/bin/chromium-browser",
+			"/snap/bin/chromium",
+			"/opt/google/chrome/chrome",
+		}
+	}
+	for _, c := range candidates {
+		if strings.Contains(c, "/") {
+			if _, err := os.Stat(c); err == nil {
+				return c, nil
+			}
+		} else if p, err := exec.LookPath(c); err == nil {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("未找到 Chrome/Chromium，请安装 Chrome 或 Chromium 浏览器")
 }
 
 // stopChromeDebug 停止 Chrome 调试进程并清理 pid/port 文件。
