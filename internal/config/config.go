@@ -90,6 +90,44 @@ type TTSConfig struct {
 	PrimaryLanguage int     `yaml:"primary_language"`
 	SampleRate      int64   `yaml:"sample_rate"`
 	Codec           string  `yaml:"codec"`
+	// Index 本地 IndexTTS 服务配置（provider=index 时生效）
+	Index *IndexTTSConfig `yaml:"index"`
+}
+
+// IndexTTSConfig 本地 IndexTTS2 HTTP 服务参数
+type IndexTTSConfig struct {
+	// APIURL IndexTTS2 服务地址（默认 http://localhost:18765）
+	APIURL string `yaml:"api_url"`
+	// Emotion 情感预设：default/happy/angry/sad/excited 等（默认 default）
+	Emotion string `yaml:"emotion"`
+	// EmotionAlpha 情感强度 0-1（默认 0.6）
+	EmotionAlpha float64 `yaml:"emotion_alpha"`
+	// RefAudio 参考音频路径（服务端可见路径，用于语音克隆音色）
+	RefAudio string `yaml:"ref_audio"`
+	// UseEmoText 是否使用文本情感描述（默认 false）
+	UseEmoText bool `yaml:"use_emo_text"`
+	// EmoText 文本情感描述（use_emo_text=true 时生效）
+	EmoText string `yaml:"emo_text"`
+	// Concurrency 并发合成数（默认 1）
+	Concurrency int `yaml:"concurrency"`
+	// Retries 失败重试次数（默认 3）
+	Retries int `yaml:"retries"`
+	// Timeout 单条请求超时秒数（默认 180）
+	Timeout float64 `yaml:"timeout"`
+	// ServerOutputDir 服务端输出目录（synthesize_srt.py 中转用，一般无需修改）
+	ServerOutputDir string `yaml:"server_output_dir"`
+}
+
+// DefaultIndexTTSConfig 返回 IndexTTS 默认配置
+func DefaultIndexTTSConfig() *IndexTTSConfig {
+	return &IndexTTSConfig{
+		APIURL:       "http://localhost:18765",
+		Emotion:      "default",
+		EmotionAlpha: 0.6,
+		Concurrency:  1,
+		Retries:      3,
+		Timeout:      180,
+	}
 }
 
 // ConcurrentConfig 并发处理配置
@@ -113,6 +151,7 @@ func Default() *Config {
 			PrimaryLanguage: 1,
 			SampleRate:      16000,
 			Codec:           "mp3",
+			Index:           DefaultIndexTTSConfig(),
 		},
 		Concurrent: &ConcurrentConfig{
 			MaxWorkers: 5,

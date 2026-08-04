@@ -247,17 +247,63 @@ func (s *ttsStep) runTencent(ctx context.Context, state *PipelineState, audioDir
 	return nil
 }
 
-// runIndexTTS 回退到本地 IndexTTS 服务合成（需要 .venv/bin/python3 + IndexTTS2 API）。
+// runIndexTTS 使用本地 IndexTTS 服务合成（需要 .venv/bin/python3 + IndexTTS2 HTTP API）。
+// 服务地址与合成参数从配置 tts.index 读取，未配置时使用默认值 http://localhost:18765。
 func (s *ttsStep) runIndexTTS(ctx context.Context, state *PipelineState, audioDir string) error {
 	script := filepath.Join("skills", "audio-video-sync", "scripts", "synthesize_srt.py")
-	cmd := exec.CommandContext(ctx, filepath.Join(s.config.DataDir, "..", ".venv", "bin", "python3"), script,
+
+	// 从配置读取 IndexTTS 服务参数（缺失时用默认值兜底）
+	idxCfg := config.DefaultIndexTTSConfig()
+	if s.config != nil && s.config.TTS != nil && s.config.TTS.Index != nil {
+		idxCfg = s.config.TTS.Index
+	}
+	apiURL := strings.TrimSpace(idxCfg.APIURL)
+	if apiURL == "" {
+		apiURL = "http://localhost:18765"
+	}
+	emotion := strings.TrimSpace(idxCfg.Emotion)
+	if emotion == "" {
+		emotion = "default"
+	}
+	concurrency := idxCfg.Concurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	retries := idxCfg.Retries
+	if retries < 0 {
+		retries = 3
+	}
+	timeout := idxCfg.Timeout
+	if timeout <= 0 {
+		timeout = 180
+	}
+
+	args := []string{
+		script,
 		"--srt", state.Result.SubtitlePath,
 		"--output-dir", audioDir,
-		"--api-url", "http://localhost:18765",
-		"--concurrency", "1",
-		"--retries", "3",
-		"--timeout", "180",
-	)
+		"--api-url", apiURL,
+		"--concurrency", fmt.Sprintf("%d", concurrency),
+		"--retries", fmt.Sprintf("%d", retries),
+		"--timeout", fmt.Sprintf("%.0f", timeout),
+		"--emotion", emotion,
+		"--emo-alpha", fmt.Sprintf("%.2f", idxCfg.EmotionAlpha),
+	}
+	if idxCfg.RefAudio != "" {
+		args = append(args, "--ref-audio", idxCfg.RefAudio)
+	}
+	if idxCfg.UseEmoText {
+		args = append(args, "--use-emo-text")
+	}
+	if idxCfg.EmoText != "" {
+		args = append(args, "--emo-text", idxCfg.EmoText)
+	}
+	if idxCfg.ServerOutputDir != "" {
+		args = append(args, "--server-output-dir", idxCfg.ServerOutputDir)
+	}
+
+	fmt.Printf("  🎙 使用本地 IndexTTS 合成分段配音 (%s)\n", apiURL)
+	cmd := exec.CommandContext(ctx, filepath.Join(s.config.DataDir, "..", ".venv", "bin", "python3"), args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("TTS 合成失败: %w\n输出: %s", err, string(output))

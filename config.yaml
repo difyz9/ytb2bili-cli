@@ -17,12 +17,23 @@ tencent_cloud:
 # TTS 音频参数
 tts:
   provider: "tencent"       # 合成器: tencent(腾讯云) / index(本地IndexTTS) / 空=自动检测
-  voice_type: 502005        # 音色：101008-智琪(女声), 101007-智慧(女声), 101003-智云(男声)
+  voice_type: 502005        # 腾讯云音色：101008-智琪(女声), 101007-智慧(女声), 101003-智云(男声)
   volume: 5                 # 音量：0-10
   speed: 1.0                # 语速：0.6-1.5
   primary_language: 1       # 主语言：1-中文，2-英文
   sample_rate: 16000        # 采样率
   codec: "mp3"              # 编码格式
+  # 本地 IndexTTS2 服务配置（provider: "index" 时生效）
+  index:
+    api_url: "http://localhost:18765"   # IndexTTS2 HTTP 服务地址
+    emotion: "default"                  # 情感预设: default/happy/angry/sad/excited
+    emotion_alpha: 0.6                  # 情感强度 0-1
+    ref_audio: ""                       # 参考音频路径（服务端可见，用于语音克隆音色）
+    use_emo_text: false                 # 是否使用文本情感描述
+    emo_text: ""                        # 文本情感描述（use_emo_text=true 时生效）
+    concurrency: 1                      # 并发合成数
+    retries: 3                          # 失败重试次数
+    timeout: 180                        # 单条请求超时秒数
 
 # 并发处理配置
 concurrent:
