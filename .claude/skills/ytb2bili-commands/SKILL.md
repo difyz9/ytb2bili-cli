@@ -1,6 +1,6 @@
 ---
 name: ytb2bili-commands
-description: Complete command and flag reference for the ytb2bili CLI. Use when you need the exact syntax, subcommands, or flags of any ytb command (search, submit, chain, channel, queue, task, subtitle, cookies, yt-oauth, auto, login, download, bcut, whisper, translate, tencent-tts, server, init, whoami).
+description: Complete command and flag reference for the ytb2bili CLI. Use when you need the exact syntax, subcommands, or flags of any ytb command (search, submit, chain, channel, queue, task, subtitle, cookies, auto, login, download, transcribe, translate, tts, server, init, whoami).
 ---
 
 # ytb2bili-commands
@@ -120,19 +120,24 @@ list                         列出所有可用步骤
 > 幂等续跑：`submit <videoId>` 会跳过所有已有产物步骤（download/transcribe/translate/tts/audio-sync），只做 metadata+upload。
 
 ### `channel`
+频道/订阅管理的唯一入口（含 OAuth 授权）。
 ```
-add [--title name] [--lookback N] <channel_id>
-list
-remove <channel_id>
-sync [--lookback N] [--queue]
-videos
+add [--title name] [--lookback N] <channel_id>   手动添加频道/播放列表
+import                                           从 YouTube 账号导入订阅（OAuth）
+login / status / logout                          授权登录 / 状态 / 清除凭证
+list / remove <channel_id>
+sync [--lookback N] [--queue]                    同步 RSS，可入队
+watch [--interval 24h] [--once]                  常驻定时检测（自动入队）
+videos [--top N] [--status new]                  发现的视频（按表现分排序）
 rank [--window N] [--top N] [--prune-below N] [--keywords "ai,go"]
 ```
 `add` 支持频道(`UC...`)与播放列表(`PL...`)，自动识别类型并获取名称；添加后按
 `--lookback`（默认 7 天，`0`=不限）同步并自动将新视频加入任务队列（队列与历史双重去重）。
-`sync --lookback` 默认 7 天；`--queue` 自动将新视频加入处理队列。
+`import` 只导入频道不入队；`sync --queue` 是唯一入队入口，`watch` 为常驻版。
 `rank` 按 ytsubs 式基线评分（活跃度/基线触达/基线健康/播放稳定/内容契合，仅 RSS 无需 OAuth），
 评分缓存 `data/channel_scores.json`；`--prune-below N` 移除低于 N 分的频道。
+`videos` 按"播放量 vs 频道基线"的表现分排序，播放量取观测快照
+（`data/observations/`，需先跑过 `channel sync` 才有真实数据）。
 
 ### `queue`
 ```
@@ -188,19 +193,20 @@ refresh   从 Chrome 刷新 YouTube cookies
 test      测试 cookies 是否有效
 ```
 
-### `yt-oauth <subcommand>`
-YouTube OAuth 授权（设备码流程）→ 拉取订阅频道 → 定时检测更新自动搬运。
+### `channel` OAuth 子命令（授权与导入）
+YouTube OAuth 授权（设备码流程）与订阅导入，已并入 `channel` 家族。
 ```
-login              发起设备码授权登录（浏览器打开 URL 输码）
-status             查看登录状态
-logout             清除凭证
-sync [--queue] [--lookback N]   拉取订阅频道（可选并入队最近 N 天新视频）
-watch [--interval 24h] [--once]  常驻定时检测 / 单次检测
+channel login           发起设备码授权登录（浏览器打开 URL 输码）
+channel status          查看授权状态
+channel logout          清除凭证
+channel import          从 YouTube 账号导入订阅频道（只导入，不入队）
+channel watch [--interval 24h] [--once]   常驻定时检测 / 单次检测（自动入队）
 ```
 > 前置：config.yaml `youtube_oauth.client_id/secret`（或环境变量
 > `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`）。OAuth 客户端**必须**是
 > **"TV and Limited Input devices"** 类型——Web/Desktop 类型设备码端点会拒绝
 > （`invalid_client`）。token 存 `data/yt_oauth_token.json`。
+> 导入后入队请用 `channel sync --queue`。
 
 ### `auto <keyword...>`
 ```
@@ -247,7 +253,7 @@ watch [--interval 24h] [--once]  常驻定时检测 / 单次检测
 --target-lang string   目标语言（默认读取配置）
 ```
 
-### `tencent-tts <input.srt>`
+### `tts <input.srt>`（旧名 `tencent-tts` 仍可用）
 ```
 --output string      音频输出目录 (默认 <srt_dir>/voice)
 --concurrency int    并发合成数 (default 3)

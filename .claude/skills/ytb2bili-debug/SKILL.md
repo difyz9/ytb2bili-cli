@@ -72,7 +72,7 @@ Symptoms:
 - `fork/exec .venv/bin/python3: no such file or directory` → `tts.provider` is `index` (or auto fell back) but `.venv` is missing. Set `tts.provider: tencent` in config.yaml.
 - `TENCENTCLOUD_SECRET_ID 未设置` → forced Tencent but credentials missing; set `tencent_cloud.secret_id/secret_key` in config.yaml or env.
 - Tencent TTS API errors → check the secret/region; per-cue failures fail the step (missing clips break audio-sync).
-- Standalone single-step test: `./ytb tencent-tts <input.srt>` (writes `1.mp3`, `2.mp3`, …)
+- Standalone single-step test: `./ytb tts <input.srt>` (writes `1.mp3`, `2.mp3`, …; 旧名 `tencent-tts` 仍可用)
 
 ### audio-sync (音画同步) fails
 The audio-sync step runs `skills/audio-video-sync/scripts/audio_processor_v2.py`

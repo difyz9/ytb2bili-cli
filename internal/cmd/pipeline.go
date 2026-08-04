@@ -682,14 +682,84 @@ func newChannelCmd() *cobra.Command {
 
 	videosCmd := &cobra.Command{
 		Use:   "videos",
-		Short: "查看发现的视频",
+		Short: "查看发现的视频（按相对频道基线的表现评分排序）",
+		Long: `列出监控频道发现的视频，并按"播放量 vs 频道基线"的表现分排序（ytsubs nowcast 思路）。
+表现分 = 视频播放量 / 频道基线（来自 channel rank 的 channel_scores.json，缺省用全部视频中位数参照）。
+
+示例:
+  ytb channel videos                # 全部，按表现分排序
+  ytb channel videos --top 30       # 只看表现最好的 30 个
+  ytb channel videos --status new   # 只看待处理`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
+			top, _ := cmd.Flags().GetInt("top")
+			statusFilter, _ := cmd.Flags().GetString("status")
 			monitor := channel.NewMonitor(cfg.DataDir)
-			fmt.Print(renderDiscoveredVideos(monitor.DiscoveredVideos()))
+
+			videos := monitor.DiscoveredVideos()
+			if statusFilter != "" {
+				filtered := videos[:0]
+				for _, v := range videos {
+					if v.Status == statusFilter {
+						filtered = append(filtered, v)
+					}
+				}
+				videos = filtered
+			}
+			if len(videos) == 0 {
+				fmt.Println("📭 暂无发现视频")
+				return nil
+			}
+
+			baselines := loadChannelBaselines(cfg.DataDir)
+			// 播放量优先取观测快照（最新一次），否则用发现时记录的 Views
+			obsViews := channel.LatestObservationViews(cfg.DataDir)
+
+			// 候选集中位数作缺省参照
+			var views []float64
+			for _, v := range videos {
+				views = append(views, float64(effectiveViews(v.Views, obsViews[v.VideoID])))
+			}
+			ref := medianFloats(views)
+
+			// 计算表现分并按分数降序
+			type scored struct {
+				channel.DiscoveredVideo
+				Views int
+				Score float64
+			}
+			scoredList := make([]scored, 0, len(videos))
+			for _, v := range videos {
+				vv := effectiveViews(v.Views, obsViews[v.VideoID])
+				base := baselines[v.ChannelID]
+				if base <= 0 {
+					base = ref
+				}
+				ratio := 0.0
+				if base > 0 {
+					ratio = float64(vv+1) / base
+				}
+				scoredList = append(scoredList, scored{DiscoveredVideo: v, Views: vv, Score: ratio})
+			}
+			sort.Slice(scoredList, func(i, j int) bool { return scoredList[i].Score > scoredList[j].Score })
+
+			if top > 0 && len(scoredList) > top {
+				scoredList = scoredList[:top]
+			}
+
+			fmt.Printf("📺 共 %d 个发现视频（按表现分排序）:\n\n", len(scoredList))
+			for _, s := range scoredList {
+				fmt.Printf("  [%s] 表现 %5.1fx 播放 %7d | %s\n",
+					s.Status, s.Score, s.Views, s.Title)
+				fmt.Printf("    ID:   %s\n", s.VideoID)
+				fmt.Printf("    链接: %s\n", s.URL)
+				fmt.Printf("    发布: %s\n\n", truncateTime(s.PublishedAt))
+			}
 			return nil
 		},
 	}
+	videosCmd.Flags().Int("top", 0, "只显示前 N 个（0=全部）")
+	videosCmd.Flags().String("status", "", "按状态过滤: new/queued/submitted/skipped")
 
 	rankCmd := &cobra.Command{
 		Use:   "rank",
@@ -796,7 +866,11 @@ func newChannelCmd() *cobra.Command {
 	rankCmd.Flags().Float64("prune-below", 0, "移除低于此分数的频道（0=不修剪）")
 	rankCmd.Flags().String("keywords", "", "内容契合关键词（逗号分隔，空=中性）")
 
-	ch.AddCommand(addCmd, listCmd, removeCmd, syncCmd, videosCmd, rankCmd)
+	ch.AddCommand(
+		addCmd, listCmd, removeCmd, syncCmd, videosCmd, rankCmd,
+		newChannelImportCmd(), newChannelWatchCmd(),
+		newChannelLoginCmd(), newChannelStatusCmd(), newChannelLogoutCmd(),
+	)
 	return ch
 }
 
@@ -1270,6 +1344,28 @@ func loadChannelBaselines(dataDir string) map[string]float64 {
 		baselines[s.ChannelID] = s.Baseline
 	}
 	return baselines
+}
+
+// effectiveViews 返回视频播放量：观测快照有值优先，否则用发现时记录的 Views。
+func effectiveViews(stored int, observed int) int {
+	if observed > 0 {
+		return observed
+	}
+	return stored
+}
+
+// medianFloats 计算 []float64 的中位数。
+func medianFloats(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), xs...)
+	sort.Float64s(sorted)
+	n := len(sorted)
+	if n%2 == 1 {
+		return sorted[n/2]
+	}
+	return (sorted[n/2-1] + sorted[n/2]) / 2
 }
 
 // processSingle 处理单个视频的完整流水线（auto --submit 内部使用）

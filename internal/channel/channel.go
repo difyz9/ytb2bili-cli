@@ -53,7 +53,8 @@ type DiscoveredVideo struct {
 	URL          string `json:"url"`
 	PublishedAt  string `json:"published_at"`
 	DiscoveredAt string `json:"discovered_at"`
-	Status       string `json:"status"` // new / queued / submitted / skipped
+	Views        int    `json:"views,omitempty"` // 发现时播放量（来自 RSS media:statistics）
+	Status       string `json:"status"`          // new / queued / submitted / skipped
 }
 
 // YouTubeFeed RSS feed 结构
@@ -416,6 +417,7 @@ func (m *Monitor) syncChannel(sub Subscription, lookbackDays int, callback func(
 			URL:          fmt.Sprintf("https://www.youtube.com/watch?v=%s", videoID),
 			PublishedAt:  publishedAt.Format(time.RFC3339),
 			DiscoveredAt: time.Now().Format(time.RFC3339),
+			Views:        entry.MediaGroup.Community.Statistics.Views,
 			Status:       "new",
 		}
 

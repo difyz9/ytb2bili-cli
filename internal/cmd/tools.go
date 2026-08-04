@@ -476,12 +476,13 @@ func newTranslateCmd() *cobra.Command {
 
 func newTencentTTSCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "tencent-tts <input.srt>",
-		Aliases: []string{"tts"},
-		Short:   "腾讯云 TTS 语音合成",
-		Long: `读取 SRT 字幕文件，逐条调用腾讯云 TTS 生成 MP3 音频。
+		Use:     "tts <input.srt>",
+		Aliases: []string{"tencent-tts"}, // 旧名保留可用
+		Short:   "按字幕合成分段配音（默认腾讯云 TTS）",
+		Long: `读取 SRT 字幕文件，逐条合成分段配音 MP3。
 按字幕序号命名输出（1.mp3, 2.mp3, ...），供 audio-sync 步骤使用。
 
+合成器由 config 的 tts.provider 控制（tencent / index）。
 环境变量:
   TENCENTCLOUD_SECRET_ID    腾讯云 API 密钥 ID
   TENCENTCLOUD_SECRET_KEY   腾讯云 API 密钥 Key`,
