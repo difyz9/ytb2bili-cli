@@ -14,6 +14,13 @@ tencent_cloud:
   secret_key: "37zkMlz30pSvC4pNiqlTSxSr7B86zhFa"
   region: "ap-beijing"
 
+# YouTube OAuth 授权配置（ytb yt-oauth login 使用）
+# 在 Google Cloud Console → APIs & Services → Credentials 创建 OAuth 2.0 客户端
+# 应用类型选 "桌面应用" 或 "TV and Limited Input devices"（支持设备码流程）
+youtube_oauth:
+  client_id: ""       # 你的 Google OAuth Client ID
+  client_secret: ""   # 你的 Google OAuth Client Secret
+
 # TTS 音频参数
 tts:
   provider: "tencent"       # 合成器: tencent(腾讯云) / index(本地IndexTTS) / 空=自动检测
