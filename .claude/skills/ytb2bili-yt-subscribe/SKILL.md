@@ -18,11 +18,14 @@ description: YouTube OAuth 授权登录 → 拉取订阅频道 → 定时检测�
 
 ### 1. 创建 Google OAuth 凭证
 
-1. 打开 [Google Cloud Console](https://console.cloud.google.com/)
+1. 打开 [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials)
 2. 创建项目（或选择已有项目）
 3. **APIs & Services → Library**：启用 **YouTube Data API v3**
-4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**
-5. 应用类型选 **"TV and Limited Input devices"**（支持设备码流程，无需回调地址）
+4. **Create Credentials → OAuth client ID**
+5. 应用类型选 **"TV and Limited Input devices"**（设备码流程专用，无需回调地址）
+   ⚠️ 注意：**不是 Desktop，也不是 Web**——Web 类型客户端调用设备码端点会返回
+   `invalid_client: Only clients of type 'TVs and Limited Input devices' can use the OAuth 2.0 flow`，
+   即 `ytb yt-oauth login` 报「设备码请求被拒绝 [invalid_client]」。
 6. 创建后把 Client ID / Client Secret 填入 `config.yaml`：
 
 ```yaml
@@ -153,6 +156,7 @@ download（下载） → transcribe（转录） → translate（翻译）
 | 问题 | 解决 |
 |------|------|
 | `client_id 未配置` | 在 config.yaml 填 `youtube_oauth.client_id/secret` |
+| `设备码请求被拒绝 [invalid_client]` | OAuth 客户端类型不对——设备码流程只能用 **"TV and Limited Input devices"** 类型，Web/Desktop 都会拒绝（见上文创建步骤） |
 | `设备码响应为空` | client_id 错误，或未启用 YouTube Data API v3 |
 | `token 已过期且刷新失败` | 重新 `ytb yt-oauth login` |
 | `没有活跃的频道订阅` | 先 `ytb yt-oauth sync` 拉取，或 `ytb channel add` |

@@ -216,6 +216,57 @@ translation_target_lang: zh-Hans
 也可通过 `YTB2BILI_TRANSLATION_TARGET_LANG` 覆盖配置。命令行
 `--target-lang` 和 HTTP 请求的 `targetLang` 优先级最高。
 
+### YouTube 订阅自动搬运（OAuth 授权）
+
+`ytb yt-oauth` 通过 Google OAuth 设备码流程授权 YouTube 账号，拉取订阅频道并定时搬运到 B站。
+
+#### 1. 创建 Google OAuth 凭证
+
+1. 打开 [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials)
+2. 创建项目（或选择已有项目）
+3. **APIs & Services → Library**：启用 **YouTube Data API v3**
+4. **Create Credentials → OAuth client ID**
+5. 应用类型选 **"TV and Limited Input devices"**（设备码流程专用，无需回调地址）
+
+   ⚠️ 注意：**不是 Desktop，也不是 Web**。Web 类型客户端调用设备码端点会返回
+   `invalid_client: Only clients of type 'TVs and Limited Input devices' can use the OAuth 2.0 flow`，
+   对应 `ytb yt-oauth login` 报「设备码请求被拒绝 [invalid_client]」。
+
+6. 创建后把 Client ID / Client Secret 填入 `config.yaml`：
+
+```yaml
+youtube_oauth:
+  client_id: "xxxx.apps.googleusercontent.com"
+  client_secret: "GOCSPX-xxxx"
+```
+
+或环境变量：`GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`
+
+#### 2. 授权并拉取订阅
+
+```bash
+# 发起设备码授权（浏览器打开打印的 URL，输入授权码）
+y2b yt-oauth login
+
+# 查看登录状态
+y2b yt-oauth status
+
+# 拉取订阅频道，并同步最近 14 天新视频自动入队
+y2b yt-oauth sync --queue --lookback 14
+```
+
+#### 3. 定时检测更新（自动搬运）
+
+```bash
+# 每 24 小时检测一次订阅频道更新，新视频自动入队（推荐常驻）
+y2b yt-oauth watch --interval 24h
+
+# 或配合 cron 只检测一次：y2b yt-oauth watch --once
+# 消费队列执行完整搬运流水线：y2b queue work
+```
+
+完整流程见 `ytb2bili-yt-subscribe` skill。
+
 ### 使用
 
 ```bash
