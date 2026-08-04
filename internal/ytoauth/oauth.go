@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -156,11 +157,24 @@ func StartDeviceFlow(ctx context.Context, cfg Config) (*DeviceCodeResponse, erro
 	}
 	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(resp.Body)
 	var result DeviceCodeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("解析设备码响应失败: %w", err)
 	}
 	if result.DeviceCode == "" {
+		// Google 设备码端点只允许 "TV and Limited Input devices" 类型客户端，
+		// 其他类型会返回 error 响应——把真实原因浮出来而不是笼统报"响应为空"。
+		var apiErr struct {
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description"`
+		}
+		if json.Unmarshal(body, &apiErr) == nil && apiErr.Error != "" {
+			if apiErr.ErrorDescription != "" {
+				return nil, fmt.Errorf("设备码请求被拒绝 [%s]: %s", apiErr.Error, apiErr.ErrorDescription)
+			}
+			return nil, fmt.Errorf("设备码请求被拒绝: %s", apiErr.Error)
+		}
 		return nil, errors.New("设备码响应为空（请检查 client_id 是否正确）")
 	}
 	return &result, nil

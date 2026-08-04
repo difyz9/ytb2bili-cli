@@ -18,8 +18,8 @@ tencent_cloud:
 # 在 Google Cloud Console → APIs & Services → Credentials 创建 OAuth 2.0 客户端
 # 应用类型选 "桌面应用" 或 "TV and Limited Input devices"（支持设备码流程）
 youtube_oauth:
-  client_id: "1008031090416-vkn3b492hiilt9tpci19nmkhankfsuac.apps.googleusercontent.com"       # 你的 Google OAuth Client ID
-  client_secret: "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"   # 你的 Google OAuth Client Secret
+  client_id: "1008031090416-4ddm2v3t8n3hh1dvksoeds009p4phpk3.apps.googleusercontent.com"       # 你的 Google OAuth Client ID
+  client_secret: "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"   # 你的 Google OAuth Client Secret
 
 # TTS 音频参数
 tts:
