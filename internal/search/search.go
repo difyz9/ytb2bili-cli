@@ -803,6 +803,7 @@ const (
 	ScorerPopular  ScorerType = "popular"  // 播放量优先（默认）
 	ScorerFresh    ScorerType = "fresh"    // 时效优先
 	ScorerBalanced ScorerType = "balanced" // 均衡评分
+	ScorerNowcast  ScorerType = "nowcast"  // ytsubs nowcast：播放 vs 频道基线，捕捉超常/起势视频
 )
 
 // ScoredVideo 带评分的视频
@@ -812,6 +813,8 @@ type ScoredVideo struct {
 	ViewScore     float64 `json:"view_score"`
 	RecencyScore  float64 `json:"recency_score"`
 	DurationScore float64 `json:"duration_score"`
+	NowcastScore  float64 `json:"nowcast_score,omitempty"` // 播放 vs 频道基线
+	VelocityScore float64 `json:"velocity_score,omitempty"` // 播放速率 vs 期望斜率（起势）
 }
 
 // ScoreVideos 对视频列表进行多维评分并排序
@@ -833,47 +836,12 @@ func ScoreVideos(videos []Video, scorer ScorerType) []ScoredVideo {
 	scored := make([]ScoredVideo, 0, len(videos))
 
 	for _, v := range videos {
-		sv := ScoredVideo{Video: v}
-
-		// 播放量评分（对数归一化，防止极值倾斜）
-		if maxLogViews > 0 {
-			sv.ViewScore = math.Log(float64(v.ViewCount+1)) / maxLogViews
-		}
-
-		// 新鲜度评分
-		pubTime := parsePublishedTime(v.PublishTime, now)
-		if !pubTime.IsZero() {
-			daysAgo := now.Sub(pubTime).Hours() / 24
-			switch {
-			case daysAgo <= 1:
-				sv.RecencyScore = 1.0
-			case daysAgo <= 7:
-				sv.RecencyScore = 1.0 - (daysAgo-1)*0.5/6
-			case daysAgo <= 30:
-				sv.RecencyScore = 0.5 - (daysAgo-7)*0.4/23
-			case daysAgo <= 90:
-				sv.RecencyScore = 0.1 - max(daysAgo-30, 0)*0.1/60
-			default:
-				sv.RecencyScore = 0
-			}
-		} else {
-			sv.RecencyScore = 0.5 // 无法解析时给默认值
-		}
-
-		// 时长评分（10-30 分钟为最佳）
-		switch {
-		case v.DurationSec <= 0:
-			sv.DurationScore = 0.5
-		case v.DurationSec < 120:
-			sv.DurationScore = 0.1 // < 2 分钟，太短
-		case v.DurationSec <= 600:
-			sv.DurationScore = 0.5 // 2-10 分钟
-		case v.DurationSec <= 1800:
-			sv.DurationScore = 1.0 // 10-30 分钟，最佳区间
-		case v.DurationSec <= 3600:
-			sv.DurationScore = 0.7 // 30-60 分钟
-		default:
-			sv.DurationScore = 0.3 // > 60 分钟，太长
+		viewScore, recencyScore, durationScore := videoBaseScores(v, maxLogViews, now)
+		sv := ScoredVideo{
+			Video:         v,
+			ViewScore:     viewScore,
+			RecencyScore:  recencyScore,
+			DurationScore: durationScore,
 		}
 
 		// 按评分策略计算综合得分
@@ -897,6 +865,137 @@ func ScoreVideos(videos []Video, scorer ScorerType) []ScoredVideo {
 	})
 
 	return scored
+}
+
+// videoBaseScores 计算播放量/新鲜度/时长三个基础分。
+func videoBaseScores(v Video, maxLogViews float64, now time.Time) (viewScore, recencyScore, durationScore float64) {
+	// 播放量评分（对数归一化，防止极值倾斜）
+	if maxLogViews > 0 {
+		viewScore = math.Log(float64(v.ViewCount+1)) / maxLogViews
+	}
+
+	// 新鲜度评分
+	pubTime := parsePublishedTime(v.PublishTime, now)
+	if !pubTime.IsZero() {
+		daysAgo := now.Sub(pubTime).Hours() / 24
+		switch {
+		case daysAgo <= 1:
+			recencyScore = 1.0
+		case daysAgo <= 7:
+			recencyScore = 1.0 - (daysAgo-1)*0.5/6
+		case daysAgo <= 30:
+			recencyScore = 0.5 - (daysAgo-7)*0.4/23
+		case daysAgo <= 90:
+			recencyScore = 0.1 - math.Max(daysAgo-30, 0)*0.1/60
+		default:
+			recencyScore = 0
+		}
+	} else {
+		recencyScore = 0.5 // 无法解析时给默认值
+	}
+
+	// 时长评分（10-30 分钟为最佳）
+	switch {
+	case v.DurationSec <= 0:
+		durationScore = 0.5
+	case v.DurationSec < 120:
+		durationScore = 0.1 // < 2 分钟，太短
+	case v.DurationSec <= 600:
+		durationScore = 0.5 // 2-10 分钟
+	case v.DurationSec <= 1800:
+		durationScore = 1.0 // 10-30 分钟，最佳区间
+	case v.DurationSec <= 3600:
+		durationScore = 0.7 // 30-60 分钟
+	default:
+		durationScore = 0.3 // > 60 分钟，太长
+	}
+	return viewScore, recencyScore, durationScore
+}
+
+// ScoreVideosNowcast 按 ytsubs nowcast 哲学评分：
+// 把单视频播放量与其所属频道的基线（baseline，来自 channel rank 的 channel_scores.json）比较，
+// 挑出"超出频道常态"和"正在起势"的视频。
+// baselines: map[channelID]baseline；频道缺失时退化为纯播放/时效评分。
+func ScoreVideosNowcast(videos []Video, baselines map[string]float64) []ScoredVideo {
+	if len(videos) == 0 {
+		return nil
+	}
+	var maxViews int64
+	for _, v := range videos {
+		if v.ViewCount > maxViews {
+			maxViews = v.ViewCount
+		}
+	}
+	maxLogViews := math.Log(float64(maxViews + 1))
+	now := time.Now()
+	scored := make([]ScoredVideo, 0, len(videos))
+
+	// 候选集播放量中位数作为"频道基线缺失"时的参照（搜索返回的多非订阅频道）
+	var viewCounts []float64
+	for _, v := range videos {
+		viewCounts = append(viewCounts, float64(v.ViewCount))
+	}
+	setReference := medianF(viewCounts)
+
+	for _, v := range videos {
+		viewScore, recencyScore, durationScore := videoBaseScores(v, maxLogViews, now)
+		baseline := baselines[v.ChannelID]
+		if baseline <= 0 {
+			baseline = setReference // 无频道基线 → 用候选集参照
+		}
+		nowcastScore, velocityScore := nowcastComponents(v, baseline, recencyScore, now)
+		sv := ScoredVideo{
+			Video:         v,
+			ViewScore:     viewScore,
+			RecencyScore:  recencyScore,
+			DurationScore: durationScore,
+			NowcastScore:  nowcastScore,
+			VelocityScore: velocityScore,
+		}
+		// Nowcast vs Expected 55% / Velocity 25% / 播放规模 15% / 时长 5%
+		sv.Score = nowcastScore*0.55 + velocityScore*0.25 + viewScore*0.15 + durationScore*0.05
+		scored = append(scored, sv)
+	}
+
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].Score > scored[j].Score
+	})
+	return scored
+}
+
+// medianF 计算 []float64 的中位数。
+func medianF(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	sorted := append([]float64(nil), xs...)
+	sort.Float64s(sorted)
+	n := len(sorted)
+	if n%2 == 1 {
+		return sorted[n/2]
+	}
+	return (sorted[n/2-1] + sorted[n/2]) / 2
+}
+
+// nowcastComponents 计算 nowcast 与 velocity 分量。
+//   - nowcast：视频播放 / 频道基线（达 2 倍基线即满分）
+//   - velocity：播放速率(播放/小时) vs 期望斜率(基线/48h)，且与新鲜度相乘（新 + 起势）
+func nowcastComponents(v Video, baseline float64, recencyScore float64, now time.Time) (nowcast, velocity float64) {
+	if baseline <= 0 {
+		baseline = 1 // 无基线退化为"相对自身播放"
+	}
+	ratio := float64(v.ViewCount+1) / baseline
+	nowcast = math.Min(1, ratio/2)
+
+	pubTime := parsePublishedTime(v.PublishTime, now)
+	ageHours := 24.0
+	if !pubTime.IsZero() {
+		ageHours = math.Max(1, now.Sub(pubTime).Hours())
+	}
+	expectedRate := math.Max(baseline/48, 1) // 期望：48h 内达到基线
+	actualRate := float64(v.ViewCount+1) / ageHours
+	velocity = math.Min(1, actualRate/expectedRate/4) * recencyScore
+	return nowcast, velocity
 }
 
 // parsePublishedTime 解析 YouTube 发布时间的相对字符串

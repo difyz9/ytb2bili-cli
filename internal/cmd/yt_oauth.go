@@ -156,10 +156,17 @@ func newYtOAuthSyncCmd() *cobra.Command {
 				}
 
 				if enqueue {
-					// 将时间范围内的新视频加入任务队列
+					// 将时间范围内的新视频加入任务队列（过滤 Short/短视频）
 					q := queue.New(cfg.DataDir)
 					lookback, _ := cmd.Flags().GetInt("lookback")
 					monitor.SyncSubscription(*sub, lookback, func(v *channel.DiscoveredVideo) error {
+						if skip, derr := channel.ShouldSkipAsShort(ctx, cfg, v.VideoID, cfg.MinDurationSec); derr != nil {
+							fmt.Fprintf(os.Stderr, "   ⚠ 查询视频时长失败（仍入队）: %s: %v\n", v.VideoID, derr)
+						} else if skip {
+							fmt.Printf("   ⏭ 跳过短视频 (%s): %s\n", v.VideoID, v.Title)
+							monitor.MarkSkipped(v.VideoID)
+							return nil
+						}
 						_, qerr := q.Add(v.VideoID, v.URL, v.Title, v.ChannelID, "yt-oauth")
 						return qerr
 					})

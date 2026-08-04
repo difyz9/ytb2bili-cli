@@ -38,6 +38,7 @@ type Config struct {
 	ServerToken           string   `yaml:"server_token"`
 	AllowedOrigins        []string `yaml:"allowed_origins"`
 	ChromeDebugPort       int      `yaml:"chrome_debug_port"` // Chrome 远程调试起始端口（0=默认 9222，被占用自动 +1 找空闲）
+	MinDurationSec        int      `yaml:"min_duration_sec"`  // 入队时低于该秒数视为 Short 跳过（0=不限制）
 
 	// 飞书多维表格配置
 	FeishuAppID     string `yaml:"feishu_app_id"`
@@ -155,6 +156,7 @@ func Default() *Config {
 		LLMModel:              "deepseek-v4-flash",
 		TranslationTargetLang: "zh-Hans",
 		BiliTid:               122,
+		MinDurationSec:        240, // 入队时低于此秒数的视频跳过（Short/短视频）
 		TTS: &TTSConfig{
 			VoiceType:       101008,
 			Volume:          5,
