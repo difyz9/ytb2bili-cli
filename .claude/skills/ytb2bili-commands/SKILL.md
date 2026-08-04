@@ -45,6 +45,22 @@ command's syntax, flags, or an example. For end-to-end workflows instead, invoke
 -v, --version
 ```
 
+### 参数约定：videoId 或完整路径
+以下命令的第一个参数**同时支持** videoId 或完整文件路径：
+- 传 videoId → 在下载目录 `download_dir`（默认 `data/downloads`）下定位资源：
+  - `whisper`/`bcut` → `<videoId>/<videoId>.mp4`
+  - `translate` → `<videoId>/<videoId>.srt`
+  - `tencent-tts` → `<videoId>/<videoId>.zh-Hans.srt`（回退 `<videoId>.srt`）
+  - `audio-sync` → `<videoId>/` 目录（视频+字幕+voice）
+- 传已存在路径 → 直接用
+
+示例（等价）：
+```
+ytb tencent-tts lVIvZM8zay4
+ytb tencent-tts data/downloads/lVIvZM8zay4/lVIvZM8zay4.zh-Hans.srt
+```
+下载根目录由 `config.yaml` 的 `download_dir` 控制（未配置则 `<data_dir>/downloads`）。
+
 ### `init`
 ```
 --update   更新 yt-dlp 到最新版
@@ -186,6 +202,14 @@ test      测试 cookies 是否有效
 ```
 > 转录后端由 `config.yaml` 的 `transcriber.provider` 控制：`whisper`（默认，本地）/ `bcut`（云 ASR）。
 
+### `metadata <videoId or path-to-srt>`
+读取字幕内容，调用 LLM 生成 B站中文标题/描述/标签，保存 JSON。
+```
+-o, --output string  JSON 输出路径（默认 <字幕名>.meta.json）
+```
+示例：`ytb metadata lVIvZM8zay4` → `data/downloads/lVIvZM8zay4/lVIvZM8zay4.zh-Hans.meta.json`。
+别名 `meta`。
+
 ### `translate <input.srt>`
 ```
 --source-lang string   源语言 (default "en")
@@ -216,6 +240,10 @@ server restart       重启
 server status        查看运行状态
 server run [--addr]  前台运行（内部，供后台模式调用）
 ```
+> `start`/`restart` 会额外启动一个带远程调试的 Chrome（独立 `data/chrome-profile`，端口
+> 由 `chrome_debug_port` 起始自动避让，记录于 `data/chrome.pid`+`data/chrome.port`）；
+> `stop`/`restart` 会同步关闭它。该调试 Chrome 供 `cookies refresh` 连接提取 YouTube cookies，
+> 首次需在该 Chrome 窗口登录 YouTube 一次。
 
 ## Data layout
 

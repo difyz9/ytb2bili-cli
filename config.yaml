@@ -3,6 +3,8 @@ llm_api_key: "sk-489ee4c6456745d2b977a479c51207ef"
 llm_base_url: "https://api.deepseek.com"
 llm_model: "deepseek-v4-flash"
 data_dir: "./data"
+download_dir: "./data/downloads"   # 视频下载根目录（命令可用 videoId 直接引用该目录下资源）
+chrome_debug_port: 9222            # Chrome 远程调试起始端口（被占用自动+1，cookies refresh 会用实际端口）
 bili_tid: 122
 translation_target_lang: zh-Hans
 

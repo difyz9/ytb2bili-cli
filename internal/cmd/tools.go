@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,8 @@ import (
 	"github.com/zolagz/ytb2bili-go/internal/auth"
 	"github.com/zolagz/ytb2bili-go/internal/cdp"
 	"github.com/zolagz/ytb2bili-go/internal/download"
+	"github.com/zolagz/ytb2bili-go/internal/metadata"
+	"github.com/zolagz/ytb2bili-go/internal/pipeline"
 	"github.com/zolagz/ytb2bili-go/internal/search"
 	"github.com/zolagz/ytb2bili-go/internal/storage"
 	"github.com/zolagz/ytb2bili-go/internal/transcriber"
@@ -156,13 +159,10 @@ func newDownloadCmd() *cobra.Command {
 
 			outputDir, _ := cmd.Flags().GetString("output")
 			if outputDir == "" {
-				outputDir = filepath.Join(cfg.DataDir, "downloads", videoID)
+				outputDir = filepath.Join(cfg.EffectiveDownloadDir(), videoID)
 			}
 
-			cookiesPath := cfg.YouTubeCookies
-			if cookiesPath == "" {
-				cookiesPath = filepath.Join(cfg.DataDir, "youtube_cookies.txt")
-			}
+			cookiesPath := cfg.EffectiveCookiesPath()
 
 			fmt.Printf("⬇️  下载视频: %s\n", cleanURL)
 			fmt.Printf("📁 输出目录: %s\n", outputDir)
@@ -197,9 +197,10 @@ func newBcutCmd() *cobra.Command {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入音频或视频文件路径")
 			}
-			audioPath := args[0]
-			if _, err := os.Stat(audioPath); err != nil {
-				return fmt.Errorf("文件不存在: %s", audioPath)
+			cfg := loadConfig()
+			audioPath, err := pipeline.ResolveInput(cfg, args[0], "video")
+			if err != nil {
+				return err
 			}
 
 			outputDir := filepath.Dir(audioPath)
@@ -241,14 +242,15 @@ func newWhisperCmd() *cobra.Command {
   ytb whisper --model models/ggml-small.bin -l en video.mp4`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("请输入音频或视频文件路径")
+				return fmt.Errorf("请输入音频/视频文件路径或 videoId")
 			}
-			audioPath := args[0]
-			if _, err := os.Stat(audioPath); err != nil {
-				return fmt.Errorf("文件不存在: %s", audioPath)
+			cfg := loadConfig()
+			audioPath, err := pipeline.ResolveInput(cfg, args[0], "video")
+			if err != nil {
+				return err
 			}
 
-			wcfg := loadConfig().Transcriber.Whisper
+			wcfg := cfg.Transcriber.Whisper
 
 			outputDir, _ := cmd.Flags().GetString("out")
 			if outputDir == "" {
@@ -297,6 +299,64 @@ func langOrAuto(lang string) string {
 	return lang
 }
 
+// ─── Metadata 生成 ─────────────────────────────────────────────────────────
+
+func newMetadataCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "metadata <videoId or path-to-srt>",
+		Aliases: []string{"meta"},
+		Short:   "根据字幕生成B站标题、描述和标签（保存 JSON）",
+		Long: `读取字幕文件内容，调用 LLM 生成投稿 B站用的中文标题、描述和标签，
+并保存为 JSON（默认 <字幕同目录>/<名字>.meta.json）。
+
+参数支持 videoId 或完整字幕路径。
+示例:
+  ytb metadata lVIvZM8zay4
+  ytb metadata data/downloads/lVIvZM8zay4/lVIvZM8zay4.zh-Hans.srt
+  ytb metadata --output meta.json video.srt`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return fmt.Errorf("请输入 videoId 或字幕文件路径")
+			}
+			cfg := loadConfig()
+			srtPath, err := pipeline.ResolveInput(cfg, args[0], "zh-srt")
+			if err != nil {
+				return err
+			}
+
+			output, _ := cmd.Flags().GetString("output")
+			if output == "" {
+				output = strings.TrimSuffix(srtPath, filepath.Ext(srtPath)) + ".meta.json"
+			}
+
+			fmt.Printf("🤖 生成元数据: %s\n", srtPath)
+			fmt.Println()
+
+			start := time.Now()
+			meta, err := metadata.GenerateFromSRT(context.Background(), srtPath, cfg)
+			if err != nil {
+				return fmt.Errorf("生成元数据失败: %w", err)
+			}
+
+			data, err := json.MarshalIndent(meta, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(output, data, 0644); err != nil {
+				return fmt.Errorf("写入 JSON 失败: %w", err)
+			}
+
+			fmt.Printf("✅ 生成完成 (耗时: %v)\n", time.Since(start).Round(time.Second))
+			fmt.Printf("  标题: %s\n", meta.Title)
+			fmt.Printf("  标签: %s\n", strings.Join(meta.Tags, ", "))
+			fmt.Printf("📄 %s\n", output)
+			return nil
+		},
+	}
+	cmd.Flags().StringP("output", "o", "", "JSON 输出路径（默认 <字幕>.meta.json）")
+	return cmd
+}
+
 // ─── Translate ─────────────────────────────────────────────────────────────
 
 func newTranslateCmd() *cobra.Command {
@@ -308,9 +368,9 @@ func newTranslateCmd() *cobra.Command {
 				return fmt.Errorf("请输入 SRT 字幕文件路径")
 			}
 			cfg := loadConfig()
-			inputPath := args[0]
-			if _, err := os.Stat(inputPath); err != nil {
-				return fmt.Errorf("字幕文件不存在: %s", inputPath)
+			inputPath, err := pipeline.ResolveInput(cfg, args[0], "srt")
+			if err != nil {
+				return err
 			}
 
 			sourceLang, _ := cmd.Flags().GetString("source-lang")
@@ -357,9 +417,9 @@ func newTencentTTSCmd() *cobra.Command {
 				return fmt.Errorf("请输入 SRT 字幕文件路径")
 			}
 			cfg := loadConfig()
-			srtPath := args[0]
-			if _, err := os.Stat(srtPath); err != nil {
-				return fmt.Errorf("字幕文件不存在: %s", srtPath)
+			srtPath, err := pipeline.ResolveInput(cfg, args[0], "zh-srt")
+			if err != nil {
+				return err
 			}
 
 			outputDir, _ := cmd.Flags().GetString("output")
