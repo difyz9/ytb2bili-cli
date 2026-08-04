@@ -25,7 +25,7 @@ description: YouTube OAuth 授权登录 → 拉取订阅频道 → 定时检测�
 5. 应用类型选 **"TV and Limited Input devices"**（设备码流程专用，无需回调地址）
    ⚠️ 注意：**不是 Desktop，也不是 Web**——Web 类型客户端调用设备码端点会返回
    `invalid_client: Only clients of type 'TVs and Limited Input devices' can use the OAuth 2.0 flow`，
-   即 `ytb yt-oauth login` 报「设备码请求被拒绝 [invalid_client]」。
+   即 `ytb channel login` 报「设备码请求被拒绝 [invalid_client]」。
 6. 创建后把 Client ID / Client Secret 填入 `config.yaml`：
 
 ```yaml
@@ -40,10 +40,10 @@ youtube_oauth:
 
 ```bash
 # 发起设备码授权（打印 URL + 授权码）
-./ytb yt-oauth login
+./ytb channel login
 
 # 查看登录状态
-./ytb yt-oauth status
+./ytb channel status
 ```
 
 浏览器打开终端打印的 URL，输入授权码即可完成授权。
@@ -51,24 +51,21 @@ token 保存在 `data/yt_oauth_token.json`（自动刷新）。
 
 ---
 
-## 二、拉取订阅频道
+## 二、导入订阅频道
 
 ```bash
 # 拉取 YouTube 账号关注的频道列表 → 写入本地订阅存储
-./ytb yt-oauth sync
+./ytb channel import
 
-# 拉取并同步每个频道最近 7 天的新视频，自动加入任务队列
-./ytb yt-oauth sync --queue
-
-# 指定回看天数
-./ytb yt-oauth sync --queue --lookback 14
+# 导入后检查新视频并入队（指定回看天数）
+./ytb channel sync --queue --lookback 14
 ```
 
 查看结果：
 
 ```bash
 ./ytb channel list          # 频道订阅列表
-./ytb channel videos        # 发现的视频
+./ytb channel videos        # 发现的视频（按表现分排序）
 ./ytb queue list            # 任务队列
 ```
 
@@ -80,13 +77,13 @@ token 保存在 `data/yt_oauth_token.json`（自动刷新）。
 
 ```bash
 # 每 24 小时检测一次订阅频道更新，新视频自动入队
-./ytb yt-oauth watch
+./ytb channel watch
 
 # 每 12 小时
-./ytb yt-oauth watch --interval 12h
+./ytb channel watch --interval 12h
 
 # 只检测一次（适合 cron 调用）
-./ytb yt-oauth watch --once
+./ytb channel watch --once
 ```
 
 ### 方式 B：系统 cron（不常驻）
@@ -95,7 +92,7 @@ token 保存在 `data/yt_oauth_token.json`（自动刷新）。
 # 每天 6:00 检测一次，检测后消费队列处理
 crontab -e
 # 添加：
-# 0 6 * * * cd /path/to/ytb2bili-cli && ./ytb yt-oauth watch --once >> data/yt-oauth-watch.log 2>&1
+# 0 6 * * * cd /path/to/ytb2bili-cli && ./ytb channel watch --once >> data/channel-watch.log 2>&1
 # 30 7 * * * cd /path/to/ytb2bili-cli && ./ytb queue work --once >> data/queue-work.log 2>&1
 ```
 
@@ -138,13 +135,14 @@ download（下载） → transcribe（转录） → translate（翻译）
 ## 五、完整自动化闭环示例
 
 ```bash
-# 1. 一次性：授权 + 拉订阅
-./ytb yt-oauth login
-./ytb yt-oauth sync --queue --lookback 14
+# 1. 一次性：授权 + 导入订阅
+./ytb channel login
+./ytb channel import
+./ytb channel sync --queue --lookback 14
 
 # 2. 后台常驻：定时检测 + 持续消费（两个终端）
-./ytb yt-oauth watch --interval 24h      # 终端 1：检测更新入队
-./ytb queue work                          # 终端 2：消费队列执行搬运
+./ytb channel watch --interval 24h      # 终端 1：检测更新入队
+./ytb queue work                        # 终端 2：消费队列执行搬运
 
 # 3. 或者用 cron 无人值守（见"方式 B"）
 ```
@@ -158,16 +156,16 @@ download（下载） → transcribe（转录） → translate（翻译）
 | `client_id 未配置` | 在 config.yaml 填 `youtube_oauth.client_id/secret` |
 | `设备码请求被拒绝 [invalid_client]` | OAuth 客户端类型不对——设备码流程只能用 **"TV and Limited Input devices"** 类型，Web/Desktop 都会拒绝（见上文创建步骤） |
 | `设备码响应为空` | client_id 错误，或未启用 YouTube Data API v3 |
-| `token 已过期且刷新失败` | 重新 `ytb yt-oauth login` |
-| `没有活跃的频道订阅` | 先 `ytb yt-oauth sync` 拉取，或 `ytb channel add` |
+| `token 已过期且刷新失败` | 重新 `ytb channel login` |
+| `没有活跃的频道订阅` | 先 `ytb channel import` 拉取，或 `ytb channel add` |
 | B站未登录 | `ytb login` 扫码 |
 | 转录/翻译失败 | 检查 `DEEPSEEK_API_KEY`、`ytb init` 环境依赖 |
 
 ## 七、管理命令
 
 ```bash
-./ytb yt-oauth status     # 登录状态
-./ytb yt-oauth logout     # 清除凭证
+./ytb channel status     # 登录状态
+./ytb channel logout     # 清除凭证
 ./ytb channel remove <channel_id>   # 移除某个频道订阅
 ./ytb channel sync --queue          # 手动触发全部频道检测
 ```

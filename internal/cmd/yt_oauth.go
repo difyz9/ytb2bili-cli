@@ -32,39 +32,10 @@ func ytOAuthConfig(cfg *config.Config) ytoauth.Config {
 	return oc
 }
 
-func newYtOAuthCmd() *cobra.Command {
-	ch := &cobra.Command{
-		Use:   "yt-oauth",
-		Short: "YouTube OAuth 授权登录与订阅频道同步",
-		Long: `YouTube OAuth 授权登录，获取用户关注的频道列表并同步到本地。
-
-功能:
-  login   设备码授权登录（浏览器打开 URL 输入代码）
-  sync    拉取用户订阅频道列表到本地（可自动入队）
-  watch   定时检测订阅频道更新，有更新自动加入任务队列
-  status  查看登录状态
-  logout  清除本地登录凭证
-
-示例:
-  ytb yt-oauth login
-  ytb yt-oauth sync
-  ytb yt-oauth sync --queue
-  ytb yt-oauth watch --interval 24h`,
-	}
-
-	ch.AddCommand(
-		newYtOAuthLoginCmd(),
-		newYtOAuthSyncCmd(),
-		newYtOAuthWatchCmd(),
-		newYtOAuthStatusCmd(),
-		newYtOAuthLogoutCmd(),
-	)
-	return ch
-}
-
 // ─── login ───────────────────────────────────────────────────────────────
+// 这些子命令挂在 channel 下（channel login/import/watch/status/logout）。
 
-func newYtOAuthLoginCmd() *cobra.Command {
+func newChannelLoginCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "login",
 		Short: "设备码授权登录 YouTube",
@@ -77,7 +48,7 @@ func newYtOAuthLoginCmd() *cobra.Command {
 
 			store := ytoauth.NewTokenStore(cfg.DataDir)
 			if store.Exists() {
-				fmt.Println("✅ 已登录（token 存在）。如需重新登录请先: ytb yt-oauth logout")
+				fmt.Println("✅ 已登录（token 存在）。如需重新登录请先: ytb channel logout")
 				return nil
 			}
 
@@ -108,7 +79,7 @@ func newYtOAuthLoginCmd() *cobra.Command {
 			}
 			fmt.Println("✅ 授权成功！token 已保存")
 			fmt.Printf("   token 文件: %s\n", store.Path())
-			fmt.Println("   下一步: ytb yt-oauth sync  拉取订阅频道列表")
+			fmt.Println("   下一步: ytb channel import  拉取订阅频道列表")
 			return nil
 		},
 	}
@@ -116,10 +87,12 @@ func newYtOAuthLoginCmd() *cobra.Command {
 
 // ─── sync ────────────────────────────────────────────────────────────────
 
-func newYtOAuthSyncCmd() *cobra.Command {
+func newChannelImportCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "sync",
-		Short: "拉取用户订阅频道列表到本地",
+		Use:   "import",
+		Short: "从 YouTube 账号导入订阅频道",
+		Long: `通过 OAuth 授权从 YouTube 拉取你关注的频道列表，写入本地监控存储。
+只导入频道，不入队；检查更新请用 channel sync --queue 或 channel watch。`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			oc := ytOAuthConfig(cfg)
@@ -140,9 +113,8 @@ func newYtOAuthSyncCmd() *cobra.Command {
 			}
 			fmt.Printf("✅ 从 YouTube 获取到 %d 个订阅频道\n\n", len(subs))
 
-			// 写入本地频道监控存储
+			// 写入本地频道监控存储（只导入，不入队）
 			monitor := channel.NewMonitor(cfg.DataDir)
-			enqueue, _ := cmd.Flags().GetBool("queue")
 			added, updated := 0, 0
 			for _, s := range subs {
 				sub, err := monitor.AddSubscription(s.ChannelID, s.ChannelTitle)
@@ -154,41 +126,20 @@ func newYtOAuthSyncCmd() *cobra.Command {
 				} else {
 					added++
 				}
-
-				if enqueue {
-					// 将时间范围内的新视频加入任务队列（过滤 Short/短视频）
-					q := queue.New(cfg.DataDir)
-					lookback, _ := cmd.Flags().GetInt("lookback")
-					monitor.SyncSubscription(*sub, lookback, func(v *channel.DiscoveredVideo) error {
-						if skip, derr := channel.ShouldSkipAsShort(ctx, cfg, v.VideoID, cfg.MinDurationSec); derr != nil {
-							fmt.Fprintf(os.Stderr, "   ⚠ 查询视频时长失败（仍入队）: %s: %v\n", v.VideoID, derr)
-						} else if skip {
-							fmt.Printf("   ⏭ 跳过短视频 (%s): %s\n", v.VideoID, v.Title)
-							monitor.MarkSkipped(v.VideoID)
-							return nil
-						}
-						_, qerr := q.Add(v.VideoID, v.URL, v.Title, v.ChannelID, "yt-oauth")
-						return qerr
-					})
-				}
 			}
 
 			fmt.Printf("📺 新增 %d 个频道，更新 %d 个已有频道\n", added, updated)
 			fmt.Println("   查看: ytb channel list")
-			if !enqueue {
-				fmt.Println("   提示: 使用 --queue 同步新视频并入队，或 ytb channel sync --queue")
-			}
+			fmt.Println("   入队更新: ytb channel sync --queue，或常驻监控: ytb channel watch")
 			return nil
 		},
 	}
-	cmd.Flags().Bool("queue", false, "同步新视频并加入任务队列")
-	cmd.Flags().Int("lookback", 7, "同步最近 N 天发布的视频 (0=不限)")
 	return cmd
 }
 
 // ─── watch ───────────────────────────────────────────────────────────────
 
-func newYtOAuthWatchCmd() *cobra.Command {
+func newChannelWatchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "定时检测订阅频道更新，有更新自动加入任务队列",
@@ -199,9 +150,9 @@ func newYtOAuthWatchCmd() *cobra.Command {
 元数据→TTS→音画同步→上传B站→字幕）。
 
 示例:
-  ytb yt-oauth watch                 # 每 24 小时检测
-  ytb yt-oauth watch --interval 12h  # 每 12 小时
-  ytb yt-oauth watch --once          # 只检测一次后退出`,
+  ytb channel watch                 # 每 24 小时检测
+  ytb channel watch --interval 12h  # 每 12 小时
+  ytb channel watch --once          # 只检测一次后退出`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			interval, _ := cmd.Flags().GetDuration("interval")
@@ -255,7 +206,7 @@ func runChannelCheck(cfg *config.Config, monitor *channel.Monitor, lookback int)
 
 // ─── status ──────────────────────────────────────────────────────────────
 
-func newYtOAuthStatusCmd() *cobra.Command {
+func newChannelStatusCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "status",
 		Short: "查看 YouTube OAuth 登录状态",
@@ -265,7 +216,7 @@ func newYtOAuthStatusCmd() *cobra.Command {
 			store := ytoauth.NewTokenStore(cfg.DataDir)
 
 			if !store.Exists() {
-				fmt.Println("❌ 未登录。运行: ytb yt-oauth login")
+				fmt.Println("❌ 未登录。运行: ytb channel login")
 				return nil
 			}
 			tok, err := store.Load()
@@ -274,7 +225,7 @@ func newYtOAuthStatusCmd() *cobra.Command {
 			}
 			status := "✅ 有效"
 			if !tok.Valid() {
-				status = "⚠️ 已过期（运行 ytb yt-oauth sync 自动刷新）"
+				status = "⚠️ 已过期（运行 ytb channel import 自动刷新）"
 			}
 			fmt.Printf("📺 YouTube OAuth 登录状态: %s\n", status)
 			fmt.Printf("   token 文件: %s\n", store.Path())
@@ -289,7 +240,7 @@ func newYtOAuthStatusCmd() *cobra.Command {
 
 // ─── logout ──────────────────────────────────────────────────────────────
 
-func newYtOAuthLogoutCmd() *cobra.Command {
+func newChannelLogoutCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
 		Short: "清除 YouTube OAuth 登录凭证",

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -42,4 +43,35 @@ func (m *Monitor) RecordObservation(obs []Observation) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0644)
+}
+
+// LatestObservationViews 返回每个视频最近一次观测的播放量（跨 data/observations 所有文件，取 ObservedAt 最新）。
+func LatestObservationViews(dataDir string) map[string]int {
+	obsDir := filepath.Join(dataDir, "observations")
+	entries, err := os.ReadDir(obsDir)
+	if err != nil {
+		return nil
+	}
+	latest := make(map[string]int)
+	latestAt := make(map[string]time.Time)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(obsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var obs []Observation
+		if json.Unmarshal(data, &obs) != nil {
+			continue
+		}
+		for _, o := range obs {
+			if t, ok := latestAt[o.VideoID]; !ok || o.ObservedAt.After(t) {
+				latestAt[o.VideoID] = o.ObservedAt
+				latest[o.VideoID] = o.Views
+			}
+		}
+	}
+	return latest
 }

@@ -69,7 +69,6 @@ func newRootCmd() *cobra.Command {
 
 		// 频道与订阅
 		group(newChannelCmd(), "subscribe"),
-		group(newYtOAuthCmd(), "subscribe"),
 		group(newCookiesCmd(), "subscribe"),
 
 		// 流水线步骤
