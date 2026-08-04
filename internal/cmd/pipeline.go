@@ -867,12 +867,150 @@ func newChannelCmd() *cobra.Command {
 	rankCmd.Flags().Float64("prune-below", 0, "移除低于此分数的频道（0=不修剪）")
 	rankCmd.Flags().String("keywords", "", "内容契合关键词（逗号分隔，空=中性）")
 
+	// ─── channel baseline：yt-dlp 抓最近 N 视频 → trimmed mean 基线 ───
+	baselineCmd := &cobra.Command{
+		Use:   "baseline <channel_id|@handle>",
+		Short: "用 yt-dlp 抓频道最近 N 个视频，计算 trimmed mean 基线（抗爆款污染）",
+		Long: `抓取频道最近 N 个视频的播放量，去掉最高/最低各 trim 个后取平均，
+得到抗爆款污染的 48h 基线（对标 ytsubs）。同时记录频道粉丝数和采集时间，
+供 nowcast 评分的 reach 分量与置信度使用。结果写入 data/channel_scores.json。
+
+示例:
+  ytb channel baseline UCgscS8mBsQZ5sFRkJIFWD7Q     # 默认 30 个视频，去 3 个
+  ytb channel baseline @RoboNuggets                 # 支持 @handle
+  ytb channel baseline --samples 50 --trim 5 <id>   # 自定义参数
+  ytb channel baseline --all                        # 所有订阅频道`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			samples, _ := cmd.Flags().GetInt("samples")
+			trim, _ := cmd.Flags().GetInt("trim")
+			all, _ := cmd.Flags().GetBool("all")
+			if samples <= 0 {
+				samples = 30
+			}
+			if trim < 0 {
+				trim = 3
+			}
+
+			monitor := channel.NewMonitor(cfg.DataDir)
+
+			// 解析目标频道列表
+			var subs []channel.Subscription
+			if all {
+				subs = monitor.GetActiveSubscriptions()
+				if len(subs) == 0 {
+					return fmt.Errorf("没有活跃的频道订阅")
+				}
+			} else {
+				if len(args) == 0 {
+					return fmt.Errorf("请指定频道 ID 或 @handle（或 --all）")
+				}
+				target := args[0]
+				// @handle → channel_id 解析
+				if strings.HasPrefix(target, "@") {
+					bctx, bcancel := context.WithTimeout(context.Background(), 90*time.Second)
+					defer bcancel()
+					channelID, err := channel.ResolveHandle(bctx, target)
+					if err != nil {
+						return fmt.Errorf("解析 @handle 失败: %w", err)
+					}
+					target = channelID
+				}
+				// 在订阅列表中查找（未订阅也允许直接计算）
+				sub := channel.Subscription{
+					ChannelID:    target,
+					ChannelTitle: target,
+					Type:         channel.DetectType(target),
+				}
+				for _, s := range monitor.ListSubscriptions() {
+					if s.ChannelID == target {
+						sub = s
+						break
+					}
+				}
+				subs = []channel.Subscription{sub}
+			}
+
+			fmt.Printf("🎯 计算频道基线 (samples=%d, trim=%d)...\n", samples, trim)
+			var results []*channel.ChannelStats
+			for _, sub := range subs {
+				bctx, bcancel := context.WithTimeout(context.Background(), 120*time.Second)
+				stats, subsCount, err := channel.FetchChannelVideos(bctx, sub.ChannelURL(), samples)
+				bcancel()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "  ⚠ 抓取失败 %s: %v\n", sub.ChannelTitle, err)
+					continue
+				}
+				var views []float64
+				for _, v := range stats {
+					views = append(views, float64(v.ViewCount))
+				}
+				st := &channel.ChannelStats{
+					ChannelID:    sub.ChannelID,
+					ChannelTitle: sub.ChannelTitle,
+					Baseline:     meanFloat(views),
+					Baseline48h:  channel.TrimmedMean(views, trim),
+					Subscribers:  subsCount,
+					UpdatedAt:    time.Now(),
+					Samples:      len(views),
+				}
+				results = append(results, st)
+				fmt.Printf("  ✅ %-25s 样本%3d 平均%10.0f trimmed%10.0f 粉丝%8d\n",
+					sub.ChannelTitle, len(views), st.Baseline, st.Baseline48h, subsCount)
+			}
+			if len(results) == 0 {
+				return fmt.Errorf("所有频道抓取失败")
+			}
+
+			// 合并写回缓存（保留已有频道的其他字段）
+			cachePath := filepath.Join(cfg.DataDir, "channel_scores.json")
+			var existing []channel.ChannelStats
+			if data, err := os.ReadFile(cachePath); err == nil {
+				json.Unmarshal(data, &existing)
+			}
+			byID := make(map[string]channel.ChannelStats, len(existing))
+			for _, e := range existing {
+				byID[e.ChannelID] = e
+			}
+			for _, st := range results {
+				if old, ok := byID[st.ChannelID]; ok {
+					st.Score = old.Score // 保留质量分
+				}
+				byID[st.ChannelID] = *st
+			}
+			var merged []channel.ChannelStats
+			for _, st := range byID {
+				merged = append(merged, st)
+			}
+			if data, err := json.MarshalIndent(merged, "", "  "); err == nil {
+				os.WriteFile(cachePath, data, 0644)
+				fmt.Printf("\n✅ 基线已写入 %s (%d 个频道)\n", cachePath, len(merged))
+			}
+			return nil
+		},
+	}
+	baselineCmd.Flags().Int("samples", 30, "抓取视频数")
+	baselineCmd.Flags().Int("trim", 3, "去尾数（最高/最低各 N 个）")
+	baselineCmd.Flags().Bool("all", false, "所有订阅频道")
+
 	ch.AddCommand(
-		addCmd, listCmd, removeCmd, syncCmd, videosCmd, rankCmd,
+		addCmd, listCmd, removeCmd, syncCmd, videosCmd, rankCmd, baselineCmd,
 		newChannelImportCmd(), newChannelWatchCmd(),
 		newChannelLoginCmd(), newChannelStatusCmd(), newChannelLogoutCmd(),
 	)
 	return ch
+}
+
+// meanFloat 简单平均。
+func meanFloat(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	s := 0.0
+	for _, x := range xs {
+		s += x
+	}
+	return s / float64(len(xs))
 }
 
 // ─── Search ────────────────────────────────────────────────────────────────
@@ -1326,14 +1464,15 @@ func newAutoCmd() *cobra.Command {
 	return cmd
 }
 
-// loadChannelBaselines 读取 channel rank 的评分缓存（data/channel_scores.json），
+// loadChannelBaselines 读取 channel rank/baseline 的评分缓存（data/channel_scores.json），
 // 返回 map[channel_id]NowcastBaseline 供 nowcast 评分使用。
-// 基线时间戳取缓存文件 mtime（近似），粉丝数暂缺（reach 退化为绝对播放量）。
+// 基线优先取 baseline_48h（trimmed mean，抗爆款）；无则退化 baseline。
+// 时间戳取缓存文件 mtime（近似），粉丝数取抓取值（reach 分量可用）。
 func loadChannelBaselines(dataDir string) map[string]search.NowcastBaseline {
 	path := filepath.Join(dataDir, "channel_scores.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  ⚠ 未找到频道基线缓存 %s（请先运行 channel rank）：%v\n", path, err)
+		fmt.Fprintf(os.Stderr, "  ⚠ 未找到频道基线缓存 %s（请先运行 channel rank/baseline）：%v\n", path, err)
 		return nil
 	}
 	var stats []channel.ChannelStats
@@ -1348,10 +1487,19 @@ func loadChannelBaselines(dataDir string) map[string]search.NowcastBaseline {
 	}
 	baselines := make(map[string]search.NowcastBaseline, len(stats))
 	for _, s := range stats {
+		base := s.Baseline48h
+		if base <= 0 {
+			base = s.Baseline
+		}
+		blUpdated := s.UpdatedAt
+		if blUpdated.IsZero() {
+			blUpdated = updatedAt
+		}
 		baselines[s.ChannelID] = search.NowcastBaseline{
-			Baseline:    s.Baseline,
-			UpdatedAt:   updatedAt,
-			HasBaseline: s.Baseline > 0,
+			Baseline:    base,
+			Subscribers: s.Subscribers,
+			UpdatedAt:   blUpdated,
+			HasBaseline: base > 0,
 		}
 	}
 	return baselines

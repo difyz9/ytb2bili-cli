@@ -1,12 +1,16 @@
 package channel
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -16,6 +20,9 @@ type ChannelStats struct {
 	ChannelID    string    `json:"channel_id"`
 	ChannelTitle string    `json:"channel_title"`
 	Baseline     float64   `json:"baseline"`     // 窗口内平均播放
+	Baseline48h  float64   `json:"baseline_48h,omitempty"` // 48h 预期播放（trimmed mean，抗异常）
+	Subscribers  int64     `json:"subscribers,omitempty"`  // 频道粉丝数
+	UpdatedAt    time.Time `json:"updated_at,omitempty"`   // 基线采集时间（置信度用）
 	Activity     int       `json:"activity"`     // 窗口内视频数
 	LatestViews  int       `json:"latest_views"` // 窗口内最新视频播放
 	Samples      int       `json:"samples"`      // 有效样本数
@@ -162,6 +169,107 @@ func median(xs []float64) float64 {
 		return sorted[n/2]
 	}
 	return (sorted[n/2-1] + sorted[n/2]) / 2
+}
+
+// TrimmedMean 去尾平均：排序后去掉最高/最低各 trim 个，再取平均。
+// 对标 ytsubs：最近 30 视频去掉最高/最低 3 个（抗爆款污染）。
+func TrimmedMean(xs []float64, trim int) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	if trim < 0 {
+		trim = 0
+	}
+	if len(xs) <= trim*2 {
+		return mean(xs) // 样本太少，退化为普通平均
+	}
+	sorted := append([]float64(nil), xs...)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sorted[j] < sorted[j-1]; j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+	return mean(sorted[trim : len(sorted)-trim])
+}
+
+// VideoStat 抓取到的单视频播放数据（yt-dlp 输出）。
+type VideoStat struct {
+	VideoID   string
+	ViewCount int64
+}
+
+// FetchChannelVideos 用 yt-dlp 抓取频道最近 N 个视频的播放量（含频道粉丝数）。
+// 视频列表用 flat-playlist（快），粉丝数单独用一次非 flat 查询（flat 下粉丝数为 NA）。
+func FetchChannelVideos(ctx context.Context, channelURL string, limit int) ([]VideoStat, int64, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	args := []string{
+		"--flat-playlist",
+		"--playlist-items", fmt.Sprintf("1:%d", limit),
+		"--print", "%(view_count)s",
+		"--no-warnings",
+		channelURL,
+	}
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &bytes.Buffer{}
+	if err := cmd.Run(); err != nil {
+		return nil, 0, fmt.Errorf("yt-dlp 抓取频道视频失败: %w", err)
+	}
+
+	var stats []VideoStat
+	for _, line := range strings.Split(out.String(), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		views, err := strconv.ParseInt(line, 10, 64)
+		if err != nil {
+			continue // 跳过无播放量的（直播/会员专属）
+		}
+		stats = append(stats, VideoStat{ViewCount: views})
+	}
+	if len(stats) == 0 {
+		return nil, 0, fmt.Errorf("yt-dlp 未返回有效视频数据")
+	}
+
+	// 单独查询频道粉丝数（非 flat 模式才有 channel_follower_count）
+	// 用独立超时（WARP 网络下非 flat 查询可能较慢），避免与视频列表共享 ctx 超时
+	subCtx, subCancel := context.WithTimeout(context.Background(), 180*time.Second)
+	subscribers, err := fetchChannelSubscribers(subCtx, channelURL)
+	subCancel()
+	if err != nil {
+		// 粉丝数拿不到不致命（reach 分量退化为绝对播放量）
+		fmt.Fprintf(os.Stderr, "  ⚠ 粉丝数获取失败: %v\n", err)
+		subscribers = 0
+	}
+	return stats, subscribers, nil
+}
+
+// fetchChannelSubscribers 查询频道粉丝数（channel_follower_count）。
+func fetchChannelSubscribers(ctx context.Context, channelURL string) (int64, error) {
+	cmd := exec.CommandContext(ctx, "yt-dlp",
+		"--skip-download", "--no-warnings",
+		"--print", "%(channel_follower_count)s",
+		channelURL)
+	var out bytes.Buffer
+	var errBuf bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return 0, fmt.Errorf("yt-dlp 粉丝数失败: %w (stderr: %s)", err, strings.TrimSpace(errBuf.String()))
+	}
+	line := strings.TrimSpace(out.String())
+	if line == "" || line == "NA" {
+		return 0, fmt.Errorf("无粉丝数")
+	}
+	subs, err := strconv.ParseInt(line, 10, 64)
+	if err != nil || subs <= 0 {
+		return 0, fmt.Errorf("粉丝数解析失败: %q", line)
+	}
+	return subs, nil
 }
 
 // fitRatio 计算 titles 中命中任一 keyword 的比例（0-1）。keyword 为空返回 0.5（中性）。
