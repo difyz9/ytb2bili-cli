@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -635,11 +637,29 @@ func newChannelCmd() *cobra.Command {
 			cfg := loadConfig()
 			lookback, _ := cmd.Flags().GetInt("lookback")
 			enqueue, _ := cmd.Flags().GetBool("queue")
+			minDur := cfg.MinDurationSec
+			if cmd.Flags().Changed("min-duration") {
+				if v, _ := cmd.Flags().GetInt("min-duration"); v >= 0 {
+					minDur = v
+				}
+			}
 			monitor := channel.NewMonitor(cfg.DataDir)
 
 			fmt.Printf("🔄 同步频道更新 (lookback=%d 天)...\n", lookback)
+			if enqueue && minDur > 0 {
+				fmt.Printf("⏭ 入队时跳过低于 %d 秒的短视频\n", minDur)
+			}
 			newCount, err := monitor.SyncAll(lookback, func(v *channel.DiscoveredVideo) error {
 				if !enqueue {
+					return nil
+				}
+				// 过滤 Short/短视频
+				skip, derr := channel.ShouldSkipAsShort(context.Background(), cfg, v.VideoID, minDur)
+				if derr != nil {
+					fmt.Fprintf(os.Stderr, "   ⚠ 查询视频时长失败（仍入队）: %s: %v\n", v.VideoID, derr)
+				} else if skip {
+					fmt.Printf("   ⏭ 跳过短视频 (%s): %s\n", v.VideoID, v.Title)
+					monitor.MarkSkipped(v.VideoID)
 					return nil
 				}
 				q := queue.New(cfg.DataDir)
@@ -657,6 +677,7 @@ func newChannelCmd() *cobra.Command {
 		},
 	}
 	syncCmd.Flags().Int("lookback", 7, "仅处理最近 N 天发布的视频 (0=不限)")
+	syncCmd.Flags().Int("min-duration", 0, "入队时长下限（秒，覆盖 config 的 min_duration_sec；0=用配置）")
 	syncCmd.Flags().Bool("queue", false, "自动将新视频加入处理队列")
 
 	videosCmd := &cobra.Command{
@@ -670,7 +691,112 @@ func newChannelCmd() *cobra.Command {
 		},
 	}
 
-	ch.AddCommand(addCmd, listCmd, removeCmd, syncCmd, videosCmd)
+	rankCmd := &cobra.Command{
+		Use:   "rank",
+		Short: "按 ytsubs 式基线评分排名频道质量（仅 RSS，无需 OAuth）",
+		Long: `抓取各订阅频道的 RSS，用播放基线评分频道质量（活跃度/基线健康/播放稳定/内容契合），
+评分缓存在 data/channel_scores.json。数据源仅 RSS 自带的播放量。
+
+示例:
+  ytb channel rank                          # 全部排名
+  ytb channel rank --top 50                 # 只看前 50
+  ytb channel rank --window 7               # 近 7 天窗口
+  ytb channel rank --keywords "ai,flutter,go"
+  ytb channel rank --prune-below 40         # 移除低于 40 分的频道`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			windowDays, _ := cmd.Flags().GetInt("window")
+			top, _ := cmd.Flags().GetInt("top")
+			pruneBelow, _ := cmd.Flags().GetFloat64("prune-below")
+			keywordsStr, _ := cmd.Flags().GetString("keywords")
+
+			var keywords []string
+			if keywordsStr != "" {
+				for _, k := range strings.Split(keywordsStr, ",") {
+					if k = strings.TrimSpace(k); k != "" {
+						keywords = append(keywords, k)
+					}
+				}
+			}
+
+			monitor := channel.NewMonitor(cfg.DataDir)
+			subs := monitor.GetActiveSubscriptions()
+			if len(subs) == 0 {
+				return fmt.Errorf("没有活跃的频道订阅")
+			}
+			fmt.Printf("📊 频道质量评分 (window=%d 天, %d 个频道)...\n", windowDays, len(subs))
+
+			// 并发抓取（8 并发）
+			var mu sync.Mutex
+			var results []*channel.ChannelStats
+			sem := make(chan struct{}, 8)
+			var wg sync.WaitGroup
+			for i := range subs {
+				wg.Add(1)
+				sem <- struct{}{}
+				go func(sub channel.Subscription) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+					defer cancel()
+					st, err := channel.ChannelBaseline(ctx, sub, windowDays, keywords)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "  ⚠ 抓取失败 %s: %v\n", sub.ChannelTitle, err)
+						return
+					}
+					mu.Lock()
+					results = append(results, st)
+					mu.Unlock()
+				}(subs[i])
+			}
+			wg.Wait()
+
+			if len(results) == 0 {
+				return fmt.Errorf("所有频道抓取失败，请检查网络")
+			}
+			sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+
+			// 缓存评分
+			cachePath := filepath.Join(cfg.DataDir, "channel_scores.json")
+			if data, err := json.MarshalIndent(results, "", "  "); err == nil {
+				os.WriteFile(cachePath, data, 0644)
+			}
+
+			fmt.Printf("\n🏆 频道质量排名 (共 %d 个，缓存 %s):\n", len(results), cachePath)
+			for i, st := range results {
+				if top > 0 && i >= top {
+					break
+				}
+				title := st.ChannelTitle
+				if len([]rune(title)) > 30 {
+					title = string([]rune(title)[:30]) + "…"
+				}
+				fmt.Printf("%3d. %-30s 基线%10.0f 活跃%3d 分%5.1f\n",
+					i+1, title, st.Baseline, st.Activity, st.Score)
+			}
+
+			// 修剪低分频道
+			if pruneBelow > 0 {
+				removed := 0
+				for _, st := range results {
+					if st.Score < pruneBelow {
+						if err := monitor.RemoveSubscription(st.ChannelID); err == nil {
+							fmt.Printf("  ✂ 移除低分频道: %s (%.1f)\n", st.ChannelTitle, st.Score)
+							removed++
+						}
+					}
+				}
+				fmt.Printf("✅ 已移除 %d 个低分频道\n", removed)
+			}
+			return nil
+		},
+	}
+	rankCmd.Flags().Int("window", 30, "统计窗口天数")
+	rankCmd.Flags().Int("top", 0, "只显示前 N 个（0=全部）")
+	rankCmd.Flags().Float64("prune-below", 0, "移除低于此分数的频道（0=不修剪）")
+	rankCmd.Flags().String("keywords", "", "内容契合关键词（逗号分隔，空=中性）")
+
+	ch.AddCommand(addCmd, listCmd, removeCmd, syncCmd, videosCmd, rankCmd)
 	return ch
 }
 
@@ -947,11 +1073,12 @@ func newAutoCmd() *cobra.Command {
 		Short: "自主模式：自动搜索高价值视频并批量处理",
 		Long: `自主模式自动搜索关键词、多维评分筛选、接入任务队列。
 
-支持多种评分策略（popular / fresh / balanced）：
+支持多种评分策略（popular / fresh / balanced / nowcast）：
 
   popular   播放量优先（默认），适合追求热门内容
   fresh     时效优先，仅取近期发布视频
   balanced  均衡评分，兼顾播放量、时效和内容时长
+  nowcast   ytsubs 式：播放 vs 频道基线，捕捉超出常态/正在起势的视频（需先 channel rank 生成基线缓存）
 
 示例：
   ytb auto "flutter tutorial"                              # 默认评分，入队
@@ -1023,15 +1150,26 @@ func newAutoCmd() *cobra.Command {
 
 			// ── Step 2: 多维评分 ──
 			fmt.Printf("\n📊 评分中... (共 %d 个候选视频)\n", len(allVideos))
-			scored := search.ScoreVideos(allVideos, scorer)
+			var scored []search.ScoredVideo
+			if scorer == search.ScorerNowcast {
+				baselines := loadChannelBaselines(cfg.DataDir)
+				scored = search.ScoreVideosNowcast(allVideos, baselines)
+			} else {
+				scored = search.ScoreVideos(allVideos, scorer)
+			}
 			if len(scored) > maxVideos {
 				scored = scored[:maxVideos]
 			}
 
 			// ── Step 3: 打印评分表格 ──
 			fmt.Println("")
-			fmt.Printf("%-3s %-46s %-8s %-10s %-6s %-6s\n", "#", "标题", "综合分", "播放量", "时效", "时长")
-			fmt.Println(strings.Repeat("─", 85))
+			if scorer == search.ScorerNowcast {
+				fmt.Printf("%-3s %-42s %-6s %-10s %-6s %-6s %-6s\n", "#", "标题", "综合分", "播放量", "Nowcast", "Velocity", "时长")
+				fmt.Println(strings.Repeat("─", 95))
+			} else {
+				fmt.Printf("%-3s %-46s %-8s %-10s %-6s %-6s\n", "#", "标题", "综合分", "播放量", "时效", "时长")
+				fmt.Println(strings.Repeat("─", 85))
+			}
 			for i, sv := range scored {
 				title := sv.Title
 				if len([]rune(title)) > 42 {
@@ -1041,8 +1179,13 @@ func newAutoCmd() *cobra.Command {
 				if views == "" {
 					views = fmt.Sprintf("%d", sv.ViewCount)
 				}
-				fmt.Printf("%-3d %-46s %6.2f  %-10s %5.2f  %5.2f\n",
-					i+1, title, sv.Score, views, sv.RecencyScore, sv.DurationScore)
+				if scorer == search.ScorerNowcast {
+					fmt.Printf("%-3d %-42s %6.2f  %-10s %5.2f  %6.2f  %5.2f\n",
+						i+1, title, sv.Score, views, sv.NowcastScore, sv.VelocityScore, sv.DurationScore)
+				} else {
+					fmt.Printf("%-3d %-46s %6.2f  %-10s %5.2f  %5.2f\n",
+						i+1, title, sv.Score, views, sv.RecencyScore, sv.DurationScore)
+				}
 			}
 
 			if dryRun {
@@ -1103,9 +1246,30 @@ func newAutoCmd() *cobra.Command {
 	cmd.Flags().String("duration", "", "时长过滤: short(<4m) / medium(4-20m) / long(>20m)")
 	cmd.Flags().String("upload-date", "", "上传日期: last_hour / today / this_week / this_month / this_year")
 	cmd.Flags().Bool("skip-translate", false, "跳过翻译")
-	cmd.Flags().String("scorer", "popular", "评分策略: popular / fresh / balanced")
+	cmd.Flags().String("scorer", "popular", "评分策略: popular / fresh / balanced / nowcast")
 
 	return cmd
+}
+
+// loadChannelBaselines 读取 channel rank 的评分缓存（data/channel_scores.json），
+// 返回 map[channel_id]baseline 供 nowcast 评分使用。
+func loadChannelBaselines(dataDir string) map[string]float64 {
+	path := filepath.Join(dataDir, "channel_scores.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠ 未找到频道基线缓存 %s（请先运行 channel rank）：%v\n", path, err)
+		return nil
+	}
+	var stats []channel.ChannelStats
+	if err := json.Unmarshal(data, &stats); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠ 解析频道基线缓存失败: %v\n", err)
+		return nil
+	}
+	baselines := make(map[string]float64, len(stats))
+	for _, s := range stats {
+		baselines[s.ChannelID] = s.Baseline
+	}
+	return baselines
 }
 
 // processSingle 处理单个视频的完整流水线（auto --submit 内部使用）

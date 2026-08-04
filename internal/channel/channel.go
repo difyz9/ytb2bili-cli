@@ -72,6 +72,14 @@ type YouTubeEntry struct {
 	Updated   string  `xml:"updated"`
 	VideoID   YTID    `xml:"videoId"`
 	ChannelID YTID    `xml:"channelId"`
+	// Views 来自 <media:group><media:community><media:statistics views="N"/>（RSS 自带播放量）
+	MediaGroup struct {
+		Community struct {
+			Statistics struct {
+				Views int `xml:"views,attr"`
+			} `xml:"statistics"`
+		} `xml:"community"`
+	} `xml:"group"`
 }
 
 type YTLink struct {

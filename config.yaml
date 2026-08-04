@@ -5,6 +5,7 @@ llm_model: "deepseek-v4-flash"
 data_dir: "./data"
 download_dir: "./data/downloads"   # 视频下载根目录（命令可用 videoId 直接引用该目录下资源）
 chrome_debug_port: 9222            # Chrome 远程调试起始端口（被占用自动+1，cookies refresh 会用实际端口）
+min_duration_sec: 240              # 入队时低于此秒数的视频跳过（Short/短视频，0=不限制）
 bili_tid: 122
 translation_target_lang: zh-Hans
 

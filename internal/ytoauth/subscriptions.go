@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 )
 
 // ─── 数据结构 ────────────────────────────────────────────────────────────
@@ -124,4 +125,100 @@ func FetchSubscriptions(ctx context.Context, accessToken string) ([]Subscription
 	}
 
 	return all, nil
+}
+
+// ─── 视频时长 ──────────────────────────────────────────────────────────────
+
+// FetchVideoDurations 批量查询视频时长（秒）。
+// 通过 YouTube Data API videos.list（part=contentDetails），每批最多 50 个 ID。
+// 返回 map[videoID]秒数，查询不到的不在 map 中。
+func FetchVideoDurations(ctx context.Context, accessToken string, videoIDs []string) (map[string]int, error) {
+	if accessToken == "" {
+		return nil, errors.New("yt-oauth: access_token 为空，请先登录")
+	}
+	result := make(map[string]int)
+	for i := 0; i < len(videoIDs); i += 50 {
+		end := i + 50
+		if end > len(videoIDs) {
+			end = len(videoIDs)
+		}
+		batch := videoIDs[i:end]
+
+		q := url.Values{}
+		q.Set("part", "contentDetails")
+		q.Set("id", strings.Join(batch, ","))
+		reqURL := "https://www.googleapis.com/youtube/v3/videos?" + q.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("请求视频信息失败: %w", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("YouTube API 错误 (%d): %s", resp.StatusCode, truncateForErr(body))
+		}
+
+		var vr struct {
+			Items []struct {
+				ID             string `json:"id"`
+				ContentDetails struct {
+					Duration string `json:"duration"`
+				} `json:"contentDetails"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(body, &vr); err != nil {
+			return nil, err
+		}
+		for _, item := range vr.Items {
+			if sec, ok := parseISO8601Duration(item.ContentDetails.Duration); ok {
+				result[item.ID] = sec
+			}
+		}
+	}
+	return result, nil
+}
+
+// parseISO8601Duration 解析 ISO8601 时长（如 PT1M23S / PT59S / PT1H2M3S）为秒。
+func parseISO8601Duration(s string) (int, bool) {
+	s = strings.TrimPrefix(s, "PT")
+	if s == "" {
+		return 0, false
+	}
+	total := 0
+	num := 0
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= '0' && c <= '9' {
+			num = num*10 + int(c-'0')
+		} else {
+			switch c {
+			case 'H':
+				total += num * 3600
+			case 'M':
+				total += num * 60
+			case 'S':
+				total += num
+			default:
+				return 0, false
+			}
+			num = 0
+		}
+	}
+	return total, total > 0
+}
+
+// truncateForErr 截断 API 错误响应体用于报错信息。
+func truncateForErr(body []byte) string {
+	s := strings.TrimSpace(string(body))
+	if len(s) > 300 {
+		s = s[:300]
+	}
+	return s
 }

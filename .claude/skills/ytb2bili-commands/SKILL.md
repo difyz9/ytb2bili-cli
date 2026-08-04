@@ -113,10 +113,13 @@ list
 remove <channel_id>
 sync [--lookback N] [--queue]
 videos
+rank [--window N] [--top N] [--prune-below N] [--keywords "ai,go"]
 ```
 `add` 支持频道(`UC...`)与播放列表(`PL...`)，自动识别类型并获取名称；添加后按
 `--lookback`（默认 7 天，`0`=不限）同步并自动将新视频加入任务队列（队列与历史双重去重）。
 `sync --lookback` 默认 7 天；`--queue` 自动将新视频加入处理队列。
+`rank` 按 ytsubs 式基线评分（活跃度/基线触达/基线健康/播放稳定/内容契合，仅 RSS 无需 OAuth），
+评分缓存 `data/channel_scores.json`；`--prune-below N` 移除低于 N 分的频道。
 
 ### `queue`
 ```
@@ -195,8 +198,10 @@ watch [--interval 24h] [--once]  常驻定时检测 / 单次检测
 --duration string    short/medium/long
 --upload-date string last_hour/today/this_week/this_month/this_year
 --skip-translate     跳过翻译
---scorer string      popular(默认)/fresh/balanced
+--scorer string      popular(默认)/fresh/balanced/nowcast
 ```
+> `nowcast` 为 ytsubs 式评分：播放 vs 频道基线（`data/channel_scores.json`），无基线时用候选集中位数参照；
+> 先跑 `channel rank` 生成基线缓存效果最佳。
 
 ### `download <URL or video ID>`
 ```
