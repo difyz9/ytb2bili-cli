@@ -51,6 +51,9 @@ type Config struct {
 	TTS          *TTSConfig          `yaml:"tts"`
 	Concurrent   *ConcurrentConfig   `yaml:"concurrent"`
 
+	// 多翻译服务配置（Phase 1）
+	Translation *TranslationConfig `yaml:"translation"`
+
 	// YouTube OAuth 授权配置
 	YouTubeOAuth *YouTubeOAuthConfig `yaml:"youtube_oauth"`
 
@@ -86,6 +89,43 @@ type WhisperConfig struct {
 
 // TencentCloudConfig 腾讯云 API 凭证
 type TencentCloudConfig struct {
+	SecretID  string `yaml:"secret_id"`
+	SecretKey string `yaml:"secret_key"`
+	Region    string `yaml:"region"`
+}
+
+// TranslationConfig 多翻译服务配置（Phase 1）
+// primary 主服务，fallbacks 降级顺序。deepseek 为默认（兼容现有 llm_* 配置）。
+type TranslationConfig struct {
+	Primary   string   `yaml:"primary"`             // 主服务: deepseek / baidu / tencent
+	Fallbacks []string `yaml:"fallbacks"`           // 降级顺序（空=不降级）
+	Retries   int      `yaml:"retries"`             // 主服务重试次数（默认 2）
+	// DeepSeek LLM 翻译
+	DeepSeek *DeepSeekCfg `yaml:"deepseek"`
+	// 百度翻译
+	Baidu *BaiduCfg `yaml:"baidu"`
+	// 腾讯云翻译（默认复用 tencent_cloud 凭证）
+	Tencent *TencentCfg `yaml:"tencent"`
+}
+
+// DeepSeekCfg DeepSeek LLM 翻译配置
+type DeepSeekCfg struct {
+	APIKey      string `yaml:"api_key"`
+	BaseURL     string `yaml:"base_url"`
+	Model       string `yaml:"model"`
+	BatchSize   int    `yaml:"batch_size"`
+	ContextSize int    `yaml:"context_size"`
+}
+
+// BaiduCfg 百度翻译配置
+type BaiduCfg struct {
+	AppID    string `yaml:"app_id"`
+	AppKey   string `yaml:"app_key"`
+	QPS      int    `yaml:"qps"`
+}
+
+// TencentCfg 腾讯翻译配置（为空时复用 tencent_cloud 凭证）
+type TencentCfg struct {
 	SecretID  string `yaml:"secret_id"`
 	SecretKey string `yaml:"secret_key"`
 	Region    string `yaml:"region"`

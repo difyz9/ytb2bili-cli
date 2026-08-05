@@ -34,6 +34,9 @@ type Config struct {
 	MaxWorkers  int
 	RetryCount  int
 	ContextSize int
+	// Router 多服务路由器（Phase 1）。非 nil 时 translateGroup 走 Router 主备切换；
+	// nil 时退化为直接 LLM 调用（向后兼容）。
+	Router *Router
 }
 
 // Result 翻译结果
@@ -395,17 +398,30 @@ func (t *Translator) translateGroup(ctx context.Context, texts []string, prevCon
 		return []string{}, nil
 	}
 
+	// Phase 1: 配置了 Router 时走多服务主备切换
+	if t.config.Router != nil {
+		out, err := t.config.Router.TranslateBatch(ctx, texts, t.config.SourceLang, t.config.TargetLang)
+		if err == nil && len(out) == len(texts) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		// 数量不匹配 → 报错让上层重试
+		return nil, fmt.Errorf("翻译数量不匹配: 期望 %d，实际 %d", len(texts), len(out))
+	}
+
+	// 向后兼容：直接 LLM 调用
 	// 构建提示词
 	contextInfo := ""
 	if len(prevContext) > 0 || len(nextContext) > 0 {
 		contextInfo = fmt.Sprintf(`
-
 上下文信息：
 - 前置上下文：%d 句（仅供参考，不需要翻译）
 - 目标翻译：%d 句（需要逐条翻译）
 - 后置上下文：%d 句（仅供参考，不需要翻译）
 
-			请只翻译 target_subtitles，但要充分考虑前后文的连贯性。`,
+		请只翻译 target_subtitles，但要充分考虑前后文的连贯性。`,
 			len(prevContext), len(texts), len(nextContext))
 	}
 
@@ -889,6 +905,8 @@ func SRT(inputPath, sourceLang, targetLang string, cfg interface{}) (string, err
 
 func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, cfg interface{}) (string, error) {
 	var apiKey, baseURL, model string
+	var transCfg *config.TranslationConfig
+	var tc *config.TencentCloudConfig
 
 	switch c := cfg.(type) {
 	case *Config:
@@ -899,12 +917,17 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 		apiKey = c.LLMAPIKey
 		baseURL = c.LLMBaseURL
 		model = c.LLMModel
+		transCfg = c.Translation
+		tc = c.TencentCloud
 	default:
 		return "", fmt.Errorf("unsupported config type")
 	}
 
 	// 生成输出路径
 	outputPath := TranslatedSRTPath(inputPath, targetLang)
+
+	// 构建多服务 Router（Phase 1）
+	router := buildRouter(transCfg, apiKey, baseURL, model, tc)
 
 	// 创建翻译器
 	// 注意：并发/批大小调低以规避 DeepSeek 高峰期限流（25条长字幕+3并发易触发截断响应）
@@ -918,6 +941,7 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 		MaxWorkers:  1,
 		RetryCount:  3,
 		ContextSize: 2,
+		Router:      router,
 	})
 
 	// 翻译
@@ -926,6 +950,101 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 	}
 
 	return outputPath, nil
+}
+
+// buildRouter 根据配置构建多服务翻译路由器。
+//   - 未配置 translation 段 → 返回 nil（退化为直接 LLM，向后兼容）
+//   - primary: deepseek（默认）/ baidu / tencent
+//   - fallbacks: 按顺序降级
+func buildRouter(transCfg *config.TranslationConfig, apiKey, baseURL, model string, tc *config.TencentCloudConfig) *Router {
+	if transCfg == nil || transCfg.Primary == "" {
+		return nil // 未配置 → 兼容旧行为（直接 LLM）
+	}
+
+	// 构建 deepseek provider（默认 primary）
+	dsAPIKey := apiKey
+	dsBaseURL := baseURL
+	dsModel := model
+	batch := 15
+	contextSize := 2
+	if transCfg.DeepSeek != nil {
+		if transCfg.DeepSeek.APIKey != "" {
+			dsAPIKey = transCfg.DeepSeek.APIKey
+		}
+		if transCfg.DeepSeek.BaseURL != "" {
+			dsBaseURL = transCfg.DeepSeek.BaseURL
+		}
+		if transCfg.DeepSeek.Model != "" {
+			dsModel = transCfg.DeepSeek.Model
+		}
+		if transCfg.DeepSeek.BatchSize > 0 {
+			batch = transCfg.DeepSeek.BatchSize
+		}
+		if transCfg.DeepSeek.ContextSize >= 0 {
+			contextSize = transCfg.DeepSeek.ContextSize
+		}
+	}
+	deepseek := NewDeepSeekProvider(DeepSeekConfig{
+		APIKey:      dsAPIKey,
+		BaseURL:     dsBaseURL,
+		Model:       dsModel,
+		BatchSize:   batch,
+		ContextSize: contextSize,
+	})
+
+	// provider 注册表
+	providers := map[string]Provider{
+		"deepseek": deepseek,
+	}
+	// tencent（复用 tencent_cloud 凭证）
+	if tc != nil && tc.SecretID != "" && tc.SecretKey != "" {
+		tRegion := tc.Region
+		if transCfg.Tencent != nil && transCfg.Tencent.Region != "" {
+			tRegion = transCfg.Tencent.Region
+		}
+		tSecretID, tSecretKey := tc.SecretID, tc.SecretKey
+		if transCfg.Tencent != nil {
+			if transCfg.Tencent.SecretID != "" {
+				tSecretID = transCfg.Tencent.SecretID
+			}
+			if transCfg.Tencent.SecretKey != "" {
+				tSecretKey = transCfg.Tencent.SecretKey
+			}
+		}
+		providers["tencent"] = NewTencentProvider(TencentConfig{
+			SecretID:  tSecretID,
+			SecretKey: tSecretKey,
+			Region:    tRegion,
+		})
+	}
+	// baidu
+	if transCfg.Baidu != nil && transCfg.Baidu.AppID != "" && transCfg.Baidu.AppKey != "" {
+		providers["baidu"] = NewBaiduProvider(BaiduConfig{
+			AppID:  transCfg.Baidu.AppID,
+			AppKey: transCfg.Baidu.AppKey,
+			QPS:    transCfg.Baidu.QPS,
+		})
+	}
+
+	// primary
+	primary, ok := providers[transCfg.Primary]
+	if !ok {
+		primary = deepseek // 未知 primary → 退化 deepseek
+	}
+
+	// fallbacks
+	var fallbacks []Provider
+	for _, name := range transCfg.Fallbacks {
+		if p, ok := providers[name]; ok && name != transCfg.Primary {
+			fallbacks = append(fallbacks, p)
+		}
+	}
+
+	retries := transCfg.Retries
+	if retries <= 0 {
+		retries = 2
+	}
+	return NewRouter(primary, fallbacks, retries)
 }
 
 // TranslatedSRTPath returns a stable output path without appending the target
