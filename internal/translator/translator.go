@@ -463,6 +463,8 @@ func parseTranslations(response string, expected int) ([]string, error) {
 	}
 	if err := json.Unmarshal([]byte(extractJSON(response)), &structured); err == nil && len(structured.Translations) > 0 {
 		if len(structured.Translations) != expected {
+			// 调试：输出原始响应前 300 字符定位截断原因
+			log.Printf("  调试: 期望 %d 条实际 %d 条，原始响应前 300: %s", expected, len(structured.Translations), truncateStr(response, 300))
 			return nil, fmt.Errorf("翻译数量不匹配: 当前批次包含 %d 条待翻译字幕，实际返回 %d 条", expected, len(structured.Translations))
 		}
 		translated := make([]string, expected)
@@ -545,6 +547,14 @@ func extractJSON(response string) string {
 		return response[start : end+1]
 	}
 	return response
+}
+
+// truncateStr 截断字符串用于调试日志（避免刷屏）。
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
 
 func (t *Translator) callLLM(ctx context.Context, systemPrompt, userContent string) (string, error) {
@@ -897,15 +907,16 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 	outputPath := TranslatedSRTPath(inputPath, targetLang)
 
 	// 创建翻译器
+	// 注意：并发/批大小调低以规避 DeepSeek 高峰期限流（25条长字幕+3并发易触发截断响应）
 	translator := New(Config{
 		APIKey:      apiKey,
 		BaseURL:     baseURL,
 		Model:       model,
 		SourceLang:  sourceLang,
 		TargetLang:  targetLang,
-		BatchSize:   25,
-		MaxWorkers:  3,
-		RetryCount:  2,
+		BatchSize:   15,
+		MaxWorkers:  1,
+		RetryCount:  3,
 		ContextSize: 2,
 	})
 
