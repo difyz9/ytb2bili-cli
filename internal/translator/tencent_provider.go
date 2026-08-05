@@ -115,7 +115,12 @@ func (t *TencentProvider) signedRequest(ctx context.Context, action string, payl
 	service := "tmt"
 	host := t.endpoint
 
-	canonicalHeaders := "content-type:application/json; charset=utf-8\nhost:" + host + "\nx-tc-action:" + strings.ToLower(action) + "\n"
+	// 注意：签名 canonical headers 中 x-tc-action 用小写（腾讯签名规范），
+	// 但实际发送的 X-TC-Action header 值必须保持原样（如 TextTranslate）——
+	// tmt 服务对 action 大小写敏感，发送小写会报 InvalidAction。
+	actionLower := strings.ToLower(action)
+
+	canonicalHeaders := "content-type:application/json; charset=utf-8\nhost:" + host + "\nx-tc-action:" + actionLower + "\n"
 	signedHeaders := "content-type;host;x-tc-action"
 	hashedPayload := sha256Hex(bodyBytes)
 	canonicalRequest := strings.Join([]string{
@@ -152,7 +157,7 @@ func (t *TencentProvider) signedRequest(ctx context.Context, action string, payl
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	req.Header.Set("Host", host)
-	req.Header.Set("X-TC-Action", action)
+	req.Header.Set("X-TC-Action", action) // 保持原样（TextTranslate），tmt 大小写敏感
 	req.Header.Set("X-TC-Timestamp", fmt.Sprintf("%d", timestamp))
 	req.Header.Set("X-TC-Version", "2018-03-21")
 	req.Header.Set("X-TC-Region", t.region)
