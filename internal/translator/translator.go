@@ -1025,6 +1025,21 @@ func buildRouter(transCfg *config.TranslationConfig, apiKey, baseURL, model stri
 			QPS:    transCfg.Baidu.QPS,
 		})
 	}
+	// ollama（本地，零成本）
+	if transCfg.Ollama != nil {
+		ollamaModel := transCfg.Ollama.Model
+		ollamaBase := transCfg.Ollama.BaseURL
+		ollamaBatch := transCfg.Ollama.Batch
+		// 未指定模型时自动探测
+		if ollamaModel == "" {
+			ollamaModel = detectOllamaModel(ollamaBase)
+		}
+		providers["ollama"] = NewOllamaProvider(OllamaConfig{
+			BaseURL: ollamaBase,
+			Model:   ollamaModel,
+			Batch:   ollamaBatch,
+		})
+	}
 
 	// primary
 	primary, ok := providers[transCfg.Primary]
@@ -1045,6 +1060,42 @@ func buildRouter(transCfg *config.TranslationConfig, apiKey, baseURL, model stri
 		retries = 2
 	}
 	return NewRouter(primary, fallbacks, retries)
+}
+
+// detectOllamaModel 探测本地 Ollama 已安装的翻译模型（优先 qwen/llama 系列）。
+// 未指定模型时自动挑选；探测失败返回空（由 Provider 用默认值）。
+func detectOllamaModel(baseURL string) string {
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(baseURL + "/api/tags")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+	// 优先选择 qwen2.5，其次任意 qwen/llama
+	preferred := []string{"qwen2.5", "qwen", "llama3", "llama"}
+	for _, p := range preferred {
+		for _, m := range result.Models {
+			if strings.Contains(m.Name, p) {
+				return m.Name
+			}
+		}
+	}
+	if len(result.Models) > 0 {
+		return result.Models[0].Name
+	}
+	return ""
 }
 
 // TranslatedSRTPath returns a stable output path without appending the target
