@@ -6,6 +6,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/zolagz/ytb2bili-go/internal/config"
 )
 
 // Provider 翻译服务提供者接口（Phase 1 多源接入）。
@@ -23,6 +25,63 @@ type ProviderStats struct {
 	Used        int  // 成功使用次数
 	Failures    int  // 失败次数
 	LastUsedAt  time.Time
+}
+
+// TestResult 单个 Provider 连通性测试结果。
+type TestResult struct {
+	Name    string
+	OK      bool
+	Latency time.Duration
+	Error   string
+	Note    string
+}
+
+// TestProviders 测试所有已配置 Provider 的连通性（翻译一行文本）。
+// 返回按配置顺序排列的结果。cfg 为 nil 或未配置 translation 时只测 deepseek。
+func TestProviders(cfg *config.Config) []TestResult {
+	var results []TestResult
+
+	// 构建 router（含所有已注册 provider）
+	router := buildRouter(cfg.Translation, cfg.LLMAPIKey, cfg.LLMBaseURL, cfg.LLMModel, cfg.TencentCloud)
+	if router == nil {
+		// 未配置 translation 段 → 只测默认 LLM
+		ds := NewDeepSeekProvider(DeepSeekConfig{
+			APIKey: cfg.LLMAPIKey, BaseURL: cfg.LLMBaseURL, Model: cfg.LLMModel,
+		})
+		return []TestResult{testOneProvider(ds)}
+	}
+
+	// 收集 router 内所有 provider（primary + fallbacks）
+	seen := map[string]bool{}
+	if router.primary != nil && !seen[router.primary.Name()] {
+		seen[router.primary.Name()] = true
+		results = append(results, testOneProvider(router.primary))
+	}
+	for _, fb := range router.fallbacks {
+		if !seen[fb.Name()] {
+			seen[fb.Name()] = true
+			results = append(results, testOneProvider(fb))
+		}
+	}
+	return results
+}
+
+func testOneProvider(p Provider) TestResult {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	start := time.Now()
+	out, err := p.TranslateBatch(ctx, []string{"Hello world, this is a translation test."}, "en", "zh-Hans")
+	latency := time.Since(start)
+	res := TestResult{Name: p.Name(), Latency: latency}
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	res.OK = true
+	if len(out) > 0 && out[0] != "" {
+		res.Note = "样例: " + truncateStr(out[0], 60)
+	}
+	return res
 }
 
 // Router 主备翻译路由器：primary 重试 → fallbacks 依次降级。
