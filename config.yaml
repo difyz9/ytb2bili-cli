@@ -19,7 +19,7 @@ tencent_cloud:
 # primary 主服务；fallbacks 降级顺序（DeepSeek 高峰限流时自动切换）
 translation:
   primary: "deepseek"          # 主服务: deepseek / baidu / tencent
-  fallbacks: ["tencent"]       # 降级顺序（可多级: ["tencent", "baidu"]）
+  fallbacks: ["tencent", "ollama"]       # 降级顺序（可多级: ["tencent", "baidu"]）
   retries: 2                   # 主服务失败重试次数
   deepseek:
     api_key: "${DEEPSEEK_API_KEY}"   # 留空则用顶层 llm_api_key
@@ -35,6 +35,10 @@ translation:
     secret_id: ""
     secret_key: ""
     region: "ap-beijing"
+  ollama:                      # 本地 Ollama（零成本兜底，需先 ollama pull qwen2.5:7b）
+    base_url: "http://localhost:11434"
+    model: "qwen2.5:7b"
+    batch_size: 10
 
 # YouTube OAuth 授权配置（ytb yt-oauth login 使用）
 # 在 Google Cloud Console → APIs & Services → Credentials 创建 OAuth 2.0 客户端

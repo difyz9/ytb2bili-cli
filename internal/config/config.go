@@ -97,7 +97,7 @@ type TencentCloudConfig struct {
 // TranslationConfig 多翻译服务配置（Phase 1）
 // primary 主服务，fallbacks 降级顺序。deepseek 为默认（兼容现有 llm_* 配置）。
 type TranslationConfig struct {
-	Primary   string   `yaml:"primary"`             // 主服务: deepseek / baidu / tencent
+	Primary   string   `yaml:"primary"`             // 主服务: deepseek / baidu / tencent / ollama
 	Fallbacks []string `yaml:"fallbacks"`           // 降级顺序（空=不降级）
 	Retries   int      `yaml:"retries"`             // 主服务重试次数（默认 2）
 	// DeepSeek LLM 翻译
@@ -106,6 +106,15 @@ type TranslationConfig struct {
 	Baidu *BaiduCfg `yaml:"baidu"`
 	// 腾讯云翻译（默认复用 tencent_cloud 凭证）
 	Tencent *TencentCfg `yaml:"tencent"`
+	// 本地 Ollama 翻译（零成本兜底）
+	Ollama *OllamaCfg `yaml:"ollama"`
+}
+
+// OllamaCfg 本地 Ollama 配置
+type OllamaCfg struct {
+	BaseURL string `yaml:"base_url"`
+	Model   string `yaml:"model"`
+	Batch   int    `yaml:"batch_size"`
 }
 
 // DeepSeekCfg DeepSeek LLM 翻译配置
