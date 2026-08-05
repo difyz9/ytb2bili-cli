@@ -263,6 +263,15 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 		shouldTranslate = true
 	}
 	if !shouldTranslate {
+		// 防御：判定"不需要翻译"时，验证内容确实是目标语言。
+		// 历史 bug：chain run 未传 source-lang → 误判短路 → 英文原文被当"翻译结果"
+		// 写入 .zh-Hans.srt，导致 TTS 合成英文配音、投稿英文视频（BV1GKMr6fEZy）。
+		if !looksLikeTargetLanguage(texts, t.config.TargetLang) {
+			log.Printf("  ⚠ 语言判定跳过翻译，但内容不符合目标语言(%s)，强制翻译", t.config.TargetLang)
+			shouldTranslate = true
+		}
+	}
+	if !shouldTranslate {
 		copied := append([]string(nil), texts...)
 		return &Result{
 			OriginalTexts: texts, TranslatedTexts: copied,
@@ -357,6 +366,12 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 	}
 	if len(allTranslated) != len(texts) {
 		return nil, fmt.Errorf("翻译总数不匹配: 期望 %d 条，实际 %d 条", len(texts), len(allTranslated))
+	}
+
+	// 防御：翻译完成后验证产物确实是目标语言。
+	// 若目标语言含中文而译文几乎无中文 → 判定翻译失败（避免英文原文被当译文投稿）。
+	if !looksLikeTargetLanguage(allTranslated, t.config.TargetLang) {
+		return nil, fmt.Errorf("翻译结果语言校验失败: 目标语言 %s，但译文含目标语言字符比例过低（疑似翻译失败/原文直通）", t.config.TargetLang)
 	}
 
 	return &Result{
@@ -871,6 +886,68 @@ func sameLanguage(source, target string) bool {
 	return source != "" && source == target
 }
 
+// looksLikeTargetLanguage 启发式校验文本是否为目标语言。
+// 规则（按目标语言分类）：
+//   - zh / zh-Hans / zh-Hant / cn：至少 30% 的文本行含 CJK 汉字
+//   - ja：至少 30% 的行含日文假名（ひらがな/カタカナ）
+//   - 其他（en/ko/...）：不校验（返回 true），避免误伤
+//
+// 用途：防御"翻译被短路/直通"导致的英文原文被当译文写入 .zh-Hans.srt。
+func looksLikeTargetLanguage(texts []string, targetLang string) bool {
+	canonical := strings.ToLower(strings.TrimSpace(targetLang))
+	switch {
+	case canonical == "zh" || canonical == "zh-hans" || canonical == "zh-hant" || canonical == "cn" || strings.HasPrefix(canonical, "zh"):
+		return cjkRatio(texts) >= 0.30
+	case canonical == "ja" || canonical == "ja-jp":
+		return kanaRatio(texts) >= 0.30
+	default:
+		// 非 CJK 目标语言暂不校验（避免误伤），后续可按需扩展
+		return true
+	}
+}
+
+// cjkRatio 计算含 CJK 汉字的行占比。
+func cjkRatio(texts []string) float64 {
+	if len(texts) == 0 {
+		return 0
+	}
+	hanLines := 0
+	for _, t := range texts {
+		hasHan := false
+		for _, r := range t {
+			if r >= 0x4E00 && r <= 0x9FFF { // CJK Unified Ideographs
+				hasHan = true
+				break
+			}
+		}
+		if hasHan {
+			hanLines++
+		}
+	}
+	return float64(hanLines) / float64(len(texts))
+}
+
+// kanaRatio 计算含日文假名的行占比。
+func kanaRatio(texts []string) float64 {
+	if len(texts) == 0 {
+		return 0
+	}
+	kanaLines := 0
+	for _, t := range texts {
+		hasKana := false
+		for _, r := range t {
+			if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) { // 平假名+片假名
+				hasKana = true
+				break
+			}
+		}
+		if hasKana {
+			kanaLines++
+		}
+	}
+	return float64(kanaLines) / float64(len(texts))
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -1096,6 +1173,54 @@ func detectOllamaModel(baseURL string) string {
 		return result.Models[0].Name
 	}
 	return ""
+}
+
+// ValidateSRTFile 校验 SRT 字幕文件内容是否为目标语言（防御"假翻译"）。
+// 读取文件、提取文本行、做语言启发式校验；文件不存在或解析失败返回 false。
+func ValidateSRTFile(path, targetLang string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	texts := extractSRTLines(string(data))
+	if len(texts) == 0 {
+		return false
+	}
+	return looksLikeTargetLanguage(texts, targetLang)
+}
+
+// extractSRTLines 从 SRT 内容中提取字幕文本行（跳过序号/时间轴/空行）。
+func extractSRTLines(content string) []string {
+	var lines []string
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if isSRTIndex(line) || isSRTTimestamp(line) {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) >= 200 { // 抽样足够即可
+			break
+		}
+	}
+	return lines
+}
+
+// isSRTIndex 判断是否为纯数字的 SRT 序号行。
+func isSRTIndex(line string) bool {
+	for _, r := range line {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return line != ""
+}
+
+// isSRTTimestamp 判断是否为 SRT 时间轴行（含 -->）。
+func isSRTTimestamp(line string) bool {
+	return strings.Contains(line, "-->")
 }
 
 // TranslatedSRTPath returns a stable output path without appending the target

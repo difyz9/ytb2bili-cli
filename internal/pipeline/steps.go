@@ -151,10 +151,15 @@ func (s *translateStep) Run(ctx context.Context, state *PipelineState) error {
 	log.Printf("  \U0001f310 翻译: %s \u2192 %s", state.Request.SourceLang, state.Request.TargetLang)
 	log.Printf("  \U0001f4c4 来源: %s", filepath.Base(state.Result.SubtitlePath))
 	// 幂等：<id>.<targetLang>.srt 已存在则跳过翻译
+	// 防御：跳过前校验产物内容确实是目标语言——历史 bug 中"假翻译"（英文原文）
+	// 被误写入 .zh-Hans.srt 后幂等跳过，导致英文配音/英文投稿（BV1GKMr6fEZy）。
 	if existing := existingFile(state.Result.DownloadDir, state.Result.ArtifactID()+"."+state.Request.TargetLang+".srt"); existing != "" {
-		state.Result.SubtitlePath = existing
-		log.Printf("  ⏭ 译文已存在: %s", filepath.Base(existing))
-		return nil
+		if translator.ValidateSRTFile(existing, state.Request.TargetLang) {
+			state.Result.SubtitlePath = existing
+			log.Printf("  ⏭ 译文已存在: %s", filepath.Base(existing))
+			return nil
+		}
+		log.Printf("  ⚠ 译文文件存在但内容不符合目标语言(%s)，重新翻译: %s", state.Request.TargetLang, filepath.Base(existing))
 	}
 	translated, err := translator.SRTContext(ctx, state.Result.SubtitlePath, state.Request.SourceLang, state.Request.TargetLang, s.config)
 	if err != nil {
@@ -178,6 +183,13 @@ func (*ttsStep) Definition() workflow.Step {
 
 func (s *ttsStep) Run(ctx context.Context, state *PipelineState) error {
 	audioDir := filepath.Join(state.Result.DownloadDir, "voice")
+	// 防御：合成前校验字幕内容是目标语言。
+	// 历史 bug：翻译短路导致 .zh-Hans.srt 内容为英文原文，TTS 据此合成了英文配音（BV1GKMr6fEZy）。
+	if state.Result.SubtitlePath != "" && strings.HasSuffix(state.Result.SubtitlePath, "."+state.Request.TargetLang+".srt") {
+		if !translator.ValidateSRTFile(state.Result.SubtitlePath, state.Request.TargetLang) {
+			return fmt.Errorf("TTS 中止: 字幕文件内容不是目标语言(%s): %s（疑似翻译失败/假翻译，请先重新翻译）", state.Request.TargetLang, filepath.Base(state.Result.SubtitlePath))
+		}
+	}
 	// 幂等：配音片段已存在则跳过合成（避免重复计费）
 	if hasVoiceClips(audioDir) {
 		fmt.Printf("  ⏭ 配音已存在，跳过合成: %s\n", filepath.Base(audioDir))
