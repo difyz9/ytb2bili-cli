@@ -58,11 +58,22 @@ func newChainCmd() *cobra.Command {
 			if tid == 0 {
 				tid = cfg.BiliTid
 			}
+			// 语言参数：默认 en → 配置目标语言。修复历史 bug：chain run 未传
+			// source-lang 导致语言判定短路，英文原文被当"翻译结果"（BV1GKMr6fEZy）。
+			sourceLang, _ := cmd.Flags().GetString("source-lang")
+			if sourceLang == "" {
+				sourceLang = "en"
+			}
+			targetLang, _ := cmd.Flags().GetString("target-lang")
+			if targetLang == "" {
+				targetLang = cfg.EffectiveTranslationTargetLang()
+			}
 
 			processor := &pipeline.Processor{Config: cfg, Reporter: pipelineReporter()}
 			result, err := processor.Process(context.Background(), pipeline.Request{
 				URL: url, Chain: chainSteps, DryRun: dryRun,
 				SkipTranslate: skipTrans, Tid: tid, Source: "manual",
+				SourceLang: sourceLang, TargetLang: targetLang,
 			})
 			if result != nil && result.BVID != "" {
 				fmt.Printf("\n📺 https://www.bilibili.com/video/%s\n", result.BVID)
@@ -73,6 +84,8 @@ func newChainCmd() *cobra.Command {
 	runCmd.Flags().Bool("dry-run", false, "仅处理不上传")
 	runCmd.Flags().Bool("skip-translate", false, "跳过翻译")
 	runCmd.Flags().Int("tid", 0, "B站分区ID")
+	runCmd.Flags().String("source-lang", "", "源语言（默认 en）")
+	runCmd.Flags().String("target-lang", "", "目标语言（默认读取配置）")
 
 	planCmd := &cobra.Command{
 		Use:   "plan <step1,step2,...> <YouTube URL>",
