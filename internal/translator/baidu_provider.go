@@ -27,6 +27,7 @@ type BaiduProvider struct {
 	appID    string
 	appKey   string
 	endpoint string
+	qps      int
 	client   *http.Client
 }
 
@@ -35,10 +36,14 @@ func NewBaiduProvider(cfg BaiduConfig) *BaiduProvider {
 	if cfg.Endpoint == "" {
 		cfg.Endpoint = "https://api.fanyi.baidu.com/api/trans/vip/translate"
 	}
+	if cfg.QPS <= 0 {
+		cfg.QPS = 5
+	}
 	return &BaiduProvider{
 		appID:    cfg.AppID,
 		appKey:   cfg.AppKey,
 		endpoint: cfg.Endpoint,
+		qps:      cfg.QPS,
 		client:   &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -47,7 +52,7 @@ func (b *BaiduProvider) Name() string { return "baidu" }
 
 // TranslateBatch 批量翻译（BatchAdapter 负责并发与重组）。
 func (b *BaiduProvider) TranslateBatch(ctx context.Context, texts []string, sourceLang, targetLang string) ([]string, error) {
-	adapter := NewBatchAdapter(b.Name(), b.single, 5)
+	adapter := NewBatchAdapter(b.Name(), b.single, b.qps)
 	return adapter.TranslateBatch(ctx, texts, sourceLang, targetLang)
 }
 

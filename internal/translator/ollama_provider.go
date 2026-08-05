@@ -55,7 +55,10 @@ func (o *OllamaProvider) TranslateBatch(ctx context.Context, texts []string, sou
 		return []string{}, nil
 	}
 	// 本地模型单次处理能力有限，分批内部串行
-	const chunkSize = 10
+	chunkSize := o.batch
+	if chunkSize <= 0 {
+		chunkSize = 10
+	}
 	var all []string
 	for start := 0; start < len(texts); start += chunkSize {
 		end := min(start+chunkSize, len(texts))

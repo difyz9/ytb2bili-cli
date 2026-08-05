@@ -219,9 +219,17 @@ func (b *BatchAdapter) TranslateBatch(ctx context.Context, texts []string, sourc
 	errs := make([]error, len(texts))
 	sem := make(chan struct{}, b.qps)
 	var wg sync.WaitGroup
+	cancelled := false
 	for i, text := range texts {
 		wg.Add(1)
-		sem <- struct{}{}
+		// 用 select 支持 ctx 取消（避免信号量满时阻塞在 sem <- 上无法响应取消）
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			wg.Done()
+			cancelled = true
+			goto drain // 跳出循环，等已启动的 goroutine 结束（它们会因 ctx 取消快速失败）
+		}
 		go func(idx int, txt string) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -230,7 +238,11 @@ func (b *BatchAdapter) TranslateBatch(ctx context.Context, texts []string, sourc
 			errs[idx] = err
 		}(i, text)
 	}
+drain:
 	wg.Wait()
+	if cancelled {
+		return nil, ctx.Err()
+	}
 
 	// 汇总错误
 	var failed int
