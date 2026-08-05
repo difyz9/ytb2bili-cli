@@ -3,10 +3,28 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// envPlaceholderPattern 匹配 ${VAR} 形式的环境变量占位符（仅这种形式，避免误伤 $ 符号）。
+var envPlaceholderPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// expandEnvPlaceholders 展开配置值中的 ${ENV_VAR} 占位符。
+// 未定义的环境变量替换为空字符串（调用方会 fallback 到默认值）。
+// 例如: api_key: "${DEEPSEEK_API_KEY}" → api_key: "sk-xxx..."（或空）
+func expandEnvPlaceholders(data []byte) []byte {
+	return envPlaceholderPattern.ReplaceAllFunc(data, func(m []byte) []byte {
+		name := envPlaceholderPattern.FindSubmatch(m)[1]
+		if val := os.Getenv(string(name)); val != "" {
+			return []byte(val)
+		}
+		return []byte("")
+	})
+}
 
 // ExpandHome 将路径开头的 ~/ 展开为用户主目录（~ 单独出现时也处理）。
 // 便于在配置里写 ~/.biliup/models/ggml-base.bin 这类复用系统模型的路径。
@@ -296,6 +314,39 @@ func (c *Config) Init() {
 		c.TencentCloud.Region = "ap-guangzhou"
 	}
 
+	// 多翻译服务配置（环境变量覆盖，优先级: 环境变量 > config.yaml）
+	if c.Translation == nil {
+		c.Translation = &TranslationConfig{}
+	}
+	if primary := os.Getenv("TRANSLATION_PRIMARY"); primary != "" {
+		c.Translation.Primary = primary
+	}
+	if fallbacks := os.Getenv("TRANSLATION_FALLBACKS"); fallbacks != "" {
+		c.Translation.Fallbacks = nil
+		for _, name := range strings.Split(fallbacks, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				c.Translation.Fallbacks = append(c.Translation.Fallbacks, name)
+			}
+		}
+	}
+	if retries := os.Getenv("TRANSLATION_RETRIES"); retries != "" {
+		if n, err := strconv.Atoi(retries); err == nil {
+			c.Translation.Retries = n
+		}
+	}
+	if c.Translation.DeepSeek == nil {
+		c.Translation.DeepSeek = &DeepSeekCfg{}
+	}
+	if c.Translation.Ollama == nil {
+		c.Translation.Ollama = &OllamaCfg{}
+	}
+	if base := os.Getenv("OLLAMA_BASE_URL"); base != "" {
+		c.Translation.Ollama.BaseURL = base
+	}
+	if model := os.Getenv("OLLAMA_MODEL"); model != "" {
+		c.Translation.Ollama.Model = model
+	}
+
 	// 转录后端配置
 	if c.Transcriber == nil {
 		c.Transcriber = &TranscriberConfig{Provider: "whisper"}
@@ -383,6 +434,8 @@ func LoadYAML(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 展开 ${ENV_VAR} 占位符（未定义变量→空，调用方 fallback）
+	data = expandEnvPlaceholders(data)
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}

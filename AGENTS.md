@@ -40,6 +40,15 @@ export YOUTUBE_COOKIES="/path/to/youtube_cookies.txt"
 export LLM_MODEL="deepseek-v4-flash"
 export LLM_BASE_URL="https://api.deepseek.com"
 
+# 可选：字幕翻译服务商（优先级: 环境变量 > config.yaml translation 段）
+# 服务商: deepseek / tencent / baidu / ollama（详见 config.yaml translation 段）
+export TRANSLATION_PRIMARY="deepseek"          # 主翻译服务
+export TRANSLATION_FALLBACKS="tencent,ollama"  # 降级顺序（逗号分隔）
+export TRANSLATION_RETRIES="2"                 # 主服务重试次数
+# 本地 Ollama（可选，用于 ollama 服务商或兜底）
+export OLLAMA_BASE_URL="http://localhost:11434"
+export OLLAMA_MODEL="qwen2.5:7b"
+
 # 可选：配置文件路径（默认 ./config.yaml）
 export YTB2BILI_CONFIG="/path/to/config.yaml"
 ```
