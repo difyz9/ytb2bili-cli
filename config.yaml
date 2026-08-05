@@ -15,6 +15,27 @@ tencent_cloud:
   secret_key: "37zkMlz30pSvC4pNiqlTSxSr7B86zhFa"
   region: "ap-beijing"
 
+# 多翻译服务配置（Phase 1：DeepSeek 主 + 腾讯/百度降级）
+# primary 主服务；fallbacks 降级顺序（DeepSeek 高峰限流时自动切换）
+translation:
+  primary: "deepseek"          # 主服务: deepseek / baidu / tencent
+  fallbacks: ["tencent"]       # 降级顺序（可多级: ["tencent", "baidu"]）
+  retries: 2                   # 主服务失败重试次数
+  deepseek:
+    api_key: "${DEEPSEEK_API_KEY}"   # 留空则用顶层 llm_api_key
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-v4-flash"
+    batch_size: 15             # 批大小（调低规避限流截断）
+    context_size: 2
+  baidu:                       # 百度翻译（需自行申请: https://api.fanyi.baidu.com）
+    app_id: ""
+    app_key: ""
+    qps: 1                     # 百度免费版 QPS=1
+  tencent:                     # 腾讯翻译（留空自动复用 tencent_cloud 凭证）
+    secret_id: ""
+    secret_key: ""
+    region: "ap-beijing"
+
 # YouTube OAuth 授权配置（ytb yt-oauth login 使用）
 # 在 Google Cloud Console → APIs & Services → Credentials 创建 OAuth 2.0 客户端
 # 应用类型选 "桌面应用" 或 "TV and Limited Input devices"（支持设备码流程）
