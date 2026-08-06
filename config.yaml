@@ -49,7 +49,7 @@ youtube_oauth:
 
 # TTS 音频参数
 tts:
-  provider: "tencent"       # 合成器: tencent(腾讯云) / index(本地IndexTTS) / 空=自动检测
+  provider: "index"           # 合成器: index(本地IndexTTS,默认) / tencent(腾讯云) / 空=自动检测
   voice_type: 502005        # 腾讯云音色：101008-智琪(女声), 101007-智慧(女声), 101003-智云(男声)
   volume: 5                 # 音量：0-10
   speed: 1.0                # 语速：0.6-1.5
@@ -59,7 +59,7 @@ tts:
   # 本地 IndexTTS2 服务配置（provider: "index" 时生效）
   index:
     api_url: "http://localhost:18765"   # IndexTTS2 HTTP 服务地址
-    emotion: "default"                  # 情感预设: default/happy/angry/sad/excited
+    emotion: "auto"                      # 情感预设: default/auto/happy/angry/sad/excited/vec:.../emo_text:...
     emotion_alpha: 0.6                  # 情感强度 0-1
     ref_audio: ""                       # 参考音频路径（服务端可见，用于语音克隆音色）
     use_emo_text: false                 # 是否使用文本情感描述

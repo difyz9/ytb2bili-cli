@@ -201,7 +201,7 @@ func (s *ttsStep) Run(ctx context.Context, state *PipelineState) error {
 		return fmt.Errorf("创建配音目录失败: %w", err)
 	}
 
-	switch selectTTSProvider(s.config) {
+	switch SelectTTSProvider(s.config) {
 	case "tencent":
 		return s.runTencent(ctx, state, audioDir)
 	default:
@@ -209,10 +209,10 @@ func (s *ttsStep) Run(ctx context.Context, state *PipelineState) error {
 	}
 }
 
-// selectTTSProvider 决定 tts 步骤使用的合成器。
+// SelectTTSProvider 决定 tts 步骤使用的合成器。
 // 显式配置 tts.provider (tencent/index) 时强制使用；
 // 否则自动检测：有腾讯云凭据 → tencent，无 → index。
-func selectTTSProvider(cfg *config.Config) string {
+func SelectTTSProvider(cfg *config.Config) string {
 	if cfg != nil && cfg.TTS != nil {
 		switch strings.ToLower(strings.TrimSpace(cfg.TTS.Provider)) {
 		case "tencent":
@@ -262,12 +262,26 @@ func (s *ttsStep) runTencent(ctx context.Context, state *PipelineState, audioDir
 // runIndexTTS 使用本地 IndexTTS 服务合成（需要 .venv/bin/python3 + IndexTTS2 HTTP API）。
 // 服务地址与合成参数从配置 tts.index 读取，未配置时使用默认值 http://localhost:18765。
 func (s *ttsStep) runIndexTTS(ctx context.Context, state *PipelineState, audioDir string) error {
+	var idxCfg *config.IndexTTSConfig
+	if s.config != nil && s.config.TTS != nil && s.config.TTS.Index != nil {
+		idxCfg = s.config.TTS.Index
+	}
+	if err := RunIndexTTSSRT(ctx, state.Result.SubtitlePath, audioDir, idxCfg, s.config.DataDir); err != nil {
+		return err
+	}
+	state.AudioDir = audioDir
+	return nil
+}
+
+// RunIndexTTSSRT 使用本地 IndexTTS2 HTTP 服务将 SRT 字幕合成为分段配音。
+// 独立于 PipelineState，供 pipeline tts 步骤与 CLI `ytb tts` 命令复用。
+// idxCfg 为 nil 时使用默认配置；dataDir 用于定位项目 .venv 的 python3。
+func RunIndexTTSSRT(ctx context.Context, srtPath, outputDir string, idxCfg *config.IndexTTSConfig, dataDir string) error {
 	script := filepath.Join("skills", "audio-video-sync", "scripts", "synthesize_srt.py")
 
 	// 从配置读取 IndexTTS 服务参数（缺失时用默认值兜底）
-	idxCfg := config.DefaultIndexTTSConfig()
-	if s.config != nil && s.config.TTS != nil && s.config.TTS.Index != nil {
-		idxCfg = s.config.TTS.Index
+	if idxCfg == nil {
+		idxCfg = config.DefaultIndexTTSConfig()
 	}
 	apiURL := strings.TrimSpace(idxCfg.APIURL)
 	if apiURL == "" {
@@ -292,8 +306,8 @@ func (s *ttsStep) runIndexTTS(ctx context.Context, state *PipelineState, audioDi
 
 	args := []string{
 		script,
-		"--srt", state.Result.SubtitlePath,
-		"--output-dir", audioDir,
+		"--srt", srtPath,
+		"--output-dir", outputDir,
 		"--api-url", apiURL,
 		"--concurrency", fmt.Sprintf("%d", concurrency),
 		"--retries", fmt.Sprintf("%d", retries),
@@ -315,13 +329,12 @@ func (s *ttsStep) runIndexTTS(ctx context.Context, state *PipelineState, audioDi
 	}
 
 	fmt.Printf("  🎙 使用本地 IndexTTS 合成分段配音 (%s)\n", apiURL)
-	cmd := exec.CommandContext(ctx, filepath.Join(s.config.DataDir, "..", ".venv", "bin", "python3"), args...)
+	cmd := exec.CommandContext(ctx, filepath.Join(dataDir, "..", ".venv", "bin", "python3"), args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("TTS 合成失败: %w\n输出: %s", err, string(output))
 	}
 	fmt.Printf("   %s", string(output))
-	state.AudioDir = audioDir
 	return nil
 }
 

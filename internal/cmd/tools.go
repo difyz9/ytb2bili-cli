@@ -559,6 +559,15 @@ func newTencentTTSCmd() *cobra.Command {
 			}
 			concurrency, _ := cmd.Flags().GetInt("concurrency")
 
+			// 合成器由 config 的 tts.provider 控制：index → 本地 IndexTTS，tencent → 腾讯云
+			provider := pipeline.SelectTTSProvider(cfg)
+			if provider == "index" {
+				fmt.Printf("🎙 本地 IndexTTS 合成: %s\n", srtPath)
+				fmt.Printf("   ├ 输出目录: %s\n", outputDir)
+				fmt.Println()
+				return pipeline.RunIndexTTSSRT(context.Background(), srtPath, outputDir, cfg.TTS.Index, cfg.DataDir)
+			}
+
 			ttsCfg := tts.FromAppConfig(cfg)
 			if v, _ := cmd.Flags().GetInt64("voice"); cmd.Flags().Changed("voice") {
 				ttsCfg.Voice = v
