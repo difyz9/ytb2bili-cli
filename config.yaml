@@ -60,8 +60,8 @@ tts:
   index:
     api_url: "http://localhost:18765"   # IndexTTS2 HTTP 服务地址
     emotion: "auto"                      # 情感预设: default/auto/happy/angry/sad/excited/vec:.../emo_text:...
-    emotion_alpha: 0.6                  # 情感强度 0-1
-    ref_audio: ""                       # 参考音频路径（服务端可见，用于语音克隆音色）
+    emotion_alpha: 0.2                  # 情感强度 0-1（默认 0.2，弱情感更自然）
+    ref_audio: "/home/guan/guan/code/index-tts/yunfeng_male_ref.wav"  # 参考音频路径（服务端可见，用于语音克隆音色）zh-CN-YunfengNeural 云风磁性男声
     use_emo_text: false                 # 是否使用文本情感描述
     emo_text: ""                        # 文本情感描述（use_emo_text=true 时生效）
     concurrency: 1                      # 并发合成数

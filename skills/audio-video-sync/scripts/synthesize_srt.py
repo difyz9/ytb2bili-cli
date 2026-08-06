@@ -176,7 +176,7 @@ def parse_args() -> argparse.Namespace:
         help="Output directory on a remote IndexTTS2 host; files are not copied locally",
     )
     parser.add_argument("--emotion", default="default")
-    parser.add_argument("--emo-alpha", type=float, default=0.6)
+    parser.add_argument("--emo-alpha", type=float, default=0.2)
     parser.add_argument("--ref-audio", default="", help="Reference WAV path visible to the server")
     parser.add_argument("--use-emo-text", action="store_true")
     parser.add_argument("--emo-text", default="")

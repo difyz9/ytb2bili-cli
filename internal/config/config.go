@@ -179,7 +179,7 @@ type IndexTTSConfig struct {
 	APIURL string `yaml:"api_url"`
 	// Emotion 情感预设：default/happy/angry/sad/excited 等（默认 default）
 	Emotion string `yaml:"emotion"`
-	// EmotionAlpha 情感强度 0-1（默认 0.6）
+	// EmotionAlpha 情感强度 0-1（默认 0.2）
 	EmotionAlpha float64 `yaml:"emotion_alpha"`
 	// RefAudio 参考音频路径（服务端可见路径，用于语音克隆音色）
 	RefAudio string `yaml:"ref_audio"`
@@ -202,7 +202,7 @@ func DefaultIndexTTSConfig() *IndexTTSConfig {
 	return &IndexTTSConfig{
 		APIURL:       "http://localhost:18765",
 		Emotion:      "default",
-		EmotionAlpha: 0.6,
+		EmotionAlpha: 0.2,
 		Concurrency:  1,
 		Retries:      3,
 		Timeout:      180,
