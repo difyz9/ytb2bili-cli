@@ -61,54 +61,54 @@ func TestSelectTTSProvider(t *testing.T) {
 
 	t.Run("explicit tencent", func(t *testing.T) {
 		cfg := &config.Config{TTS: &config.TTSConfig{Provider: "tencent"}}
-		if got := selectTTSProvider(cfg); got != "tencent" {
+		if got := SelectTTSProvider(cfg); got != "tencent" {
 			t.Fatalf("got %q, want tencent", got)
 		}
 	})
 
 	t.Run("explicit index", func(t *testing.T) {
 		cfg := &config.Config{TTS: &config.TTSConfig{Provider: "index"}}
-		if got := selectTTSProvider(cfg); got != "index" {
+		if got := SelectTTSProvider(cfg); got != "index" {
 			t.Fatalf("got %q, want index", got)
 		}
 	})
 
 	t.Run("explicit tencent wins over missing creds", func(t *testing.T) {
 		cfg := &config.Config{TTS: &config.TTSConfig{Provider: "tencent"}}
-		if got := selectTTSProvider(cfg); got != "tencent" {
+		if got := SelectTTSProvider(cfg); got != "tencent" {
 			t.Fatalf("got %q, want tencent", got)
 		}
 	})
 
 	t.Run("auto with creds picks tencent", func(t *testing.T) {
-		if got := selectTTSProvider(withCreds); got != "tencent" {
+		if got := SelectTTSProvider(withCreds); got != "tencent" {
 			t.Fatalf("got %q, want tencent", got)
 		}
 	})
 
 	t.Run("auto without creds picks index", func(t *testing.T) {
 		cfg := &config.Config{TTS: &config.TTSConfig{}}
-		if got := selectTTSProvider(cfg); got != "index" {
+		if got := SelectTTSProvider(cfg); got != "index" {
 			t.Fatalf("got %q, want index", got)
 		}
 	})
 
 	t.Run("auto alias", func(t *testing.T) {
 		cfg := &config.Config{TTS: &config.TTSConfig{Provider: "auto"}}
-		if got := selectTTSProvider(cfg); got != "index" {
+		if got := SelectTTSProvider(cfg); got != "index" {
 			t.Fatalf("got %q, want index (no creds)", got)
 		}
 	})
 
 	t.Run("case and space insensitive", func(t *testing.T) {
 		cfg := &config.Config{TTS: &config.TTSConfig{Provider: " Tencent "}}
-		if got := selectTTSProvider(cfg); got != "tencent" {
+		if got := SelectTTSProvider(cfg); got != "tencent" {
 			t.Fatalf("got %q, want tencent", got)
 		}
 	})
 
 	t.Run("nil config defaults to index", func(t *testing.T) {
-		if got := selectTTSProvider(nil); got != "index" {
+		if got := SelectTTSProvider(nil); got != "index" {
 			t.Fatalf("got %q, want index", got)
 		}
 	})
