@@ -419,5 +419,27 @@ func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
 	}
 	_, _ = storage.NewSubtitleStore(filepath.Join(s.config.DataDir, "subtitles")).SyncFromDownload(r.ArtifactID(), bvid, r.DownloadDir)
 	fmt.Printf("  \u2705 B站: https://www.bilibili.com/video/%s\n", bvid)
+
+	// 异步监听审核状态：审核通过后自动上传字幕（不阻塞主流程）
+	// 字幕上传非必须，失败不影响投稿；仅当存在待上传字幕时才启动监听
+	if pending := storage.NewSubtitleStore(filepath.Join(s.config.DataDir, "subtitles")).GetPending(r.ArtifactID()); len(pending) > 0 {
+		go func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					log.Printf("[字幕监听] panic 恢复: %v\n", rec)
+				}
+			}()
+			// 需要独立凭证副本：LoginInfo 可能被上层复用，深拷贝避免数据竞争
+			credCopy := cred
+			bili.WatchAndUploadSubtitle(bvid, r.ArtifactID(), r.DownloadDir, &credCopy, s.config.DataDir, pipelineSubtitleLogger{})
+		}()
+	}
 	return nil
+}
+
+// pipelineSubtitleLogger 流水线内字幕监听的日志适配器（输出到标准日志）
+type pipelineSubtitleLogger struct{}
+
+func (pipelineSubtitleLogger) Printf(format string, args ...interface{}) {
+	log.Printf(format, args...)
 }
