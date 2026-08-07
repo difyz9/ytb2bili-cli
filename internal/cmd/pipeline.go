@@ -1388,8 +1388,9 @@ func newAutoCmd() *cobra.Command {
 			} else {
 				scored = search.ScoreVideos(allVideos, scorer)
 			}
-			if len(scored) > maxVideos {
-				scored = scored[:maxVideos]
+			// 放宽截取：多留候选供去重后补充（重复视频会被跳过，直到凑满 maxVideos）
+			if len(scored) > maxVideos*3 {
+				scored = scored[:maxVideos*3]
 			}
 
 			// ── Step 3: 打印评分表格 ──
@@ -1429,6 +1430,9 @@ func newAutoCmd() *cobra.Command {
 			q := queue.New(cfg.DataDir)
 			queued := 0
 			for _, sv := range scored {
+				if queued >= maxVideos {
+					break
+				}
 				added, err := q.Add(sv.ID, sv.URL, sv.Title, sv.ChannelID, "auto")
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "  ⚠ 入队失败 [%s]: %v\n", sv.Title, err)
@@ -1436,7 +1440,7 @@ func newAutoCmd() *cobra.Command {
 				}
 				if added {
 					queued++
-					fmt.Printf("  📥 已入队 [%d/%d]: %s\n", queued, len(scored), sv.Title)
+					fmt.Printf("  📥 已入队 [%d/%d]: %s\n", queued, maxVideos, sv.Title)
 				} else {
 					fmt.Printf("  ⏭️ 已在队列/历史中: %s\n", sv.Title)
 				}
