@@ -1323,6 +1323,7 @@ func newAutoCmd() *cobra.Command {
 			submit, _ := cmd.Flags().GetBool("submit")
 			minViews, _ := cmd.Flags().GetInt("min-views")
 			duration, _ := cmd.Flags().GetString("duration")
+			maxDuration, _ := cmd.Flags().GetInt("max-duration")
 			uploadDate, _ := cmd.Flags().GetString("upload-date")
 			skipTranslate, _ := cmd.Flags().GetBool("skip-translate")
 			scorerStr, _ := cmd.Flags().GetString("scorer")
@@ -1358,8 +1359,12 @@ func newAutoCmd() *cobra.Command {
 					continue
 				}
 
-				// ApplySafeSearch: 去重、黑名单、min-views、时长合理性
-				filtered := search.ApplySafeSearch(result.Videos, int64(minViews), 0)
+				// ApplySafeSearch: 去重、黑名单、min-views、时长上限（max-duration 分钟→秒）
+				maxSec := 0
+				if maxDuration > 0 {
+					maxSec = maxDuration * 60
+				}
+				filtered := search.ApplySafeSearch(result.Videos, int64(minViews), maxSec)
 				for _, v := range filtered {
 					if seen[v.ID] {
 						continue
@@ -1450,13 +1455,35 @@ func newAutoCmd() *cobra.Command {
 			// queue.Add 已经记录了发现记录，history 记录实际提交
 			if submit {
 				fmt.Println("\n🚀 --submit 模式，开始处理...")
-				for i, sv := range scored {
-					fmt.Printf("\n[%d/%d] %s\n", i+1, len(scored), sv.Title)
-					_, processErr := processSingle(cfg, sv.URL, skipTranslate)
+				processed := 0
+				for processed < len(scored) {
+					// 从队列认领下一个待处理视频（queued → claimed）
+					item, err := q.Next("auto")
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "  ⚠ 队列认领失败: %v\n", err)
+						break
+					}
+					if item == nil {
+						// 没有更多 queued 任务（可能全部已 claimed/处理中）
+						break
+					}
+					processed++
+					fmt.Printf("\n[%d/%d] %s\n", processed, len(scored), item.Title)
+					res, processErr := processSingle(cfg, item.URL, skipTranslate)
 					if processErr != nil {
 						fmt.Printf("  ❌ %v\n", processErr)
+						// 队列状态: claimed → failed（自动重试或最终失败）
+						_ = q.Fail(item.VideoID, processErr.Error())
 					} else {
 						fmt.Printf("  ✅ 处理完成\n")
+						// 队列状态: claimed → completed（携带投稿 BVID）
+						bvid := ""
+						if res != nil {
+							bvid = res.BVID
+						}
+						if err := q.Complete(item.VideoID, bvid); err != nil {
+							fmt.Printf("  ⚠ 队列状态更新失败: %v\n", err)
+						}
 					}
 				}
 			}
@@ -1470,6 +1497,7 @@ func newAutoCmd() *cobra.Command {
 	cmd.Flags().Bool("submit", false, "入队后直接处理（默认只入队到 queue）")
 	cmd.Flags().Int("min-views", 0, "最低播放量过滤")
 	cmd.Flags().String("duration", "", "时长过滤: short(<4m) / medium(4-20m) / long(>20m)")
+	cmd.Flags().Int("max-duration", 0, "最大视频时长（分钟），0=不限（例: 40 = 仅搬运40分钟以内视频）")
 	cmd.Flags().String("upload-date", "", "上传日期: last_hour / today / this_week / this_month / this_year")
 	cmd.Flags().Bool("skip-translate", false, "跳过翻译")
 	cmd.Flags().String("scorer", "popular", "评分策略: popular / fresh / balanced / nowcast")
