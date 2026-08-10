@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/zolagz/ytb2bili-go/internal/audiosync"
-	"github.com/zolagz/ytb2bili-go/internal/auth"
 	"github.com/zolagz/ytb2bili-go/internal/bili"
 	"github.com/zolagz/ytb2bili-go/internal/config"
 	"github.com/zolagz/ytb2bili-go/internal/download"
@@ -397,9 +396,14 @@ func (*uploadStep) Definition() workflow.Step {
 	return workflow.Step{Name: "upload", Description: "投稿到 B站并记录历史", Requires: []string{"download", "metadata"}}
 }
 func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
-	var cred auth.LoginInfo
-	if err := storage.NewCredentialStore(filepath.Join(s.config.DataDir, "cookies")).Load(&cred); err != nil {
-		return fmt.Errorf("请先登录: ytb2bili login")
+	// 多账号路由：按稿件标题/标签匹配账号规则，选择投稿账号
+	router := &accountRouter{config: s.config}
+	cred, acctName, err := router.pickAccount(state.Metadata.Title, state.Metadata.Tags, "")
+	if err != nil {
+		return err
+	}
+	if acctName != "" {
+		fmt.Printf("  👤 投稿账号: %s\n", acctName)
 	}
 	r, req := state.Result, state.Request
 	videoSize := "?"
@@ -408,7 +412,7 @@ func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
 	}
 	fmt.Printf("  \U0001f4e4 上传视频: %s (%s)\n", filepath.Base(r.VideoPath), videoSize)
 	fmt.Printf("  \U0001f3a8 标题: %s\n", state.Metadata.Title)
-	bvid, err := bili.UploadContext(ctx, &cred, &bili.UploadParams{VideoPath: r.VideoPath, Title: state.Metadata.Title, Desc: state.Metadata.Description, Tags: state.Metadata.Tags, Source: req.URL, Tid: req.Tid, CoverPath: state.Download.CoverPath})
+	bvid, err := bili.UploadContext(ctx, cred, &bili.UploadParams{VideoPath: r.VideoPath, Title: state.Metadata.Title, Desc: state.Metadata.Description, Tags: state.Metadata.Tags, Source: req.URL, Tid: req.Tid, CoverPath: state.Download.CoverPath})
 	if err != nil {
 		return fmt.Errorf("上传失败: %w", err)
 	}
@@ -430,7 +434,7 @@ func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
 				}
 			}()
 			// 需要独立凭证副本：LoginInfo 可能被上层复用，深拷贝避免数据竞争
-			credCopy := cred
+			credCopy := *cred
 			bili.WatchAndUploadSubtitle(bvid, r.ArtifactID(), r.DownloadDir, &credCopy, s.config.DataDir, pipelineSubtitleLogger{})
 		}()
 	}

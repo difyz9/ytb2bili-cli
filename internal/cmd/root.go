@@ -84,6 +84,7 @@ func newRootCmd() *cobra.Command {
 		// B站管理
 		group(newLoginCmd(), "bili"),
 		group(newWhoamiCmd(), "bili"),
+		group(newAccountsCmd(), "bili"),
 		group(newPublishCmd(), "bili"),
 		group(newReviewCmd(), "bili"),
 		group(newSubtitleCmd(), "bili"),

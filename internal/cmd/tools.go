@@ -27,13 +27,18 @@ import (
 // ─── Login ─────────────────────────────────────────────────────────────────
 
 func newLoginCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "B站扫码登录",
+		Short: "B站扫码登录（--account 指定账号名支持多账号）",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			acctName, _ := cmd.Flags().GetString("account")
 			cfg := loadConfig()
 			credDir := filepath.Join(cfg.DataDir, "cookies")
 			store := storage.NewCredentialStore(credDir)
+
+			if acctName != "" {
+				fmt.Printf("👤 登录账号: %s\n", acctName)
+			}
 
 			fmt.Println("📱 获取二维码...")
 			qr, err := auth.GetQRCode()
@@ -76,8 +81,11 @@ func newLoginCmd() *cobra.Command {
 				return fmt.Errorf("登录失败: %w", err)
 			}
 
-			store.Save(cred)
+			store.Save(cred, acctName)
 			fmt.Println("\n✅ ===== 扫码成功! =====")
+			if acctName != "" {
+				fmt.Printf("   账号: %s\n", acctName)
+			}
 			fmt.Println("   登录凭据已保存")
 
 			info, _ := auth.GetUserInfo(cred)
@@ -90,12 +98,14 @@ func newLoginCmd() *cobra.Command {
 				if cred.TokenInfo.Mid == 0 && mid > 0 {
 					cred.TokenInfo.Mid = int64(mid)
 				}
-				store.Save(cred)
+				store.Save(cred, acctName)
 			}
 			fmt.Println("✅ =====================")
 			return nil
 		},
 	}
+	cmd.Flags().String("account", "", "账号名（登录为多账号，投稿时按类型路由）")
+	return cmd
 }
 
 // ─── WhoAmI ────────────────────────────────────────────────────────────────
@@ -133,6 +143,50 @@ func newWhoamiCmd() *cobra.Command {
 			}
 			if cred.TokenInfo.Mid > 0 {
 				fmt.Printf("   UID: %d\n", cred.TokenInfo.Mid)
+			}
+			return nil
+		},
+	}
+}
+
+// ─── Accounts ──────────────────────────────────────────────────────────────
+
+func newAccountsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "accounts",
+		Short: "列出所有已登录的B站账号",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			cs := storage.NewCredentialStore(filepath.Join(cfg.DataDir, "cookies"))
+			names := cs.ListAccounts()
+
+			if len(names) == 0 {
+				fmt.Println("📭 没有多账号登录记录")
+				if cs.Exists() {
+					fmt.Println("   已使用默认账号（bilibili.json）")
+					fmt.Println("💡 多账号登录: ytb login --account <账号名>")
+				} else {
+					fmt.Println("❌ 未登录任何账号")
+					fmt.Println("💡 请先执行: ytb login")
+				}
+				return nil
+			}
+
+			fmt.Println("👥 已登录账号:")
+			for _, n := range names {
+				var cred auth.LoginInfo
+				if err := cs.Load(&cred, n); err == nil {
+					valid, _ := auth.ValidateLogin(&cred)
+					status := "✅"
+					if !valid {
+						status = "⚠️ 过期"
+					}
+					uname := cred.TokenInfo.Uname
+					if uname == "" {
+						uname = "(未获取用户名)"
+					}
+					fmt.Printf("  %s %-15s %s\n", status, n, uname)
+				}
 			}
 			return nil
 		},
