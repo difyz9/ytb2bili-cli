@@ -77,6 +77,20 @@ type Config struct {
 
 	// 转录后端配置
 	Transcriber *TranscriberConfig `yaml:"transcriber"`
+
+	// 多 B站账号配置：按稿件类型路由投稿账号
+	Accounts []AccountConfig `yaml:"accounts"`
+}
+
+// AccountConfig 单个 B站账号的路由规则
+type AccountConfig struct {
+	// Name 账号标识（对应 data/cookies/accounts/<name>.json 凭证文件）
+	Name string `yaml:"name"`
+	// TypeRule 稿件类型关键词列表：标题/标签命中任意关键词则投稿到该账号
+	// 例如: ["AI", "人工智能", "教程"]。空则作为默认账号（兜底）。
+	TypeRule []string `yaml:"type_rule,omitempty"`
+	// IsDefault 是否为默认账号（未匹配任何规则时使用）。多个为 true 时取第一个。
+	IsDefault bool `yaml:"is_default,omitempty"`
 }
 
 // YouTubeOAuthConfig Google OAuth 客户端凭证

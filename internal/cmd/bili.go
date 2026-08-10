@@ -16,17 +16,28 @@ import (
 )
 
 // loadCredential 加载并校验 B站登录凭据。
-func loadCredential(cfg *config.Config) (*auth.LoginInfo, error) {
+// accountName 为空时加载默认账号（兼容旧版单账号）。
+func loadCredential(cfg *config.Config, accountName ...string) (*auth.LoginInfo, error) {
+	acct := ""
+	if len(accountName) > 0 {
+		acct = accountName[0]
+	}
 	cs := storage.NewCredentialStore(filepath.Join(cfg.DataDir, "cookies"))
-	if !cs.Exists() {
+	if !cs.Exists(acct) {
+		if acct != "" {
+			return nil, fmt.Errorf("账号 %q 未登录，请先执行: ytb login --account %q", acct, acct)
+		}
 		return nil, fmt.Errorf("未登录，请先执行: ytb login")
 	}
 	var cred auth.LoginInfo
-	if err := cs.Load(&cred); err != nil {
+	if err := cs.Load(&cred, acct); err != nil {
 		return nil, fmt.Errorf("读取登录凭据失败: %w", err)
 	}
 	valid, err := auth.ValidateLogin(&cred)
 	if err != nil || !valid {
+		if acct != "" {
+			return nil, fmt.Errorf("账号 %q 登录已过期，请重新登录: ytb login --account %q", acct, acct)
+		}
 		return nil, fmt.Errorf("登录已过期，请重新登录: ytb login")
 	}
 	return &cred, nil
@@ -48,9 +59,13 @@ func newPublishCmd() *cobra.Command {
 				return fmt.Errorf("请输入视频文件路径")
 			}
 			cfg := loadConfig()
-			cred, err := loadCredential(cfg)
+			acct, _ := cmd.Flags().GetString("account")
+			cred, err := loadCredential(cfg, acct)
 			if err != nil {
 				return err
+			}
+			if acct != "" {
+				fmt.Printf("👤 投稿账号: %s\n", acct)
 			}
 			videoPath := args[0]
 
@@ -93,6 +108,7 @@ func newPublishCmd() *cobra.Command {
 	cmd.Flags().Int("tid", 0, "B站分区ID（默认读取配置）")
 	cmd.Flags().String("cover", "", "封面图片路径")
 	cmd.Flags().String("source", "", "源站 URL")
+	cmd.Flags().String("account", "", "投稿账号名（多账号，默认按配置路由）")
 	return cmd
 }
 

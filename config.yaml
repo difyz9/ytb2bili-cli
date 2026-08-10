@@ -81,3 +81,15 @@ transcriber:
     binary: whisper-cli      # whisper-cli 可执行路径（按 PATH 查找）
     model: ~/.biliup/models/ggml-base.bin   # GGML 模型文件路径（支持 ~/ 展开）
     threads: 4               # 推理线程数
+
+# 多 B站账号投稿路由（可选）
+# 按稿件标题/标签关键词匹配账号：命中 TypeRule 中任意关键词 → 投稿到该账号
+# 未匹配任何规则 → 使用 IsDefault 账号；无默认账号 → 默认账号（bilibili.json）
+# 登录: ytb login --account "账号名"    查看: ytb accounts    显式投稿: ytb publish --account X
+accounts:
+  - name: "莉雅水嘟嘟"          # 当前主账号
+    type_rule: ["AI", "人工智能", "ChatGPT", "教程"]   # 稿件类型关键词
+    is_default: true            # 默认账号（兜底）
+  # - name: "副业号"            # 示例：第二个账号
+  #   type_rule: ["副业", "赚钱", "收入"]   # 匹配这些关键词的稿件投稿到此账号
+  #   is_default: false
