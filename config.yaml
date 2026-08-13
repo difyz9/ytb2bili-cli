@@ -64,7 +64,7 @@ tts:
     ref_audio: "/home/guan/guan/code/index-tts/yunfeng_male_ref.wav"  # 参考音频路径（服务端可见，用于语音克隆音色）zh-CN-YunfengNeural 云风磁性男声
     use_emo_text: false                 # 是否使用文本情感描述
     emo_text: ""                        # 文本情感描述（use_emo_text=true 时生效）
-    concurrency: 1                      # 并发合成数
+    concurrency: 4                      # 并发合成数
     retries: 3                          # 失败重试次数
     timeout: 180                        # 单条请求超时秒数
 
@@ -93,3 +93,53 @@ accounts:
   # - name: "副业号"            # 示例：第二个账号
   #   type_rule: ["副业", "赚钱", "收入"]   # 匹配这些关键词的稿件投稿到此账号
   #   is_default: false
+
+# ── 自主搜索调度配置（auto / daemon 共用，关键词单一来源）────────────────
+# 以前关键词散落 3 处（batch_loop.sh / auto-cron.sh / search.go StandardKeywords），
+# 现在统一只维护这里。改关键词 = 改此段 + systemctl --user restart ytb-batch-loop。
+search:
+  keywords:
+    - "AI tutorial"
+    - "ChatGPT"
+    - "AI automation"
+    - "AI business"
+    - "AI agents"
+    - "AI tools"
+    - "machine learning"
+    - "local AI"
+    - "Claude AI"
+    - "AI video"
+    - "Pi agent coding"
+    - "Pi agent tutorial"
+    - "Pi AI agent"
+    - "Pi coding agent"
+    - "Pi agent MCP"
+    - "AI workflow tutorial"
+    - "prompt engineering tutorial"
+    - "AI coding assistant"
+  scorer: "nowcast"            # popular / fresh / balanced / nowcast
+  upload_date: "this_month"    # last_hour / today / this_week / this_month / this_year
+  max_duration: 40             # 最大视频时长（分钟），0=不限
+  max_videos: 5                # 每批最多处理视频数
+  min_views: 0                 # 最低播放量过滤，0=不限制
+  # duration: ""               # 时长档位: short(<4m) / medium(4-20m) / long(>20m)
+  # skip_translate: false      # 跳过翻译
+
+# ── daemon 守护进程配置（替代 batch_loop.sh 的调度参数）─────────────────
+daemon:
+  interval_sec: 60             # 批间休息秒数
+  max_batches: 0               # 最大批次数（0=无限）
+  consume_per_batch: 2         # 每批消费排队任务上限
+  max_retries: 3               # 失败任务自动重试上限，达上限停止并告警
+  step_timeout_sec:            # 单步骤超时（秒），超时自动 kill 重试
+    download: 1800             #   下载 30 分钟
+    transcribe: 1800           #   转写 30 分钟
+    translate: 1800            #   翻译 30 分钟
+    tts: 3600                  #   TTS 60 分钟
+    audio-sync: 1800           #   音画同步 30 分钟
+    metadata: 600              #   元数据 10 分钟
+    upload: 600                #   上传 10 分钟
+  task_timeout_sec: 0          # 单任务总超时（秒），0=不限制（仅靠步骤超时兜底）
+  heartbeat_file: "daemon/heartbeat.json"   # 心跳文件（相对 data_dir）
+  alert_webhook: ""            # 飞书自定义机器人 webhook（任务失败/心跳过期告警），留空=不告警
+  alert_failed: true           # 任务重试达上限后是否飞书告警

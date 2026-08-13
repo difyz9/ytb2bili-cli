@@ -189,9 +189,13 @@ func (s *ttsStep) Run(ctx context.Context, state *PipelineState) error {
 			return fmt.Errorf("TTS 中止: 字幕文件内容不是目标语言(%s): %s（疑似翻译失败/假翻译，请先重新翻译）", state.Request.TargetLang, filepath.Base(state.Result.SubtitlePath))
 		}
 	}
-	// 幂等：配音片段已存在则跳过合成（避免重复计费）
-	if hasVoiceClips(audioDir) {
-		fmt.Printf("  ⏭ 配音已存在，跳过合成: %s\n", filepath.Base(audioDir))
+	// 幂等：配音已完成（.tts-complete 标记存在）则跳过合成（避免重复计费）。
+	// 注意不能用 hasVoiceClips 判断：TTS 中途被 kill（超时/重启）会留下部分片段，
+	// 直接跳过会产出缺段配音。synthesize_srt.py 本身支持断点续跑（跳过已有片段），
+	// 因此只有"完整完成"标记存在才跳过。
+	completeMarker := filepath.Join(audioDir, ".tts-complete")
+	if _, err := os.Stat(completeMarker); err == nil {
+		fmt.Printf("  ⏭ 配音已完成，跳过合成: %s\n", filepath.Base(audioDir))
 		state.AudioDir = audioDir
 		return nil
 	}
@@ -200,12 +204,21 @@ func (s *ttsStep) Run(ctx context.Context, state *PipelineState) error {
 		return fmt.Errorf("创建配音目录失败: %w", err)
 	}
 
+	var ttsErr error
 	switch SelectTTSProvider(s.config) {
 	case "tencent":
-		return s.runTencent(ctx, state, audioDir)
+		ttsErr = s.runTencent(ctx, state, audioDir)
 	default:
-		return s.runIndexTTS(ctx, state, audioDir)
+		ttsErr = s.runIndexTTS(ctx, state, audioDir)
 	}
+	if ttsErr != nil {
+		return ttsErr
+	}
+	// 合成成功 → 写完成标记（原子：临时文件 + rename）
+	if err := os.WriteFile(completeMarker+".tmp", []byte("ok\n"), 0644); err == nil {
+		_ = os.Rename(completeMarker+".tmp", completeMarker)
+	}
+	return nil
 }
 
 // SelectTTSProvider 决定 tts 步骤使用的合成器。

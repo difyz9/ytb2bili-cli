@@ -126,7 +126,17 @@ func (p *Processor) Process(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	observer := &taskObserver{tasks: tasks, taskID: task.ID, report: p.Reporter}
-	if err = (workflow.Executor{Registry: registry, Observer: observer}).Run(ctx, result.Plan, workflow.NewState()); err != nil {
+	executor := workflow.Executor{Registry: registry, Observer: observer}
+	// 步骤级超时（来自 daemon 配置）：超时自动 kill 重试，防止长任务无限卡死
+	if p.Config != nil && p.Config.Daemon != nil && len(p.Config.Daemon.StepTimeoutSec) > 0 {
+		executor.StepTimeout = make(map[string]time.Duration, len(p.Config.Daemon.StepTimeoutSec))
+		for step, sec := range p.Config.Daemon.StepTimeoutSec {
+			if sec > 0 {
+				executor.StepTimeout[step] = time.Duration(sec) * time.Second
+			}
+		}
+	}
+	if err = executor.Run(ctx, result.Plan, workflow.NewState()); err != nil {
 		return result, err
 	}
 	tasks.SetCompleted(task.ID)

@@ -1312,11 +1312,16 @@ func newAutoCmd() *cobra.Command {
   ytb auto --dry-run --scorer fresh "golang tutorial"      # 仅查看评分结果
   ytb auto --submit --max-videos 5 "machine learning"      # 直接提交处理`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return fmt.Errorf("请提供搜索关键词")
-			}
-
 			cfg := loadConfig()
+
+			// 关键词：CLI 参数优先，无参数时读 config.yaml search.keywords（单一来源）
+			if len(args) == 0 {
+				if cfg.Search != nil && len(cfg.Search.Keywords) > 0 {
+					args = cfg.Search.Keywords
+				} else {
+					args = flattenStandardKeywords()
+				}
+			}
 
 			maxVideos, _ := cmd.Flags().GetInt("max-videos")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
@@ -1328,6 +1333,31 @@ func newAutoCmd() *cobra.Command {
 			skipTranslate, _ := cmd.Flags().GetBool("skip-translate")
 			scorerStr, _ := cmd.Flags().GetString("scorer")
 
+			// 配置兜底：flag 未指定时取 config.yaml search 段（P1 收敛单一来源）
+			if cfg.Search != nil {
+				if maxVideos <= 0 {
+					maxVideos = cfg.Search.MaxVideos
+				}
+				if minViews <= 0 {
+					minViews = cfg.Search.MinViews
+				}
+				if maxDuration <= 0 {
+					maxDuration = cfg.Search.MaxDuration
+				}
+				if uploadDate == "" {
+					uploadDate = cfg.Search.UploadDate
+				}
+				if scorerStr == "" {
+					scorerStr = cfg.Search.Scorer
+				}
+			}
+			if maxVideos <= 0 {
+				maxVideos = 3
+			}
+			if scorerStr == "" {
+				scorerStr = string(search.ScorerPopular)
+			}
+
 			scorer := search.ScorerType(scorerStr)
 			searcher := search.New(20)
 			seen := make(map[string]bool) // 跨关键词全局去重
@@ -1337,6 +1367,7 @@ func newAutoCmd() *cobra.Command {
 
 			// ── Step 1: 搜索所有关键词 ──
 			for _, kw := range args {
+				expandedKW := search.ExpandKeyword(kw)
 				safeQuery := search.BuildSearchQuery(kw)
 				queryDisplay := safeQuery
 				if len(queryDisplay) > 100 {
@@ -1353,7 +1384,7 @@ func newAutoCmd() *cobra.Command {
 					opts = append(opts, search.WithDuration(duration))
 				}
 
-				result, err := searcher.SearchWithOptions(kw, opts...)
+				result, err := searcher.SearchWithOptions(expandedKW, opts...)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "  ⚠ 搜索失败: %v\n", err)
 					continue

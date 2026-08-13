@@ -699,7 +699,7 @@ type KeywordCategory struct {
 	Keywords []string // 关键词列表
 }
 
-// StandardKeywords 标准化搜索关键词库（四大类）
+// StandardKeywords 标准化搜索关键词库（五大类）
 var StandardKeywords = []KeywordCategory{
 	{
 		Category: "ai-agent",
@@ -719,16 +719,31 @@ var StandardKeywords = []KeywordCategory{
 		},
 	},
 	{
+		Category: "pi-agent",
+		Keywords: []string{
+			"pi.dev coding agent tutorial",
+			"Pi agent CLI setup review",
+			"Pi coding agent harness earendil",
+			"Pi agent vs Claude Code comparison",
+			"Pi agent tool calling workflow automation",
+			"Pi AI agent review hands on",
+			"Pi agent MCP integration tutorial",
+			"Pi agent build software from scratch",
+			"Pi agent CLI power user tips",
+			"Pi agent autonomous coding workflow",
+		},
+	},
+	{
 		Category: "web-dev",
 		Keywords: []string{
-			"Next.js React Flow workflow editor App Router",
-			"xyflow react drag drop agent dashboard development",
-			"FastAPI backend agent API design tutorial",
-			"TypeScript AI workflow frontend architecture",
-			"Docker Hermes agent deployment guide",
+			"AI workflow automation tutorial",
+			"AI tools for productivity tutorial",
+			"prompt engineering tutorial beginners",
+			"RAG knowledge base build tutorial",
+			"AI coding assistant tutorial",
+			"Local AI models app tutorial",
+			"Docker AI agent deployment guide",
 			"Full stack AI media generation pipeline",
-			"Tailwind CSS agent UI design tutorial",
-			"Python async agent backend architecture",
 		},
 	},
 	{
@@ -770,6 +785,7 @@ func ExpandKeyword(keyword string) string {
 			// 分类简写映射
 			catMap := map[string]string{
 				"ai":    "ai-agent",
+				"pi":    "pi-agent",
 				"web":   "web-dev",
 				"llm":   "llm-tech",
 				"media": "media-agent",

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 type StepFunc func(context.Context, *State) error
@@ -188,6 +189,11 @@ type Observer interface {
 type Executor struct {
 	Registry *Registry
 	Observer Observer
+
+	// StepTimeout 各步骤超时（step name → duration）。0/缺省 = 不限制。
+	// 步骤运行在带超时的 context 中：内部使用 exec.CommandContext / HTTP ctx 的
+	// 子过程会在超时后被 kill，防止长视频 TTS 等任务无限卡死。
+	StepTimeout map[string]time.Duration
 }
 
 func (e Executor) Run(ctx context.Context, plan []string, state *State) error {
@@ -205,11 +211,22 @@ func (e Executor) Run(ctx context.Context, plan []string, state *State) error {
 		if e.Observer != nil {
 			e.Observer.StepStarted(step.Name, i+1, len(plan))
 		}
-		err := step.Run(ctx, state)
+		stepCtx := ctx
+		var cancel context.CancelFunc
+		if timeout, has := e.StepTimeout[step.Name]; has && timeout > 0 {
+			stepCtx, cancel = context.WithTimeout(ctx, timeout)
+		}
+		err := step.Run(stepCtx, state)
+		if cancel != nil {
+			cancel()
+		}
 		if e.Observer != nil {
 			e.Observer.StepFinished(step.Name, err)
 		}
 		if err != nil {
+			if stepCtx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("workflow step %s: 超时（超过 %s）", step.Name, e.StepTimeout[step.Name])
+			}
 			return fmt.Errorf("workflow step %s: %w", step.Name, err)
 		}
 	}

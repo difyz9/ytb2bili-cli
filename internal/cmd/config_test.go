@@ -76,3 +76,88 @@ func TestLoadConfigAt(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadConfigSearchDaemonSections(t *testing.T) {
+	t.Run("search and daemon sections parse", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		os.WriteFile(path, []byte(`
+search:
+  keywords:
+    - "AI tutorial"
+    - "ChatGPT"
+  scorer: fresh
+  upload_date: this_week
+  max_duration: 25
+  max_videos: 3
+  min_views: 500
+daemon:
+  interval_sec: 30
+  consume_per_batch: 4
+  max_retries: 5
+  step_timeout_sec:
+    download: 1800
+    tts: 3600
+  heartbeat_file: daemon/hb.json
+  alert_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+`), 0644)
+		cfg, err := loadConfigAt(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Search == nil || len(cfg.Search.Keywords) != 2 || cfg.Search.Keywords[0] != "AI tutorial" {
+			t.Fatalf("search keywords: %+v", cfg.Search)
+		}
+		if cfg.Search.Scorer != "fresh" || cfg.Search.UploadDate != "this_week" ||
+			cfg.Search.MaxDuration != 25 || cfg.Search.MaxVideos != 3 || cfg.Search.MinViews != 500 {
+			t.Fatalf("search params: %+v", cfg.Search)
+		}
+		if cfg.Daemon == nil || cfg.Daemon.EffectiveInterval() != 30 ||
+			cfg.Daemon.EffectiveConsumePerBatch() != 4 || cfg.Daemon.EffectiveMaxRetries() != 5 {
+			t.Fatalf("daemon params: %+v", cfg.Daemon)
+		}
+		if cfg.Daemon.StepTimeout("download") != 1800 || cfg.Daemon.StepTimeout("tts") != 3600 {
+			t.Fatalf("step timeouts: %+v", cfg.Daemon.StepTimeoutSec)
+		}
+		if cfg.Daemon.StepTimeout("unknown") != 0 {
+			t.Fatal("unknown step should have 0 timeout")
+		}
+		if cfg.Daemon.EffectiveHeartbeatFile() != "daemon/hb.json" {
+			t.Fatalf("heartbeat file: %s", cfg.Daemon.EffectiveHeartbeatFile())
+		}
+	})
+
+	t.Run("defaults when sections missing", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "config.yaml")
+		os.WriteFile(path, []byte("data_dir: ./data\n"), 0644)
+		cfg, err := loadConfigAt(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Search == nil || cfg.Search.Scorer != "nowcast" || cfg.Search.MaxVideos != 5 {
+			t.Fatalf("search defaults: %+v", cfg.Search)
+		}
+		if cfg.Daemon == nil || cfg.Daemon.EffectiveInterval() != 60 ||
+			cfg.Daemon.EffectiveConsumePerBatch() != 2 || cfg.Daemon.EffectiveMaxRetries() != 3 {
+			t.Fatalf("daemon defaults: %+v", cfg.Daemon)
+		}
+		if cfg.Daemon.StepTimeout("download") != 1800 || cfg.Daemon.StepTimeout("tts") != 3600 {
+			t.Fatalf("default step timeouts: %+v", cfg.Daemon.StepTimeoutSec)
+		}
+		if cfg.Daemon.EffectiveHeartbeatFile() != filepath.Join("daemon", "heartbeat.json") {
+			t.Fatalf("default heartbeat: %s", cfg.Daemon.EffectiveHeartbeatFile())
+		}
+	})
+
+	t.Run("env webhook fallback", func(t *testing.T) {
+		t.Setenv("YTB2BILI_ALERT_WEBHOOK", "https://env.example/hook")
+		cfg, err := loadConfigAt("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Daemon.AlertWebhook != "https://env.example/hook" {
+			t.Fatalf("env webhook not applied: %q", cfg.Daemon.AlertWebhook)
+		}
+	})
+}

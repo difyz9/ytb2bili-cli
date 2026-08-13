@@ -22,7 +22,10 @@ KEYWORDS_LLM=(
 KEYWORDS_MEDIA=(
   "media-1" "media-2" "media-3" "media-4" "media-5" "media-6"
 )
-ALL_CATEGORIES=(ai web llm media)
+KEYWORDS_PI=(
+  "pi-1" "pi-2" "pi-3" "pi-4" "pi-5" "pi-6" "pi-7" "pi-8" "pi-9" "pi-10"
+)
+ALL_CATEGORIES=(ai web llm media pi)
 
 mkdir -p "$DATA_DIR/cron"
 
@@ -54,6 +57,7 @@ case "$CAT" in
   web)   KEYWORDS=("${KEYWORDS_WEB[@]}") ;;
   llm)   KEYWORDS=("${KEYWORDS_LLM[@]}") ;;
   media) KEYWORDS=("${KEYWORDS_MEDIA[@]}") ;;
+  pi)    KEYWORDS=("${KEYWORDS_PI[@]}") ;;
 esac
 
 # 轮转关键词索引

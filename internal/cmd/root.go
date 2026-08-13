@@ -66,6 +66,7 @@ func newRootCmd() *cobra.Command {
 		group(newAutoCmd(), "workflow"),
 		group(newSearchCmd(), "workflow"),
 		group(newQueueCmd(), "workflow"),
+		group(newDaemonCmd(), "workflow"),
 
 		// 频道与订阅
 		group(newChannelCmd(), "subscribe"),
