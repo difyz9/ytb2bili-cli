@@ -308,6 +308,43 @@ func (q *Queue) Reset(videoID string) error {
 	})
 }
 
+// RequeueClaimed 将所有 claimed 任务重置回 queued（daemon 崩溃恢复用）。
+// 单 worker 场景下 claimed 只可能是"上一次运行遗留"，重启后需要续跑。
+// 返回被重置的任务数。
+func (q *Queue) RequeueClaimed() (int, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return 0, err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll(f)
+	if err != nil {
+		return 0, err
+	}
+
+	now := time.Now().Format(time.RFC3339)
+	reset := 0
+	for i := range data.Videos {
+		if data.Videos[i].Status == StatusClaimed {
+			data.Videos[i].Status = StatusQueued
+			data.Videos[i].ClaimedBy = ""
+			data.Videos[i].ClaimedAt = ""
+			data.Videos[i].UpdatedAt = now
+			reset++
+		}
+	}
+	if reset > 0 {
+		if err := q.writeAll(data); err != nil {
+			return reset, err
+		}
+	}
+	return reset, nil
+}
+
 // Skip 手动跳过视频
 func (q *Queue) Skip(videoID string) error {
 	return q.transition(videoID, func(v *Video) (bool, string) {

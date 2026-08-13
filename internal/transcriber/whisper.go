@@ -82,6 +82,9 @@ func WhisperContext(ctx context.Context, wcfg *config.WhisperConfig, videoPath, 
 		"-of", filepath.Join(outputDir, videoID),
 		wavPath,
 	}
+	// 强制 CPU 转录：避免与 IndexTTS 等 GPU 服务争抢显存导致 CUDA OOM
+	// （whisper.cpp 默认用 GPU，RTX 5060 Ti 16GB 被 IndexTTS 占用一半后转录必崩）
+	args = append(args, "--no-gpu")
 	log.Printf("  运行 %s (model=%s, lang=%s)...", binary, filepath.Base(model), lang)
 	cmd = exec.CommandContext(ctx, binary, args...)
 	out, err := cmd.CombinedOutput()

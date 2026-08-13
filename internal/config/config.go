@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/zolagz/ytb2bili-go/internal/queue"
 )
 
 // envPlaceholderPattern 匹配 ${VAR} 形式的环境变量占位符（仅这种形式，避免误伤 $ 符号）。
@@ -80,6 +82,12 @@ type Config struct {
 
 	// 多 B站账号配置：按稿件类型路由投稿账号
 	Accounts []AccountConfig `yaml:"accounts"`
+
+	// 自主搜索调度配置（auto / daemon 共用，单一来源）
+	Search *SearchConfig `yaml:"search"`
+
+	// daemon 守护进程调度配置
+	Daemon *DaemonConfig `yaml:"daemon"`
 }
 
 // AccountConfig 单个 B站账号的路由规则
@@ -91,6 +99,96 @@ type AccountConfig struct {
 	TypeRule []string `yaml:"type_rule,omitempty"`
 	// IsDefault 是否为默认账号（未匹配任何规则时使用）。多个为 true 时取第一个。
 	IsDefault bool `yaml:"is_default,omitempty"`
+}
+
+// SearchConfig 自主搜索调度参数（auto / daemon 共用单一来源，替代脚本内硬编码）
+type SearchConfig struct {
+	// Keywords 搜索关键词列表（daemon 轮换使用；auto 无参数时也读取）
+	Keywords []string `yaml:"keywords,omitempty"`
+	// Scorer 评分策略: popular / fresh / balanced / nowcast
+	Scorer string `yaml:"scorer,omitempty"`
+	// UploadDate 上传日期过滤: last_hour / today / this_week / this_month / this_year
+	UploadDate string `yaml:"upload_date,omitempty"`
+	// MaxDuration 最大视频时长（分钟），0=不限
+	MaxDuration int `yaml:"max_duration,omitempty"`
+	// MaxVideos 每批最多处理视频数
+	MaxVideos int `yaml:"max_videos,omitempty"`
+	// MinViews 最低播放量过滤
+	MinViews int `yaml:"min_views,omitempty"`
+	// Duration 时长档位过滤: short(<4m) / medium(4-20m) / long(>20m)
+	Duration string `yaml:"duration,omitempty"`
+	// SkipTranslate 跳过翻译
+	SkipTranslate bool `yaml:"skip_translate,omitempty"`
+}
+
+// DaemonConfig ytb daemon 守护进程调度配置
+type DaemonConfig struct {
+	// IntervalSec 批间休息秒数（默认 60）
+	IntervalSec int `yaml:"interval_sec,omitempty"`
+	// MaxBatches 最大批次数（0=无限，默认 0）
+	MaxBatches int `yaml:"max_batches,omitempty"`
+	// ConsumePerBatch 每批消费排队任务上限（默认 2）
+	ConsumePerBatch int `yaml:"consume_per_batch,omitempty"`
+	// MaxRetries 失败任务自动重试上限（默认 3，达上限后停止并告警）
+	MaxRetries int `yaml:"max_retries,omitempty"`
+	// StepTimeoutSec 单步骤超时秒数（下载 1800 / TTS 3600 等），超时 kill 重试
+	StepTimeoutSec map[string]int `yaml:"step_timeout_sec,omitempty"`
+	// TaskTimeoutSec 单任务总超时秒数（0=不限制，默认 0）
+	TaskTimeoutSec int `yaml:"task_timeout_sec,omitempty"`
+	// HeartbeatFile 心跳文件路径（相对 data_dir，默认 daemon/heartbeat.json）
+	HeartbeatFile string `yaml:"heartbeat_file,omitempty"`
+	// AlertWebhook 飞书自定义机器人 webhook（失败/心跳告警用，空=不告警）
+	AlertWebhook string `yaml:"alert_webhook,omitempty"`
+	// AlertFailed 失败任务达上限后是否飞书告警（默认 true）
+	AlertFailed *bool `yaml:"alert_failed,omitempty"`
+}
+
+// EffectiveConsumePerBatch 返回每批消费上限（默认 2）
+func (d *DaemonConfig) EffectiveConsumePerBatch() int {
+	if d == nil || d.ConsumePerBatch <= 0 {
+		return 2
+	}
+	return d.ConsumePerBatch
+}
+
+// EffectiveInterval 返回批间休息秒数（默认 60）
+func (d *DaemonConfig) EffectiveInterval() int {
+	if d == nil || d.IntervalSec <= 0 {
+		return 60
+	}
+	return d.IntervalSec
+}
+
+// EffectiveMaxRetries 返回失败重试上限（默认 3）
+func (d *DaemonConfig) EffectiveMaxRetries() int {
+	if d == nil || d.MaxRetries <= 0 {
+		return queue.DefaultMaxRetries
+	}
+	return d.MaxRetries
+}
+
+// EffectiveHeartbeatFile 返回心跳文件路径（相对 data_dir，默认 daemon/heartbeat.json）
+func (d *DaemonConfig) EffectiveHeartbeatFile() string {
+	if d == nil || strings.TrimSpace(d.HeartbeatFile) == "" {
+		return filepath.Join("daemon", "heartbeat.json")
+	}
+	return d.HeartbeatFile
+}
+
+// StepTimeout 返回某步骤超时（秒），未配置返回 0（不限制）
+func (d *DaemonConfig) StepTimeout(step string) int {
+	if d == nil || d.StepTimeoutSec == nil {
+		return 0
+	}
+	return d.StepTimeoutSec[step]
+}
+
+// ShouldAlertFailed 是否对最终失败任务发飞书告警（默认 true）
+func (d *DaemonConfig) ShouldAlertFailed() bool {
+	if d == nil || d.AlertFailed == nil {
+		return true
+	}
+	return *d.AlertFailed
 }
 
 // YouTubeOAuthConfig Google OAuth 客户端凭证
@@ -260,6 +358,22 @@ func Default() *Config {
 				Threads: 4,
 			},
 		},
+		Search: &SearchConfig{
+			Scorer:      "nowcast",
+			UploadDate:  "this_month",
+			MaxDuration: 40,
+			MaxVideos:   5,
+		},
+		Daemon: &DaemonConfig{
+			IntervalSec:     60,
+			ConsumePerBatch: 2,
+			MaxRetries:      queue.DefaultMaxRetries,
+			StepTimeoutSec: map[string]int{
+				"download": 1800, // 30 分钟
+				"tts":      3600, // 60 分钟
+			},
+			HeartbeatFile: filepath.Join("daemon", "heartbeat.json"),
+		},
 	}
 }
 
@@ -384,6 +498,31 @@ func (c *Config) Init() {
 		c.Transcriber.Whisper.Model = model
 	}
 	c.Transcriber.Whisper.Model = ExpandHome(c.Transcriber.Whisper.Model)
+
+	// 自主搜索调度配置（daemon / auto 共用）
+	if c.Search == nil {
+		c.Search = &SearchConfig{}
+	}
+	if strings.TrimSpace(c.Search.Scorer) == "" {
+		c.Search.Scorer = "nowcast"
+	}
+	if c.Search.MaxVideos <= 0 {
+		c.Search.MaxVideos = 5
+	}
+
+	// daemon 守护进程配置
+	if c.Daemon == nil {
+		c.Daemon = &DaemonConfig{}
+	}
+	if c.Daemon.StepTimeoutSec == nil {
+		c.Daemon.StepTimeoutSec = map[string]int{"download": 1800, "tts": 3600}
+	}
+	if strings.TrimSpace(c.Daemon.HeartbeatFile) == "" {
+		c.Daemon.HeartbeatFile = filepath.Join("daemon", "heartbeat.json")
+	}
+	if c.Daemon.AlertWebhook == "" {
+		c.Daemon.AlertWebhook = os.Getenv("YTB2BILI_ALERT_WEBHOOK")
+	}
 }
 
 // EffectiveDownloadDir 返回视频下载根目录：显式配置 download_dir 优先，
