@@ -1,0 +1,23 @@
+# mch-demo X402 商户 Demo 配置
+# 从 pay-unify-backend/config.toml 对应节复制实际值到此处
+
+[WechatPay]
+
+  AppId = "wxd943107b969a70b9"
+  MchId = "1715706791"
+  SerialNo = "3713A75B2B75E0A8253D147B19F9DF823CB51F5D"
+  PrivateKey = "./etc/certs/wechat/apiclient_key_pkcs8.pem"
+  ApiV3Key = "866EFCEF63E84FA298B5FEEA9A53BED4"
+  NotifyURL = "https://api.vtranslink.com/api/v2/payment/notify/wechat"
+
+
+
+[SkillHub]
+  DeveloperId = "sk-ent-76f672af1ecac406b47acf4371f08b7b276b6b9e6a5f07ba59f102d83bbc71f5"
+  PubKeyId = "PUB_KEY_BF9AA5BAF537DF47DB096B07A029323B"
+  PrivateKeyFile = "./etc/skillhub/private_key.pem"
+  SkillId = "epub-to-txt"
+  SkillVersion = "1.0.0"
+
+[AIPreorder]
+  URL = "https://payapp.weixin.qq.com/palmpayminiapp/clawagentpay/preorder"
