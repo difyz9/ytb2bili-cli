@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -213,9 +214,29 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	hb := daemonHeartbeat{PID: os.Getpid(), StartedAt: time.Now().Format(time.RFC3339)}
-	hb = hb.withStatus("running").withQueue(q.Stats())
-	writeDaemonHeartbeat(cfg, hb)
+	hb := &heartbeatState{}
+	hb.set(daemonHeartbeat{PID: os.Getpid(), StartedAt: time.Now().Format(time.RFC3339)})
+	hb.update(func(h daemonHeartbeat) daemonHeartbeat { return h.withStatus("running").withQueue(q.Stats()) })
+	writeDaemonHeartbeat(cfg, hb.get())
+
+	// 后台心跳刷新：长任务（如 TTS 40 分钟）期间持续更新 UpdatedAt，
+	// 避免监控把"忙碌但健康"的 daemon 误判为卡死。
+	heartbeatDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cur := hb.get()
+				cur.UpdatedAt = time.Now().Format(time.RFC3339)
+				writeDaemonHeartbeat(cfg, cur)
+			}
+		}
+	}()
+	defer func() { close(heartbeatDone) }()
 
 	fmt.Printf("🚀 daemon 启动 (worker=%s, 关键词=%d, scorer=%s, 每批≤%d 个)\n",
 		workerID, len(keywords), scorer, maxVideos)
@@ -237,18 +258,18 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 		batch++
 
 		fmt.Printf("\n========== 第 %d 批开始 ==========\n", batch)
-		hb = hb.withBatch(batch).withKeyword("")
+		hb.update(func(h daemonHeartbeat) daemonHeartbeat { return h.withBatch(batch).withKeyword("") })
 
 		// 1. 消费排队任务（queued → 串行处理，每批最多 consumePerBatch 个）
-		consumed := daemonConsumeQueued(ctx, cfg, q, workerID, opts, &hb, alerted)
+		consumed := daemonConsumeQueued(ctx, cfg, q, workerID, opts, hb, alerted)
 
 		// 2. 搜索+评分+去重+入队+直接处理（--submit 直处理模式）
-		enqueued := daemonRunAutoBatch(ctx, cfg, q, workerID, keywords, scorer, uploadDate, maxDuration, maxVideos, minViews, opts, &hb, alerted)
+		enqueued := daemonRunAutoBatch(ctx, cfg, q, workerID, keywords, scorer, uploadDate, maxDuration, maxVideos, minViews, opts, hb, alerted)
 
 		// 3. 队列统计 + 心跳
 		stats := q.Stats()
-		hb = hb.withQueue(stats).withStatus("running")
-		writeDaemonHeartbeat(cfg, hb)
+		hb.update(func(h daemonHeartbeat) daemonHeartbeat { return h.withQueue(stats).withStatus("running") })
+		writeDaemonHeartbeat(cfg, hb.get())
 		fmt.Printf("📊 队列: 待处理=%d 处理中=%d 已完成=%d 失败=%d\n",
 			stats["queued"], stats["claimed"], stats["completed"], stats["failed"])
 
@@ -272,13 +293,14 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 		}
 	}
 
-	writeDaemonHeartbeat(cfg, hb.withStatus("stopped"))
+	writeDaemonHeartbeat(cfg, hb.get().withStatus("stopped"))
+	<-heartbeatDone
 	fmt.Println("👋 daemon 已退出")
 	return nil
 }
 
 // daemonConsumeQueued 消费已排队的任务（queued → claimed → 处理 → completed/failed）
-func daemonConsumeQueued(ctx context.Context, cfg *config.Config, q *queue.Queue, workerID string, opts daemonOptions, hb *daemonHeartbeat, alerted map[string]bool) int {
+func daemonConsumeQueued(ctx context.Context, cfg *config.Config, q *queue.Queue, workerID string, opts daemonOptions, hb *heartbeatState, alerted map[string]bool) int {
 	consumed := 0
 	for consumed < opts.consumePerBatch {
 		if ctx.Err() != nil {
@@ -293,10 +315,10 @@ func daemonConsumeQueued(ctx context.Context, cfg *config.Config, q *queue.Queue
 			break
 		}
 		consumed++
-		*hb = hb.withTask(item.VideoID)
-		writeDaemonHeartbeat(cfg, *hb)
+		hb.update(func(h daemonHeartbeat) daemonHeartbeat { return h.withTask(item.VideoID) })
+		writeDaemonHeartbeat(cfg, hb.get())
 		daemonProcessOne(ctx, cfg, q, item, opts, alerted)
-		*hb = hb.withTask("")
+		hb.update(func(h daemonHeartbeat) daemonHeartbeat { return h.withTask("") })
 	}
 	return consumed
 }
@@ -304,7 +326,7 @@ func daemonConsumeQueued(ctx context.Context, cfg *config.Config, q *queue.Queue
 // daemonRunAutoBatch 一批：搜索所有关键词 → 评分 → 去重 → 入队 → 直接处理
 func daemonRunAutoBatch(ctx context.Context, cfg *config.Config, q *queue.Queue, workerID string,
 	keywords []string, scorer, uploadDate string, maxDuration, maxVideos, minViews int,
-	opts daemonOptions, hb *daemonHeartbeat, alerted map[string]bool) int {
+	opts daemonOptions, hb *heartbeatState, alerted map[string]bool) int {
 
 	scored, err := searchAndScore(cfg, keywords, scorer, uploadDate, maxDuration, minViews, opts.dryRun)
 	if err != nil {
@@ -358,10 +380,10 @@ func daemonRunAutoBatch(ctx context.Context, cfg *config.Config, q *queue.Queue,
 		}
 		processed++
 		fmt.Printf("\n[%d/%d] %s\n", processed, enqueued, item.Title)
-		*hb = hb.withTask(item.VideoID)
-		writeDaemonHeartbeat(cfg, *hb)
+		hb.update(func(h daemonHeartbeat) daemonHeartbeat { return h.withTask(item.VideoID) })
+		writeDaemonHeartbeat(cfg, hb.get())
 		daemonProcessOne(ctx, cfg, q, item, opts, alerted)
-		*hb = hb.withTask("")
+		hb.update(func(h daemonHeartbeat) daemonHeartbeat { return h.withTask("") })
 	}
 	return enqueued
 }
@@ -539,6 +561,30 @@ type daemonHeartbeat struct {
 	CurrentTask string         `json:"current_task,omitempty"`
 	Queue       map[string]int `json:"queue,omitempty"`
 	Version     string         `json:"version"`
+}
+
+// heartbeatState 线程安全的心跳状态（主循环更新 + 后台刷新协程读取）
+type heartbeatState struct {
+	mu sync.Mutex
+	hb daemonHeartbeat
+}
+
+func (s *heartbeatState) get() daemonHeartbeat {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hb
+}
+
+func (s *heartbeatState) set(hb daemonHeartbeat) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hb = hb
+}
+
+func (s *heartbeatState) update(fn func(daemonHeartbeat) daemonHeartbeat) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hb = fn(s.hb)
 }
 
 func (h daemonHeartbeat) withBatch(b int) daemonHeartbeat {
