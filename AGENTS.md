@@ -1,6 +1,6 @@
 # AGENTS.md - AI 智能体使用指南
 
-本文档供所有 AI 智能体（Codex、Claude Code、Hermes Agent、Cursor 等）使用。
+本文档供所有 AI 智能体（Codex、Claude Code、Hermes Agent、Cursor、Pi 等）使用。
 
 > **首次安装项目？** 请先阅读 [INSTALL_AGENT.md](./INSTALL_AGENT.md) 获取完整的逐步骤安装指南（含依赖安装、编译、配置）。
 > **Claude Code 用户？** 项目内置 skills（`.claude/skills/`），可用 `/ytb2bili-pipeline` 直接驱动完整工作流。
@@ -8,6 +8,39 @@
 ## 项目概述
 
 **ytb2bili-go** 是一个 YouTube → Bilibili 视频搬运工具，使用 Go 语言编写。CLI 构建产物为 **`ytb`**（cobra 框架），支持搜索、下载、转录、翻译、TTS 配音、投稿、字幕上传完整流水线。
+
+### 当前运行架构（2026-08 优化后）
+
+```text
+systemd 用户服务
+├─ ytb-batch-loop.service → /home/guan/.local/bin/ytb daemon   # 主调度（Go 内置循环）
+└─ index-tts.service      → IndexTTS2 TTS 服务（配音后端，localhost:18765）
+```
+
+- **调度已全部收敛到 `ytb daemon`**（替代旧 batch_loop.sh 的 bash 循环）：搜索→评分→去重→入队→串行处理，无限循环。
+- **关键词/搜索参数单一来源 = `config.yaml` 的 `search:` 段**；调度参数在 `daemon:` 段。改关键词 = 改 yaml + `systemctl --user restart ytb-batch-loop`，不要再改任何脚本。
+- 失败任务自动重试（默认 3 次）后停止并飞书告警；步骤超时（下载 30min / TTS 60min）自动 kill 重试。
+- 心跳文件 `data/daemon/heartbeat.json`（批次/PID/当前任务/队列统计/状态），每 30s 刷新。
+
+### 常用运维命令（Agent 直接执行）
+
+```bash
+cd /home/guan/guan/code/ytb2bili-cli
+
+./ytb daemon status            # 查看 daemon 心跳（状态/批次/当前任务/队列统计）
+./ytb daemon check-heartbeat   # 心跳新鲜度检查（cron 用，>15min 未更新告警，exit 1）
+./ytb queue status             # 队列统计（排队中/处理中/已完成/失败）
+./ytb queue list               # 队列明细（含失败原因）
+./ytb queue retry-failed       # 手动重排队失败任务（确认已修复根因后再用）
+./ytb task list / task show <id>   # 任务详情（失败步骤定位）
+./ytb submit <URL>             # 手动提交单个搬运任务
+./ytb submit <videoId>         # 续跑已有产物（幂等，跳过已完成步骤）
+systemctl --user restart ytb-batch-loop   # 改配置/关键词后重启
+journalctl --user -u ytb-batch-loop -f    # 实时日志
+```
+
+**注意**：不要手动再起一个 `ytb daemon`（会和 systemd 服务抢队列）；守护进程已由 systemd 管理。失败任务达重试上限后需要人工判断根因（常见：B站上传连接被重置=临时网络、YouTube cookies 过期、TTS 服务挂了），修复后再 `queue retry-failed`。
+
 
 ### 核心功能
 
