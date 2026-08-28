@@ -45,12 +45,16 @@ func newChainCmd() *cobra.Command {
 			if len(args) < 2 {
 				return fmt.Errorf("用法: ytb chain run <step1,step2,...> <YouTube URL>")
 			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			jsonMode = asJSON
+			defer func() { jsonMode = false }()
+
 			cfg := loadConfig()
 			chainSteps := workflow.ParseChain(args[0])
 			url := args[1]
 
-			fmt.Printf("🔗 任务链: %s\n", strings.Join(chainSteps, " → "))
-			fmt.Printf("📺 %s\n\n", url)
+			outf("🔗 任务链: %s\n", strings.Join(chainSteps, " → "))
+			outf("📺 %s\n\n", url)
 
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			skipTrans, _ := cmd.Flags().GetBool("skip-translate")
@@ -76,9 +80,22 @@ func newChainCmd() *cobra.Command {
 				SourceLang: sourceLang, TargetLang: targetLang,
 			})
 			if result != nil && result.BVID != "" {
-				fmt.Printf("\n📺 https://www.bilibili.com/video/%s\n", result.BVID)
+				outf("\n📺 https://www.bilibili.com/video/%s\n", result.BVID)
 			}
-			return err
+			if err != nil {
+				return err
+			}
+			if asJSON && result != nil {
+				return emitJSON(struct {
+					OK      bool     `json:"ok"`
+					Step    string   `json:"step"`
+					TaskID  string   `json:"task_id"`
+					VideoID string   `json:"video_id"`
+					BVID    string   `json:"bvid"`
+					Plan    []string `json:"plan"`
+				}{true, "chain", result.TaskID, result.VideoID, result.BVID, result.Plan})
+			}
+			return nil
 		},
 	}
 	runCmd.Flags().Bool("dry-run", false, "仅处理不上传")
@@ -86,6 +103,7 @@ func newChainCmd() *cobra.Command {
 	runCmd.Flags().Int("tid", 0, "B站分区ID")
 	runCmd.Flags().String("source-lang", "", "源语言（默认 en）")
 	runCmd.Flags().String("target-lang", "", "目标语言（默认读取配置）")
+	runCmd.Flags().Bool("json", false, "以 JSON 输出结果（stdout 仅含 JSON）")
 
 	planCmd := &cobra.Command{
 		Use:   "plan <step1,step2,...> <YouTube URL>",
@@ -156,6 +174,10 @@ func newAudioSyncCmd() *cobra.Command {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入 videoId 或视频路径")
 			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			jsonMode = asJSON
+			defer func() { jsonMode = false }()
+
 			cfg := loadConfig()
 			videoDir := pipeline.ResolveVideoDir(cfg, args[0])
 			videoID := filepath.Base(videoDir)
@@ -169,9 +191,9 @@ func newAudioSyncCmd() *cobra.Command {
 			missing, _ := cmd.Flags().GetString("missing")
 			noSpeed, _ := cmd.Flags().GetBool("no-speed-adjust")
 
-			fmt.Printf("🎬 音画同步: %s\n", filepath.Base(video))
-			fmt.Printf("   📄 字幕: %s\n", filepath.Base(subtitle))
-			fmt.Printf("   🎤 配音: %s\n", filepath.Base(voiceDir))
+			outf("🎬 音画同步: %s\n", filepath.Base(video))
+			outf("   📄 字幕: %s\n", filepath.Base(subtitle))
+			outf("   🎤 配音: %s\n", filepath.Base(voiceDir))
 
 			start := time.Now()
 			result, err := audiosync.Sync(context.Background(), audiosync.Options{
@@ -181,14 +203,27 @@ func newAudioSyncCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✅ 音画同步完成 (耗时 %v): %s\n", time.Since(start).Round(time.Second), result.Output)
-			fmt.Printf("   📦 时长 %.0fs | 片段 %d | 调整 %d | 缺失 %d\n",
+			outf("✅ 音画同步完成 (耗时 %v): %s\n", time.Since(start).Round(time.Second), result.Output)
+			outf("   📦 时长 %.0fs | 片段 %d | 调整 %d | 缺失 %d\n",
 				result.Duration, result.Clips, result.Adjusted, result.Missing)
+			if asJSON {
+				return emitJSON(struct {
+					OK       bool    `json:"ok"`
+					Step     string  `json:"step"`
+					VideoID  string  `json:"video_id"`
+					Output   string  `json:"output"`
+					Duration float64 `json:"duration"`
+					Clips    int     `json:"clips"`
+					Adjusted int     `json:"adjusted"`
+					Missing  int     `json:"missing"`
+				}{true, "audio-sync", videoID, result.Output, result.Duration, result.Clips, result.Adjusted, result.Missing})
+			}
 			return nil
 		},
 	}
 	cmd.Flags().String("missing", "", "缺失配音处理: error(默认) / silence")
 	cmd.Flags().Bool("no-speed-adjust", false, "不调整配音语速")
+	cmd.Flags().Bool("json", false, "以 JSON 输出结果（stdout 仅含 JSON）")
 	return cmd
 }
 
@@ -202,6 +237,10 @@ func newSubmitCmd() *cobra.Command {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入 YouTube URL")
 			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			jsonMode = asJSON
+			defer func() { jsonMode = false }()
+
 			cfg := loadConfig()
 			url := args[0]
 
@@ -227,12 +266,25 @@ func newSubmitCmd() *cobra.Command {
 				PlanOnly: showPlan,
 			})
 			if result != nil {
-				fmt.Printf("🔗 任务链: %s\n", strings.Join(result.Plan, " → "))
+				outf("🔗 任务链: %s\n", strings.Join(result.Plan, " → "))
 				if result.BVID != "" {
-					fmt.Printf("📺 https://www.bilibili.com/video/%s\n", result.BVID)
+					outf("📺 https://www.bilibili.com/video/%s\n", result.BVID)
 				}
 			}
-			return err
+			if err != nil {
+				return err
+			}
+			if asJSON && result != nil {
+				return emitJSON(struct {
+					OK      bool     `json:"ok"`
+					Step    string   `json:"step"`
+					TaskID  string   `json:"task_id"`
+					VideoID string   `json:"video_id"`
+					BVID    string   `json:"bvid"`
+					Plan    []string `json:"plan"`
+				}{true, "submit", result.TaskID, result.VideoID, result.BVID, result.Plan})
+			}
+			return nil
 		},
 	}
 	cmd.Flags().String("source-lang", "en", "源语言")
@@ -242,6 +294,7 @@ func newSubmitCmd() *cobra.Command {
 	cmd.Flags().Bool("skip-translate", false, "跳过翻译")
 	cmd.Flags().Bool("show-plan", false, "只显示规划不执行")
 	cmd.Flags().String("chain", "", "自定义任务链")
+	cmd.Flags().Bool("json", false, "以 JSON 输出结果（stdout 仅含 JSON）")
 	return cmd
 }
 

@@ -159,6 +159,20 @@ ytb chain plan download,upload "https://www.youtube.com/watch?v=VIDEO_ID"  # 只
 download（视频文件）、transcribe（`.srt`）、translate（`.zh-Hans.srt`）、tts（`voice/` 配音）、audio-sync（`.synced.mp4`）。
 重跑 `submit <videoId>` 会自动跳过已完成步骤，只做剩余部分（不会重新下载/转录/翻译/合成配音）。
 
+**作为可组合 CLI 工具**：每个流水线步骤都可独立调用，并支持 `--json` 机器可读输出
+（stdout 仅含 JSON，日志转 stderr，退出码 0=成功/非0=失败），可被外部 pipeline/Agent
+作为单个工具步骤自由串联，不局限于 `submit`/daemon 一键流程。契约与组合示例见
+`.claude/skills/ytb2bili-tool/SKILL.md`（或 `ytb2bili-tool` skill）。
+
+```bash
+ytb download --json "<URL>" > d.json      # {"ok":true,"step":"download","video":"..."}
+ytb transcribe --json "<videoId>" > t.json
+ytb translate --json "<id>.srt" > tr.json
+ytb tts --json "<id>.zh-Hans.srt" > tts.json
+ytb audio-sync --json "<videoId>" > as.json
+ytb submit --json "<URL>"                  # {"ok":true,"step":"submit","bvid":"BV..."}
+```
+
 ```bash
 # 单独执行音画同步（对已有产物）
 ytb audio-sync <videoId>

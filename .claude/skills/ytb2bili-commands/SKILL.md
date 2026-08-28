@@ -58,6 +58,23 @@ command's syntax, flags, or an example. For end-to-end workflows instead, invoke
 -v, --version
 ```
 
+### `--json` 机器可读输出
+所有**流水线步骤命令**和 `submit`/`chain run` 均支持 `--json`：stdout 只输出一个 JSON
+对象（含 `ok`/`step` + 产物路径），人读日志转 stderr，退出码 0=成功/非0=失败。
+便于把单个步骤当作可组合工具被外部 pipeline/Agent 调用。
+
+| 命令 | `--json` 关键字段 |
+|------|-------------------|
+| `download` | `video`, `dir`, `cover`, `title` |
+| `transcribe` | `srt`, `provider` |
+| `translate` | `output`, `input` |
+| `tts` | `voice_dir`, `provider`, `success`, `failed` |
+| `metadata` | `title`, `tags`, `output` |
+| `audio-sync` | `output`（.synced.mp4）, `duration` |
+| `submit` / `chain run` | `bvid`, `task_id`, `plan` |
+
+完整契约与外部 pipeline 组合示例见 `ytb2bili-tool`。
+
 ### 参数约定：videoId 或完整路径
 以下命令的第一个参数**同时支持** videoId 或完整文件路径：
 - 传 videoId → 在下载目录 `download_dir`（默认 `data/downloads`）下定位资源：

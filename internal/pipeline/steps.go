@@ -289,7 +289,8 @@ func (s *ttsStep) runIndexTTS(ctx context.Context, state *PipelineState, audioDi
 // 独立于 PipelineState，供 pipeline tts 步骤与 CLI `ytb tts` 命令复用。
 // idxCfg 为 nil 时使用默认配置；dataDir 用于定位项目 .venv 的 python3。
 func RunIndexTTSSRT(ctx context.Context, srtPath, outputDir string, idxCfg *config.IndexTTSConfig, dataDir string) error {
-	script := filepath.Join("skills", "audio-video-sync", "scripts", "synthesize_srt.py")
+	// 脚本与 .venv 通过项目根定位（支持从任意目录调用，见 ProjectRoot）。
+	script := SkillScript(filepath.Join("audio-video-sync", "scripts", "synthesize_srt.py"))
 
 	// 从配置读取 IndexTTS 服务参数（缺失时用默认值兜底）
 	if idxCfg == nil {
@@ -341,7 +342,7 @@ func RunIndexTTSSRT(ctx context.Context, srtPath, outputDir string, idxCfg *conf
 	}
 
 	fmt.Printf("  🎙 使用本地 IndexTTS 合成分段配音 (%s)\n", apiURL)
-	cmd := exec.CommandContext(ctx, filepath.Join(dataDir, "..", ".venv", "bin", "python3"), args...)
+	cmd := exec.CommandContext(ctx, VenvPython(), args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("TTS 合成失败: %w\n输出: %s", err, string(output))
