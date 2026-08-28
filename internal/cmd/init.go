@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/zolagz/ytb2bili-go/internal/pipeline"
 )
 
 func newInitCmd() *cobra.Command {
@@ -102,21 +105,24 @@ func newInitCmd() *cobra.Command {
 
 			// 5. audio-video-sync .venv
 			fmt.Print("[5/6] audio-video-sync 配音环境... ")
-			venvPython := ".venv/bin/python3"
+			projectRoot := pipeline.ProjectRoot()
+			venvDir := filepath.Join(projectRoot, ".venv")
+			venvPython := filepath.Join(venvDir, "bin", "python3")
+			requirements := filepath.Join(projectRoot, "skills", "audio-video-sync", "requirements.txt")
 			if _, err := os.Stat(venvPython); err != nil {
 				fmt.Println("❌ 未创建 .venv")
 				if venvFlag {
 					fmt.Print("   ⏳ 创建中... ")
-					if out, perr := exec.Command("python3", "-m", "venv", ".venv").CombinedOutput(); perr != nil {
+					if out, perr := exec.Command("python3", "-m", "venv", venvDir).CombinedOutput(); perr != nil {
 						fmt.Printf("❌ %s\n", strings.TrimSpace(string(out)))
-					} else if o, ierr := exec.Command(venvPython, "-m", "pip", "install", "-q", "-r", "skills/audio-video-sync/requirements.txt").CombinedOutput(); ierr != nil {
+					} else if o, ierr := exec.Command(venvPython, "-m", "pip", "install", "-q", "-r", requirements).CombinedOutput(); ierr != nil {
 						fmt.Printf("⚠️  pip 安装失败: %s\n", strings.TrimSpace(string(o)))
 					} else {
 						fmt.Println("✅ 已创建 .venv 并安装依赖")
 					}
 				} else {
 					fmt.Println("   💡 运行: ytb init --venv 自动创建，或")
-					fmt.Println("   python3 -m venv .venv && .venv/bin/pip install -r skills/audio-video-sync/requirements.txt")
+					fmt.Printf("   python3 -m venv %s && %s -m pip install -r %s\n", venvDir, venvPython, requirements)
 				}
 			} else {
 				out, _ := exec.Command(venvPython, "-c", "import pydub, pysrt; print('ok')").CombinedOutput()
@@ -124,7 +130,7 @@ func newInitCmd() *cobra.Command {
 					fmt.Println("✅ .venv 已就绪 (pydub + pysrt)")
 				} else {
 					fmt.Println("⚠️  .venv 存在但缺少依赖 (pydub/pysrt)")
-					fmt.Println("   💡 运行: .venv/bin/pip install -r skills/audio-video-sync/requirements.txt")
+					fmt.Printf("   💡 运行: %s -m pip install -r %s\n", venvPython, requirements)
 				}
 			}
 

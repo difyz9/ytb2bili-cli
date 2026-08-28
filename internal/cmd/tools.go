@@ -203,6 +203,10 @@ func newDownloadCmd() *cobra.Command {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入 YouTube URL 或视频 ID")
 			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			jsonMode = asJSON
+			defer func() { jsonMode = false }()
+
 			cfg := loadConfig()
 			raw := args[0]
 
@@ -219,25 +223,38 @@ func newDownloadCmd() *cobra.Command {
 
 			cookiesPath := cfg.EffectiveCookiesPath()
 
-			fmt.Printf("⬇️  下载视频: %s\n", cleanURL)
-			fmt.Printf("📁 输出目录: %s\n", outputDir)
-			fmt.Println()
+			outf("⬇️  下载视频: %s\n", cleanURL)
+			outf("📁 输出目录: %s\n", outputDir)
+			outf("\n")
 
 			result, err := download.Video(cleanURL, outputDir, "en", cookiesPath)
 			if err != nil {
 				return fmt.Errorf("下载失败: %w", err)
 			}
 
-			fmt.Printf("✅ 下载完成\n")
-			fmt.Printf("  视频: %s\n", result.VideoPath)
-			fmt.Printf("  封面: %s\n", result.CoverPath)
+			outf("✅ 下载完成\n")
+			outf("  视频: %s\n", result.VideoPath)
+			outf("  封面: %s\n", result.CoverPath)
 			if result.Info.Title != "" {
-				fmt.Printf("  标题: %s\n", result.Info.Title)
+				outf("  标题: %s\n", result.Info.Title)
+			}
+			if asJSON {
+				return emitJSON(struct {
+					OK       bool   `json:"ok"`
+					Step     string `json:"step"`
+					VideoID  string `json:"video_id"`
+					Dir      string `json:"dir"`
+					Video    string `json:"video"`
+					Cover    string `json:"cover"`
+					Subtitle string `json:"subtitle"`
+					Title    string `json:"title"`
+				}{true, "download", videoID, outputDir, result.VideoPath, result.CoverPath, result.SubtitlePath, result.Info.Title})
 			}
 			return nil
 		},
 	}
 	cmd.Flags().StringP("output", "o", "", "输出目录")
+	cmd.Flags().Bool("json", false, "以 JSON 输出结果（stdout 仅含 JSON）")
 	return cmd
 }
 
@@ -371,6 +388,10 @@ func newTranscribeCmd() *cobra.Command {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入音频/视频文件路径或 videoId")
 			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			jsonMode = asJSON
+			defer func() { jsonMode = false }()
+
 			cfg := loadConfig()
 			audioPath, err := pipeline.ResolveInput(cfg, args[0], "video")
 			if err != nil {
@@ -387,9 +408,9 @@ func newTranscribeCmd() *cobra.Command {
 			}
 			videoID := strings.TrimSuffix(filepath.Base(audioPath), filepath.Ext(audioPath))
 
-			fmt.Printf("🎤 听录 (%s): %s\n", provider, audioPath)
-			fmt.Printf("   输出目录: %s\n", outputDir)
-			fmt.Println()
+			outf("🎤 听录 (%s): %s\n", provider, audioPath)
+			outf("   输出目录: %s\n", outputDir)
+			outf("\n")
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 			defer cancel()
@@ -414,8 +435,17 @@ func newTranscribeCmd() *cobra.Command {
 				return fmt.Errorf("听录失败: %w", err)
 			}
 
-			fmt.Printf("✅ 听录完成! (耗时: %v)\n", time.Since(start).Round(time.Second))
-			fmt.Printf("📄 %s\n", srtPath)
+			outf("✅ 听录完成! (耗时: %v)\n", time.Since(start).Round(time.Second))
+			outf("📄 %s\n", srtPath)
+			if asJSON {
+				return emitJSON(struct {
+					OK       bool   `json:"ok"`
+					Step     string `json:"step"`
+					Provider string `json:"provider"`
+					VideoID  string `json:"video_id"`
+					Srt      string `json:"srt"`
+				}{true, "transcribe", provider, videoID, srtPath})
+			}
 			return nil
 		},
 	}
@@ -424,6 +454,7 @@ func newTranscribeCmd() *cobra.Command {
 	cmd.Flags().StringP("lang", "l", "", "whisper 语言 en/zh/auto（默认 auto）")
 	cmd.Flags().Int("threads", 0, "whisper 推理线程数（覆盖 config）")
 	cmd.Flags().StringP("out", "o", "", "输出目录（默认与输入同目录）")
+	cmd.Flags().Bool("json", false, "以 JSON 输出结果（stdout 仅含 JSON）")
 	return cmd
 }
 
@@ -446,6 +477,10 @@ func newMetadataCmd() *cobra.Command {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入 videoId 或字幕文件路径")
 			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			jsonMode = asJSON
+			defer func() { jsonMode = false }()
+
 			cfg := loadConfig()
 			srtPath, err := pipeline.ResolveInput(cfg, args[0], "zh-srt")
 			if err != nil {
@@ -457,8 +492,8 @@ func newMetadataCmd() *cobra.Command {
 				output = strings.TrimSuffix(srtPath, filepath.Ext(srtPath)) + ".meta.json"
 			}
 
-			fmt.Printf("🤖 生成元数据: %s\n", srtPath)
-			fmt.Println()
+			outf("🤖 生成元数据: %s\n", srtPath)
+			outf("\n")
 
 			start := time.Now()
 			meta, err := metadata.GenerateFromSRT(context.Background(), srtPath, cfg)
@@ -474,14 +509,25 @@ func newMetadataCmd() *cobra.Command {
 				return fmt.Errorf("写入 JSON 失败: %w", err)
 			}
 
-			fmt.Printf("✅ 生成完成 (耗时: %v)\n", time.Since(start).Round(time.Second))
-			fmt.Printf("  标题: %s\n", meta.Title)
-			fmt.Printf("  标签: %s\n", strings.Join(meta.Tags, ", "))
-			fmt.Printf("📄 %s\n", output)
+			outf("✅ 生成完成 (耗时: %v)\n", time.Since(start).Round(time.Second))
+			outf("  标题: %s\n", meta.Title)
+			outf("  标签: %s\n", strings.Join(meta.Tags, ", "))
+			outf("📄 %s\n", output)
+			if asJSON {
+				return emitJSON(struct {
+					OK          bool     `json:"ok"`
+					Step        string   `json:"step"`
+					Title       string   `json:"title"`
+					Description string   `json:"description"`
+					Tags        []string `json:"tags"`
+					Output      string   `json:"output"`
+				}{true, "metadata", meta.Title, meta.Description, meta.Tags, output})
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringP("output", "o", "", "JSON 输出路径（默认 <字幕>.meta.json）")
+	cmd.Flags().Bool("json", false, "以 JSON 输出结果（stdout 仅含 JSON）")
 	return cmd
 }
 
@@ -502,6 +548,10 @@ func newTranslateCmd() *cobra.Command {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入 SRT 字幕文件路径")
 			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			jsonMode = asJSON
+			defer func() { jsonMode = false }()
+
 			inputPath, err := pipeline.ResolveInput(cfg, args[0], "srt")
 			if err != nil {
 				return err
@@ -513,9 +563,9 @@ func newTranslateCmd() *cobra.Command {
 				targetLang = cfg.EffectiveTranslationTargetLang()
 			}
 
-			fmt.Printf("🌐 翻译字幕: %s\n", inputPath)
-			fmt.Printf("   %s → %s\n", sourceLang, targetLang)
-			fmt.Println()
+			outf("🌐 翻译字幕: %s\n", inputPath)
+			outf("   %s → %s\n", sourceLang, targetLang)
+			outf("\n")
 
 			start := time.Now()
 			result, err := translator.SRTContext(context.Background(), inputPath, sourceLang, targetLang, cfg)
@@ -523,14 +573,25 @@ func newTranslateCmd() *cobra.Command {
 				return fmt.Errorf("翻译失败: %w", err)
 			}
 
-			fmt.Printf("✅ 翻译完成 (耗时: %v)\n", time.Since(start).Round(time.Second))
-			fmt.Printf("📄 %s\n", result)
+			outf("✅ 翻译完成 (耗时: %v)\n", time.Since(start).Round(time.Second))
+			outf("📄 %s\n", result)
+			if asJSON {
+				return emitJSON(struct {
+					OK         bool   `json:"ok"`
+					Step       string `json:"step"`
+					Input      string `json:"input"`
+					Output     string `json:"output"`
+					SourceLang string `json:"source_lang"`
+					TargetLang string `json:"target_lang"`
+				}{true, "translate", inputPath, result, sourceLang, targetLang})
+			}
 			return nil
 		},
 	}
 	cmd.Flags().String("source-lang", "en", "源语言")
 	cmd.Flags().String("target-lang", "", "目标语言（默认读取配置）")
 	cmd.Flags().Bool("test", false, "测试所有已配置翻译服务商的连通性（不翻译文件）")
+	cmd.Flags().Bool("json", false, "以 JSON 输出结果（stdout 仅含 JSON）")
 	return cmd
 }
 
@@ -601,6 +662,10 @@ func newTencentTTSCmd() *cobra.Command {
 			if len(args) == 0 {
 				return fmt.Errorf("请输入 SRT 字幕文件路径")
 			}
+			asJSON, _ := cmd.Flags().GetBool("json")
+			jsonMode = asJSON
+			defer func() { jsonMode = false }()
+
 			cfg := loadConfig()
 			srtPath, err := pipeline.ResolveInput(cfg, args[0], "zh-srt")
 			if err != nil {
@@ -616,10 +681,21 @@ func newTencentTTSCmd() *cobra.Command {
 			// 合成器由 config 的 tts.provider 控制：index → 本地 IndexTTS，tencent → 腾讯云
 			provider := pipeline.SelectTTSProvider(cfg)
 			if provider == "index" {
-				fmt.Printf("🎙 本地 IndexTTS 合成: %s\n", srtPath)
-				fmt.Printf("   ├ 输出目录: %s\n", outputDir)
-				fmt.Println()
-				return pipeline.RunIndexTTSSRT(context.Background(), srtPath, outputDir, cfg.TTS.Index, cfg.DataDir)
+				outf("🎙 本地 IndexTTS 合成: %s\n", srtPath)
+				outf("   ├ 输出目录: %s\n", outputDir)
+				outf("\n")
+				if err := pipeline.RunIndexTTSSRT(context.Background(), srtPath, outputDir, cfg.TTS.Index, cfg.DataDir); err != nil {
+					return err
+				}
+				if asJSON {
+					return emitJSON(struct {
+						OK       bool   `json:"ok"`
+						Step     string `json:"step"`
+						Provider string `json:"provider"`
+						VoiceDir string `json:"voice_dir"`
+					}{true, "tts", provider, outputDir})
+				}
+				return nil
 			}
 
 			ttsCfg := tts.FromAppConfig(cfg)
@@ -633,10 +709,10 @@ func newTencentTTSCmd() *cobra.Command {
 				ttsCfg.Speed = v
 			}
 
-			fmt.Printf("🎤 腾讯云 TTS 合成: %s\n", srtPath)
-			fmt.Printf("   ├ 输出目录: %s\n", outputDir)
-			fmt.Printf("   └ 并发数: %d\n", concurrency)
-			fmt.Println()
+			outf("🎤 腾讯云 TTS 合成: %s\n", srtPath)
+			outf("   ├ 输出目录: %s\n", outputDir)
+			outf("   └ 并发数: %d\n", concurrency)
+			outf("\n")
 
 			results, err := tts.SynthesizeSRT(context.Background(), srtPath, outputDir, ttsCfg, concurrency)
 			if err != nil {
@@ -651,7 +727,17 @@ func newTencentTTSCmd() *cobra.Command {
 					success++
 				}
 			}
-			fmt.Printf("\n✅ 合成完成: %d 成功, %d 失败\n", success, failed)
+			outf("\n✅ 合成完成: %d 成功, %d 失败\n", success, failed)
+			if asJSON {
+				return emitJSON(struct {
+					OK       bool   `json:"ok"`
+					Step     string `json:"step"`
+					Provider string `json:"provider"`
+					VoiceDir string `json:"voice_dir"`
+					Success  int    `json:"success"`
+					Failed   int    `json:"failed"`
+				}{true, "tts", provider, outputDir, success, failed})
+			}
 			return nil
 		},
 	}
@@ -660,5 +746,6 @@ func newTencentTTSCmd() *cobra.Command {
 	cmd.Flags().Int64("voice", 0, "音色: 0=亲和女声, 1=成熟女声, 2=成熟男声, 3=亲和男声")
 	cmd.Flags().Float64("volume", 2, "音量: 0-15")
 	cmd.Flags().Float64("speed", 1, "语速: 0-2")
+	cmd.Flags().Bool("json", false, "以 JSON 输出结果（stdout 仅含 JSON）")
 	return cmd
 }
