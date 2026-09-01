@@ -49,6 +49,7 @@ func ExpandHome(path string) string {
 type Config struct {
 	DataDir    string `yaml:"data_dir"`
 	DownloadDir string `yaml:"download_dir"` // 视频下载根目录（默认 <data_dir>/downloads）
+	SkillsDir   string `yaml:"skills_dir"`   // 技能资源目录（默认自动探测项目根下 skills/，可指定绝对/相对路径）
 	LLMAPIKey  string `yaml:"llm_api_key"`
 	LLMBaseURL            string   `yaml:"llm_base_url"`
 	LLMModel              string   `yaml:"llm_model"`
