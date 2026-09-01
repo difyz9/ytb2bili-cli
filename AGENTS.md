@@ -316,10 +316,30 @@ ytb2bili-go/
 ├── cmd/
 │   └── ytb/main.go           # 主入口（唯一二进制 ytb）
 ├── internal/
-│   ├── cli/                  # CLI 命令 (cobra)
+│   ├── cli/                  # CLI 命令 (cobra，按命令域拆分)
 │   │   ├── root.go           # 根命令 + 配置加载
-│   │   ├── pipeline.go       # submit/search/channel/queue/task/server 等
-│   │   ├── tools.go          # login/download/bcut/translate/tencent-tts 等
+│   │   ├── submit.go         # submit（完整流水线一键投稿）
+│   │   ├── search.go         # search + history
+│   │   ├── auto.go           # auto 自主模式（搜索→评分→入队）
+│   │   ├── daemon.go         # daemon 守护进程
+│   │   ├── queue.go          # queue 作业队列
+│   │   ├── task.go           # task 任务管理
+│   │   ├── chain.go          # chain 任务链（可组合单步）
+│   │   ├── channel.go        # channel 频道监控
+│   │   ├── account.go        # login/whoami/accounts
+│   │   ├── download.go       # download 单步
+│   │   ├── transcribe.go     # transcribe/bcut/whisper 单步
+│   │   ├── translate.go      # translate 单步
+│   │   ├── tts.go            # tts 单步
+│   │   ├── metadata.go       # metadata 单步
+│   │   ├── audio_sync.go     # audio-sync 单步
+│   │   ├── subtitle.go       # subtitle 字幕上传
+│   │   ├── cookies.go        # cookies test/refresh
+│   │   ├── bili.go           # publish/review B站投稿管理
+│   │   ├── yt_oauth.go       # yt-oauth 订阅
+│   │   ├── server.go         # server HTTP 服务
+│   │   ├── chrome_debug.go   # Chrome 调试浏览器生命周期
+│   │   ├── debug.go          # debug 诊断
 │   │   ├── init.go           # 环境依赖检查
 │   │   ├── format.go         # 输出格式化辅助
 │   │   └── qrcode.go         # 二维码生成
@@ -538,7 +558,7 @@ status, err := bili.WaitForReviewPassed(cred, bvid)
 
 ### 添加新的 CLI 命令或参数
 
-1. 编辑 `internal/cli/` 下的文件（按命令类型：`pipeline.go` / `tools.go` / `init.go`）
+1. 编辑 `internal/cli/` 下的文件（按命令域：`submit.go` / `queue.go` / `transcribe.go` 等，见项目结构图）
 2. 新建命令用 `&cobra.Command{Use: "...", Short: "...", RunE: func(...) error {...}}` 包裹
 3. 添加 flag 用 `cmd.Flags().String(...)` / `cmd.Flags().Bool(...)` / `cmd.Flags().Int(...)`
 4. 在 `root.go` 的 `root.AddCommand(...)` 中注册

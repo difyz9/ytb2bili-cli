@@ -84,7 +84,7 @@
 
 ### 🟡 P1：频道基线采集升级（`channel rank`）
 
-**文件**：`internal/cmd/pipeline.go` + `internal/channel/`
+**文件**：`internal/cli/pipeline.go` + `internal/channel/`
 
 1. **基线 = 最近 30 视频去掉最高/最低 3 个的平均**
    - 当前 RSS 数据容易被单条爆款污染
@@ -165,4 +165,4 @@ Phase 4（1 天）:   RoboNuggets 示例全链路验证 + 数据留存
 - ytsubs 算法源码：`generate_feed.py`（评分）、`scrape_channel_stats.py`（基线）、`scrape_videos.py`（订阅采集）
 - 本地克隆：`/tmp/ytsubs/`
 - 现有实现：`internal/search/search.go` L915-999（`ScoreVideosNowcast`）
-- 现有基线：`internal/cmd/pipeline.go` L1328-1346（`loadChannelBaselines`）
+- 现有基线：`internal/cli/pipeline.go` L1328-1346（`loadChannelBaselines`）
