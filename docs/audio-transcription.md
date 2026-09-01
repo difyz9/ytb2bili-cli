@@ -34,7 +34,7 @@ internal/transcriber/
 |------|------|
 | `internal/pipeline/steps.go` | `transcribeStep` 步骤，按 provider 分发到 Bcut 或 whisper |
 | `internal/config/config.go` | `TranscriberConfig` / `WhisperConfig` 配置定义与默认值 |
-| `internal/cmd/tools.go` | `transcribe` / `bcut` / `whisper` 三个 CLI 命令 |
+| `internal/cli/transcribe.go` | `transcribe` / `bcut` / `whisper` 三个 CLI 命令 |
 | `internal/server/debugger.go` | 调试诊断里直接调用 `BcutASR`（旧路径，仅供诊断） |
 
 ## 3. 后端选择逻辑
