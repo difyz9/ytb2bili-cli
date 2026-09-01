@@ -88,11 +88,15 @@ export YTB2BILI_CONFIG="/path/to/config.yaml"
 
 配置文件查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `config.yaml`。找不到时使用默认配置。
 
+> ⚠️ `config.yaml` 及各类凭证（cookies/ OAuth client）均不入库；首次配置从 `configs/config.example.yaml` 复制脱敏模板。
+
 ## 项目位置
 
 - **二进制**: `ytb`（`make build` 或 `go build -o ytb .` 生成）
-- **配置**: `./config.yaml` 或 `--config` 指定
+- **配置**: `./config.yaml`（不入库，模板见 `configs/config.example.yaml`）或 `--config` 指定
 - **数据目录**: `./data/`（`config.yaml` 的 `data_dir` 字段可改）
+- **凭证**: `cookies.txt` / `client_tv.json` / `client_web.apps.googleusercontent.com.json`（不入库，本地维护）
+- **部署脚本**: `scripts/`（deploy.sh / install-dpms-guard.sh / refresh_youtube_cookies.sh）
 - **仓库**: https://github.com/zolagz/ytb2bili-go （备选 Gitee: https://gitee.com/difyz/ytb2bili-go ）
 
 ## 快速命令
