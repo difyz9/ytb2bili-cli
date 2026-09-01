@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/zolagz/ytb2bili-go/internal/pipeline"
+	"github.com/zolagz/ytb2bili-go/internal/resource"
 )
 
 func newInitCmd() *cobra.Command {
@@ -105,10 +105,10 @@ func newInitCmd() *cobra.Command {
 
 			// 5. audio-video-sync .venv
 			fmt.Print("[5/6] audio-video-sync 配音环境... ")
-			projectRoot := pipeline.ProjectRoot()
+			projectRoot := resource.ProjectRoot()
 			venvDir := filepath.Join(projectRoot, ".venv")
 			venvPython := filepath.Join(venvDir, "bin", "python3")
-			requirements := filepath.Join(projectRoot, "skills", "audio-video-sync", "requirements.txt")
+			requirements := resource.SkillScript(filepath.Join("audio-video-sync", "requirements.txt"))
 			if _, err := os.Stat(venvPython); err != nil {
 				fmt.Println("❌ 未创建 .venv")
 				if venvFlag {

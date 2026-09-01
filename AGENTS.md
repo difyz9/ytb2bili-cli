@@ -84,6 +84,11 @@ export OLLAMA_MODEL="qwen2.5:7b"
 
 # 可选：配置文件路径（默认 ./config.yaml）
 export YTB2BILI_CONFIG="/path/to/config.yaml"
+
+# 可选：运行时资源定位（skills/、.venv/，非项目根目录运行时用）
+export YTB2BILI_PROJECT_DIR="/path/to/project-root"   # 项目根（含 skills/），优先于自动探测
+export YTB2BILI_PYTHON="/path/to/python3"            # 指定 .venv 解释器
+export YTB2BILI_AUDIO_SYNC_SCRIPT="/path/to/script"  # 指定音画同步脚本（最细粒度）
 ```
 
 配置文件查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `config.yaml`。找不到时使用默认配置。
@@ -361,6 +366,7 @@ ytb2bili-go/
 │   ├── tts/                   # 腾讯云 TTS
 │   ├── audiosync/             # 音画同步
 │   ├── server/                # HTTP API 服务
+│   ├── resource/              # 运行时资源定位（skills/、.venv/ 统一入口，支持 skills_dir 配置）
 │   ├── storage/               # 任务/凭证/历史/字幕存储
 │   └── config/                # 配置管理
 ├── skills/

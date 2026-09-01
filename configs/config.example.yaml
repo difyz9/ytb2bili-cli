@@ -6,6 +6,7 @@ llm_base_url: "https://api.deepseek.com"
 llm_model: "deepseek-v4-flash"
 data_dir: "./data"
 download_dir: "./data/downloads"     # 视频下载根目录（命令可用 videoId 直接引用该目录下资源）
+skills_dir: ""                       # 技能资源目录（空=自动探测项目根下 skills/；可填绝对路径，如 IndexTTS 脚本位置随安装变化时用）
 chrome_debug_port: 9222              # Chrome 远程调试起始端口（被占用自动+1，cookies refresh 会用实际端口）
 min_duration_sec: 240                # 入队时低于此秒数的视频跳过（Short/短视频，0=不限制）
 bili_tid: 122
