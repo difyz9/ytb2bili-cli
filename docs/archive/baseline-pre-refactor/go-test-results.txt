@@ -1,0 +1,27 @@
+?   	github.com/zolagz/ytb2bili-go	[no test files]
+?   	github.com/zolagz/ytb2bili-go/cmd/check_bitable	[no test files]
+ok  	github.com/zolagz/ytb2bili-go/cmd/llm-batch-translator	(cached)
+?   	github.com/zolagz/ytb2bili-go/cmd/test_cookies	[no test files]
+?   	github.com/zolagz/ytb2bili-go/cmd/transcribe	[no test files]
+?   	github.com/zolagz/ytb2bili-go/cmd/translate-srt	[no test files]
+ok  	github.com/zolagz/ytb2bili-go/internal/audiosync	(cached)
+?   	github.com/zolagz/ytb2bili-go/internal/auth	[no test files]
+?   	github.com/zolagz/ytb2bili-go/internal/bili	[no test files]
+?   	github.com/zolagz/ytb2bili-go/internal/cdp	[no test files]
+ok  	github.com/zolagz/ytb2bili-go/internal/channel	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/cmd	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/config	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/download	(cached)
+?   	github.com/zolagz/ytb2bili-go/internal/feishu	[no test files]
+ok  	github.com/zolagz/ytb2bili-go/internal/llm	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/metadata	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/pipeline	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/queue	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/search	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/server	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/storage	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/transcriber	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/translator	(cached)
+?   	github.com/zolagz/ytb2bili-go/internal/tts	[no test files]
+ok  	github.com/zolagz/ytb2bili-go/internal/workflow	(cached)
+ok  	github.com/zolagz/ytb2bili-go/internal/ytoauth	(cached)
