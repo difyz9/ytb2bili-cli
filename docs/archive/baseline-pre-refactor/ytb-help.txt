@@ -1,0 +1,50 @@
+YouTube → Bilibili 视频搬运工具
+
+Usage:
+  ytb [command]
+
+核心流程
+  auto        自主模式：自动搜索高价值视频并批量处理
+  daemon      持续自动搬运守护进程（替代 batch_loop.sh）
+  queue       作业队列管理
+  search      搜索 YouTube 视频
+  submit      提交搬运任务
+
+频道与订阅
+  channel     YouTube 频道监控管理
+  cookies     管理 YouTube cookies
+
+流水线步骤
+  audio-sync  对已有下载产物执行音画同步
+  download    下载 YouTube 视频
+  metadata    根据字幕生成B站标题、描述和标签（保存 JSON）
+  transcribe  听录音频生成字幕（本地 whisper / 云 Bcut）
+  translate   翻译 SRT 字幕文件
+  tts         按字幕合成分段配音（默认腾讯云 TTS）
+
+B站管理
+  accounts    列出所有已登录的B站账号
+  history     查看已提交的投稿历史
+  login       B站扫码登录（--account 指定账号名支持多账号）
+  publish     直接投稿本地视频到 B站
+  review      查看视频投稿审核状态
+  subtitle    字幕管理
+  task        任务管理
+  whoami      查看当前登录的B站账号信息
+
+系统与工具
+  chain       任务链管理
+  debug       输出环境与运行状态诊断
+  init        检查并修复环境依赖
+  server      HTTP API 服务器管理
+
+Additional Commands:
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+
+Flags:
+      --config string   配置文件路径（默认 ./config.yaml 或 $YTB2BILI_CONFIG）
+  -h, --help            help for ytb
+  -v, --version         version for ytb
+
+Use "ytb [command] --help" for more information about a command.
