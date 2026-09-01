@@ -6,6 +6,13 @@ DEEPSEEK_API_KEY
 .DS_Store
 ytb2bili
 
+# 密钥/凭证不入库（从仓库移除跟踪，本地文件保留）
+config.yaml
+cookies.txt
+client_tv.json
+client_web.apps.googleusercontent.com.json
+
+# 旧 config_schedule.yaml 已归档至 docs/archive/
 *.mp3
 # generated output files
 ${OUTPUT}
