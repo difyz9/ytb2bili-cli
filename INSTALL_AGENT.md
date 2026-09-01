@@ -186,7 +186,7 @@ ls -lh ytb
 # 期望输出: -rwxr-xr-x ... ytb (~30-35MB)
 ```
 
-> **注意**：旧版部署脚本 `deploy.sh` 构建的产物名为 `ytb2bili`，与当前代码的 `ytb` 不一致。请以 `ytb` 为准，避免新旧二进制混淆。
+> **注意**：旧版部署脚本 `scripts/deploy.sh` 构建的产物名为 `ytb2bili`，与当前代码的 `ytb` 不一致。请以 `ytb` 为准，避免新旧二进制混淆。
 
 ### 编译失败排查
 
@@ -219,6 +219,13 @@ ls -la data/
 ### 5.1 配置文件（推荐）
 
 配置文件默认查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `config.yaml`。找不到时使用默认值。
+
+> ⚠️ `config.yaml` 含密钥不入库。首次使用请复制示例：
+> ```bash
+> cp configs/config.example.yaml ./config.yaml
+> # 然后填入 llm_api_key / tencent_cloud / youtube_oauth 等真实值
+> ```
+> 同理，`cookies.txt`、`client_tv.json`、`client_web.apps.googleusercontent.com.json` 等凭证文件均已从仓库移除跟踪（见 .gitignore），请在部署机本地维护。
 
 ```bash
 # 用 --config 显式指定（优先级最高）
@@ -465,7 +472,7 @@ go build -o ytb .
 ./ytb init      # 自动检查环境依赖
 ```
 
-> 旧版 `deploy.sh` 仍可用但产物名为 `ytb2bili`；`make build` 产出统一的 `ytb`。
+> 旧版 `scripts/deploy.sh` 仍可用但产物名为 `ytb2bili`；`make build` 产出统一的 `ytb`。
 
 ---
 

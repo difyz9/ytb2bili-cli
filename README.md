@@ -209,6 +209,8 @@ export YOUTUBE_COOKIES_FROM_BROWSER="chrome"
 
 `config.yaml` 可以统一指定字幕翻译目标语言；未配置时默认为简体中文：
 
+> ⚠️ `config.yaml` 及各类凭证（`cookies.txt`、OAuth client JSON）均不入库（见 .gitignore）；首次配置请复制 `configs/config.example.yaml` 为 `./config.yaml` 后填入真实值。
+
 ```yaml
 translation_target_lang: zh-Hans
 ```
