@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/resource"
 )
 
 var (
@@ -129,9 +130,15 @@ func loadConfigAt(path string) (*config.Config, error) {
 	if path == "" {
 		c := config.Default()
 		c.Init()
+		resource.SetSkillsDir(c.SkillsDir)
 		return c, nil
 	}
-	return config.LoadYAML(path)
+	c, err := config.LoadYAML(path)
+	if err != nil {
+		return nil, err
+	}
+	resource.SetSkillsDir(c.SkillsDir)
+	return c, nil
 }
 
 // loadConfig 让子命令可以延迟加载配置

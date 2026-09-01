@@ -8,8 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
+
+	"github.com/zolagz/ytb2bili-go/internal/resource"
 )
 
 type Options struct {
@@ -97,23 +98,13 @@ func scriptPath() (string, error) {
 		}
 		return "", fmt.Errorf("YTB2BILI_AUDIO_SYNC_SCRIPT 不存在: %s", configured)
 	}
-	var candidates []string
-	if cwd, err := os.Getwd(); err == nil {
-		candidates = append(candidates, filepath.Join(cwd, "skills", "audio-video-sync", "scripts", "audio_processor_v2.py"))
+	// 统一走 resource 包定位（config skills_dir > $YTB2BILI_PROJECT_DIR > exe/cwd 自动探测）
+	script := resource.SkillScript(filepath.Join("audio-video-sync", "scripts", "audio_processor_v2.py"))
+	if info, err := os.Stat(script); err == nil && !info.IsDir() {
+		return script, nil
 	}
-	if executable, err := os.Executable(); err == nil {
-		candidates = append(candidates, filepath.Join(filepath.Dir(executable), "skills", "audio-video-sync", "scripts", "audio_processor_v2.py"))
-	}
-	if _, file, _, ok := runtime.Caller(0); ok {
-		candidates = append(candidates, filepath.Join(filepath.Dir(file), "..", "..", "skills", "audio-video-sync", "scripts", "audio_processor_v2.py"))
-	}
-	for _, candidate := range candidates {
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			absolute, _ := filepath.Abs(candidate)
-			return absolute, nil
-		}
-	}
-	return "", fmt.Errorf("未找到 audio-video-sync Skill 脚本；可设置 YTB2BILI_AUDIO_SYNC_SCRIPT")
+	return "", fmt.Errorf(
+		"找不到 audio_processor_v2.py（解析到 %s）；可用 config.yaml 的 skills_dir 或环境变量 YTB2BILI_PROJECT_DIR/YTB2BILI_AUDIO_SYNC_SCRIPT 指定", script)
 }
 
 func tail(value string, max int) string {
