@@ -1,10 +1,16 @@
-.PHONY: build run login clean install
+.PHONY: build run login clean install verify
 
 BINARY_NAME = ytb
 INSTALL_DIR = $(HOME)/.local/bin
 
 build:
 	GONOSUMCHECK=* GONOSUMDB=* go build -o $(BINARY_NAME) .
+
+# 重构验收命令: build + vet + test（跳过需要真实凭证的 live 测试）
+verify:
+	go build ./...
+	go vet ./...
+	go test ./... -skip='Live'
 
 run: build
 	./$(BINARY_NAME) $(ARGS)
