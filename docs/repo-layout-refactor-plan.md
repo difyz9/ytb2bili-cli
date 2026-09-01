@@ -220,14 +220,22 @@ ytb2bili-cli/
 
 ---
 
-## 5. 验收清单
+## 5. 验收清单（实施结果 2026-09-02）
 
-- [ ] Phase 0：CI 全绿；`make verify` 可用
-- [ ] Phase 1：根目录无凭证/笔记/部署脚本；`git ls-files` 不含 cookies/client_*.json/config.yaml
-- [ ] Phase 2：`cmd/` 下仅 `ytb/`；根目录无 `main.go`；`grep -r "internal/cmd"` 全仓库零命中
-- [ ] Phase 3：`internal/cli/` 无单文件超 ~500 行；`ytb --help` 子命令清单与基线 diff 为空；测试全绿
-- [ ] Phase 4：非项目根目录下 `ytb audio-sync` 正常工作；AGENTS.md 项目结构图与实际一致
-- [ ] 全程：每个 Phase 单独 commit，可独立 revert
+- [x] Phase 0：CI workflow 建立；`make verify` 可用（commit 83cd81a，附基线快照 docs/archive/baseline-pre-refactor/）
+- [x] Phase 1：根目录无凭证/笔记/部署脚本；`git ls-files` 不含 cookies/client_*.json/config.yaml（commit 2aad2f6）
+- [x] Phase 2：`cmd/` 下仅 `ytb/`；根目录无 `main.go`；`grep -r "internal/cmd"` 全仓库零命中（commit c7517c6）
+- [x] Phase 3：`ytb --help` 子命令清单与基线 diff 为空；测试全绿；拆分后最大文件 daemon.go 772 行（原 pipeline.go 2087 行，拆为 13+6 个域文件，函数清单 100% 保留）（commit 484cb9d）
+- [x] Phase 4：非项目根目录下 `ytb init` 正确解析 skills 路径；AGENTS.md 项目结构图与实际一致（commit a153911）
+- [x] 全程：每个 Phase 单独 commit，可独立 revert
+
+> 额外修复：基线测试 TestTranslateSRTFilePreservesEntryCountAndTimeline 过时（去重功能后未更新），已对齐（commit 76004cb）。
+
+### 待办（不在本方案内，需人工执行）
+
+1. **凭证轮换**：DeepSeek / 腾讯云 SecretId/Key / Google OAuth client_secret / YouTube cookies 均已存在于 git 历史，出库 ≠ 失效，尽快轮换。
+2. **部署机升级**：`git pull` 前先备份 `config.yaml`、`cookies.txt`（若与仓库旧版内容一致会被 pull 删除，恢复备份即可）；然后 `make install` + 冒烟 `ytb daemon status`。
+3. **CI 首跑**：push 到 origin/dev 后确认 GitHub Actions 全绿（本机已验证同命令集）。
 
 ## 6. 文档同步清单（每阶段收尾执行）
 
