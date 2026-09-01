@@ -173,7 +173,7 @@ cd ytb2bili-go
 
 ```bash
 # 方式一：Go 直接构建
-go build -o ytb .
+go build -o ytb ./cmd/ytb
 
 # 方式二：Makefile（推荐）
 make build
@@ -408,7 +408,7 @@ stat -f '%Y' ytb 2>/dev/null      # macOS 时间戳
 stat -c '%Y' ytb 2>/dev/null      # Linux 时间戳
 
 # 如果代码更新，重新编译
-go build -o ytb .
+go build -o ytb ./cmd/ytb
 ```
 
 ### Q4: YouTube 搜索返回空结果
@@ -429,7 +429,7 @@ export HTTPS_PROXY="http://proxy:port"
 # 正常的 ytb 约 30-35MB
 # 如果只有几 MB，可能是 go build 有缓存问题
 go clean -cache
-go build -o ytb .
+go build -o ytb ./cmd/ytb
 ```
 
 ### Q6: 配置文件加载但数据目录不对
@@ -468,7 +468,7 @@ go build -o ytb .
 ```bash
 git clone https://github.com/zolagz/ytb2bili-go.git
 cd ytb2bili-go
-go build -o ytb .
+go build -o ytb ./cmd/ytb
 ./ytb init      # 自动检查环境依赖
 ```
 

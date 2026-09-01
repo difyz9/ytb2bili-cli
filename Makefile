@@ -4,7 +4,7 @@ BINARY_NAME = ytb
 INSTALL_DIR = $(HOME)/.local/bin
 
 build:
-	GONOSUMCHECK=* GONOSUMDB=* go build -o $(BINARY_NAME) .
+	GONOSUMCHECK=* GONOSUMDB=* go build -o $(BINARY_NAME) ./cmd/ytb
 
 # 重构验收命令: build + vet + test（跳过需要真实凭证的 live 测试）
 verify:
