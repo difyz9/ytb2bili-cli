@@ -92,7 +92,7 @@ export YTB2BILI_CONFIG="/path/to/config.yaml"
 
 ## 项目位置
 
-- **二进制**: `ytb`（`make build` 或 `go build -o ytb .` 生成）
+- **二进制**: `ytb`（`make build` 或 `go build -o ytb ./cmd/ytb` 生成）
 - **配置**: `./config.yaml`（不入库，模板见 `configs/config.example.yaml`）或 `--config` 指定
 - **数据目录**: `./data/`（`config.yaml` 的 `data_dir` 字段可改）
 - **凭证**: `cookies.txt` / `client_tv.json` / `client_web.apps.googleusercontent.com.json`（不入库，本地维护）
@@ -105,7 +105,7 @@ export YTB2BILI_CONFIG="/path/to/config.yaml"
 
 ```bash
 make build          # 产出 ./ytb
-# 或 go build -o ytb .
+# 或 go build -o ytb ./cmd/ytb
 ```
 
 ### 检查环境依赖
@@ -313,15 +313,16 @@ ytb server run        # 前台运行（内部）
 
 ```
 ytb2bili-go/
-├── main.go                    # 入口
+├── cmd/
+│   └── ytb/main.go           # 主入口（唯一二进制 ytb）
 ├── internal/
-│   ├── cmd/                   # CLI 命令 (cobra)
-│   │   ├── root.go            # 根命令 + 配置加载
-│   │   ├── pipeline.go        # submit/search/channel/queue/task/server 等
-│   │   ├── tools.go           # login/download/bcut/translate/tencent-tts 等
-│   │   ├── init.go            # 环境依赖检查
-│   │   ├── format.go          # 输出格式化辅助
-│   │   └── qrcode.go          # 二维码生成
+│   ├── cli/                  # CLI 命令 (cobra)
+│   │   ├── root.go           # 根命令 + 配置加载
+│   │   ├── pipeline.go       # submit/search/channel/queue/task/server 等
+│   │   ├── tools.go          # login/download/bcut/translate/tencent-tts 等
+│   │   ├── init.go           # 环境依赖检查
+│   │   ├── format.go         # 输出格式化辅助
+│   │   └── qrcode.go         # 二维码生成
 │   ├── pipeline/              # 流水线处理器
 │   │   ├── pipeline.go        # Processor (流程编排)
 │   │   └── steps.go           # 各步骤实现
@@ -537,7 +538,7 @@ status, err := bili.WaitForReviewPassed(cred, bvid)
 
 ### 添加新的 CLI 命令或参数
 
-1. 编辑 `internal/cmd/` 下的文件（按命令类型：`pipeline.go` / `tools.go` / `init.go`）
+1. 编辑 `internal/cli/` 下的文件（按命令类型：`pipeline.go` / `tools.go` / `init.go`）
 2. 新建命令用 `&cobra.Command{Use: "...", Short: "...", RunE: func(...) error {...}}` 包裹
 3. 添加 flag 用 `cmd.Flags().String(...)` / `cmd.Flags().Bool(...)` / `cmd.Flags().Int(...)`
 4. 在 `root.go` 的 `root.AddCommand(...)` 中注册
@@ -553,7 +554,7 @@ ytb search --max 3 "test query"
 go test ./...
 
 # 只测试某个包
-go test ./internal/cmd/ -v
+go test ./internal/cli/ -v
 ```
 
 ## 调试技巧

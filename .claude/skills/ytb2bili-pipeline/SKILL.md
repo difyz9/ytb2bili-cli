@@ -16,7 +16,7 @@ once, then use it to search, submit, monitor, and batch-process videos.
 
 ```bash
 # 1. Build the CLI (binary is ./ytb)
-make build          # or: go build -o ytb .
+make build          # or: go build -o ytb ./cmd/ytb
 
 # 2. Verify environment dependencies (ffmpeg/yt-dlp/python/deno)
 ./ytb init
