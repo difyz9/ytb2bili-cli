@@ -40,6 +40,7 @@ type Server struct {
 	server   *http.Server
 	Feishu   *FeishuBot
 	taskChan chan *VideoTask
+	jobs     *jobStore // 任务持久化（重启回放，Phase 4 M2）
 	mu       sync.Mutex
 }
 
@@ -131,12 +132,46 @@ func New(cfg *config.Config) *Server {
 		cfg:      cfg,
 		history:  h,
 		taskChan: make(chan *VideoTask, 100),
+		jobs:     newJobStore(cfg.DataDir),
 	}
 
 	// 启动任务处理器
 	go s.processTasks()
+	// 重启回放：恢复上次服务中断时未完成的任务
+	go s.replayPendingJobs()
 
 	return s
+}
+
+// persistTask 把任务状态落盘（best-effort，失败仅告警，不中断处理）。
+func (s *Server) persistTask(t *VideoTask) {
+	if s == nil || s.jobs == nil || t == nil {
+		return
+	}
+	if err := s.jobs.save(t); err != nil {
+		log.Printf("⚠ 任务持久化失败 %s: %v", t.ID, err)
+	}
+}
+
+// replayPendingJobs 启动时把上次未完成（非 completed/failed）的任务重新入队。
+// 重复投稿已由 pipeline 顶部 history 守卫 + pending.jsonl 兜底，安全重跑。
+func (s *Server) replayPendingJobs() {
+	if s == nil || s.jobs == nil {
+		return
+	}
+	pending, err := s.jobs.replayPending()
+	if err != nil {
+		log.Printf("⚠ 恢复未完成任务失败: %v", err)
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+	log.Printf("♻️ 恢复 %d 个未完成任务（上次服务中断）", len(pending))
+	for _, t := range pending {
+		log.Printf("♻️ 重新入队: %s - %s", t.ID, t.URL)
+		s.taskChan <- t
+	}
 }
 
 // Start 启动服务器
@@ -292,6 +327,13 @@ func (s *Server) handleVideoSubmitFromExtension(msg *FeishuMessage, data *VideoS
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 
+	// 先持久化再入队：服务中途重启不丢任务
+	if err := s.jobs.save(task); err != nil {
+		s.Feishu.ReplyMessage(context.Background(), msg, "❌ 任务持久化失败，请稍后重试")
+		log.Printf("❌ 任务持久化失败: %v", err)
+		return
+	}
+
 	// 发送到任务队列
 	select {
 	case s.taskChan <- task:
@@ -332,6 +374,13 @@ func (s *Server) handleYouTubeSubmission(msg *FeishuMessage, youtubeURL string, 
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 
+	// 先持久化再入队：服务中途重启不丢任务
+	if err := s.jobs.save(task); err != nil {
+		s.Feishu.ReplyMessage(context.Background(), msg, "❌ 任务持久化失败，请稍后重试")
+		log.Printf("❌ 任务持久化失败: %v", err)
+		return
+	}
+
 	// 发送到任务队列
 	select {
 	case s.taskChan <- task:
@@ -351,6 +400,7 @@ func (s *Server) processTasks() {
 // processVideoTask runs every HTTP/Feishu task through the shared application pipeline.
 func (s *Server) processVideoTask(task *VideoTask) {
 	log.Printf("🎬 开始处理任务: %s - %s", task.ID, task.URL)
+	s.persistTask(task)
 	cookiesPath := ""
 	if task.Cookies != "" {
 		if path, err := download.SaveCookiesFromMeta(task.Cookies, s.cfg.DataDir); err == nil {
@@ -370,6 +420,7 @@ func (s *Server) processVideoTask(task *VideoTask) {
 		} else {
 			log.Printf("✅ %s", event.Step)
 		}
+		s.persistTask(task)
 	}}
 	result, err := processor.Process(context.Background(), pipeline.Request{
 		URL: task.URL, SourceLang: task.SourceLang, TargetLang: task.TargetLang, Tid: s.cfg.BiliTid,
@@ -382,6 +433,15 @@ func (s *Server) processVideoTask(task *VideoTask) {
 	})
 	if err != nil {
 		task.Status, task.Error = "failed", err.Error()
+		// 补偿：回放时若该视频其实已投稿成功（history 守卫拦下的重跑），按已完成为准，避免误标失败
+		if strings.Contains(err.Error(), "已提交过") {
+			if videoID := extractVideoID(task.URL); videoID != "" {
+				if sub := s.history.GetSubmitted(videoID); sub != nil {
+					task.Status, task.BVID, task.Error = "completed", sub.BVID, ""
+				}
+			}
+		}
+		s.persistTask(task)
 		store := storage.NewTaskStore(filepath.Join(s.cfg.DataDir, "tasks"))
 		if persisted, getErr := store.Get(task.ID); getErr == nil && persisted.Status != "failed" {
 			if uerr := store.UpdateStep(task.ID, "planning", "failed", err.Error()); uerr != nil {
@@ -392,6 +452,7 @@ func (s *Server) processVideoTask(task *VideoTask) {
 		return
 	}
 	task.Status, task.BVID = "completed", result.BVID
+	s.persistTask(task)
 	if result.BVID == "" {
 		return
 	}
@@ -514,6 +575,12 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:               time.Now().Format(time.RFC3339),
 	}
 
+	// 先持久化再入队：服务中途重启不丢任务（与下方 tasks 台账分开）
+	if err := s.jobs.save(task); err != nil {
+		s.jsonError(w, "任务持久化失败", http.StatusInternalServerError)
+		return
+	}
+
 	// 发送到任务队列
 	taskStore := storage.NewTaskStore(filepath.Join(s.cfg.DataDir, "tasks"))
 	if err := taskStore.Persist(taskStore.Prepare(task.ID, task.URL), nil); err != nil {
@@ -530,6 +597,9 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	default:
 		if err := taskStore.Delete(task.ID); err != nil {
 			log.Printf("warning: failed to clean up task %s: %v", task.ID, err)
+		}
+		if err := s.jobs.remove(task.ID); err != nil {
+			log.Printf("warning: failed to clean up job %s: %v", task.ID, err)
 		}
 		s.jsonError(w, "任务队列已满", http.StatusServiceUnavailable)
 	}
