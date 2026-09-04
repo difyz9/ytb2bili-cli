@@ -714,10 +714,16 @@ func isLoopbackAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// requestTimeoutMiddleware wraps handlers with a per-request timeout.
-// If a request handler exceeds the timeout, the context is cancelled and
-// a 503 Service Unavailable is returned.
+// requestTimeoutMiddleware bounds slow handlers with a per-request timeout.
+// handler 在独立 goroutine 执行；超时后向响应写入 503。
+// 通过 singleWriter 保证"业务响应"与"超时 503"之间只有一个写入者生效：
+// 一旦任一方已开始写（或已发 503），另一方迟到的写入被丢弃，避免双写竞态。
+// 注意：context 取消无法强制终止不配合的 handler，长业务应自行检查 r.Context()。
 func requestTimeoutMiddleware(next http.Handler) http.Handler {
+	return requestTimeoutMiddlewareWith(next, 5*time.Minute)
+}
+
+func requestTimeoutMiddlewareWith(next http.Handler, timeout time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip timeout for health checks and long-lived endpoints
 		if r.URL.Path == "/health" {
@@ -725,15 +731,15 @@ func requestTimeoutMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
-
 		r = r.WithContext(ctx)
 
-		done := make(chan bool, 1)
+		tw := &singleWriter{ResponseWriter: w}
+		done := make(chan struct{})
 		go func() {
-			next.ServeHTTP(w, r)
-			done <- true
+			defer close(done)
+			next.ServeHTTP(tw, r)
 		}()
 
 		select {
@@ -742,8 +748,49 @@ func requestTimeoutMiddleware(next http.Handler) http.Handler {
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
 				log.Printf("⏰ 请求超时: %s %s", r.Method, r.URL.Path)
-				http.Error(w, `{"error":"请求超时"}`, http.StatusServiceUnavailable)
+				tw.timeout503()
 			}
 		}
 	})
+}
+
+// singleWriter 包装 ResponseWriter：业务响应与超时 503 之间只有一次生效。
+// stopped=true 表示超时路径已写 503，随后 handler 的迟到写入被丢弃；
+// started=true 表示 handler 已开始提交响应，超时路径不得再写 503。
+type singleWriter struct {
+	http.ResponseWriter
+	mu      sync.Mutex
+	started bool // handler 已开始响应
+	stopped bool // 超时 503 已占用
+}
+
+func (w *singleWriter) WriteHeader(code int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return // 503 已发出：丢弃迟到的业务响应头
+	}
+	w.started = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *singleWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return len(b), nil // 503 已发出：丢弃迟到业务正文，假装成功避免 handler 误判
+	}
+	w.started = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *singleWriter) timeout503() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.started {
+		return // handler 已在写响应，无法再改状态码
+	}
+	w.stopped = true
+	w.ResponseWriter.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.ResponseWriter.Write([]byte(`{"error":"请求超时"}`))
 }
