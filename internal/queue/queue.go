@@ -76,6 +76,7 @@ type Queue struct {
 	path         string // queue.json 的完整路径（数据，可被 rename 替换）
 	lockPath     string // queue.lock（flock 目标，inode 永不更换）
 	claimTimeout time.Duration // claimed 无续租多久视为死锁（默认 ClaimTimeout）
+	audit        *AuditStore // 审计事件（best-effort，nil 则不发）
 	mu           sync.Mutex
 }
 
@@ -89,7 +90,16 @@ func New(dir string) *Queue {
 		path:         filepath.Join(qDir, "queue.json"),
 		lockPath:     filepath.Join(qDir, "queue.lock"),
 		claimTimeout: ClaimTimeout,
+		audit:        OpenAudit(dir),
 	}
+}
+
+// emit 记录一条审计事件（绝不阻塞/影响业务）。
+func (q *Queue) emit(ev AuditEvent) {
+	if q == nil || q.audit == nil {
+		return
+	}
+	q.audit.emit(ev)
 }
 
 // ─── 锁定 ──────────────────────────────────────────────────────────────────────
@@ -240,6 +250,7 @@ func (q *Queue) AddWithRetries(videoID, url, title, channelID, source string, ma
 	if err := q.writeAll(data); err != nil {
 		return false, err
 	}
+	q.emit(AuditEvent{Type: "queued", VideoID: videoID, Source: source, MaxRetries: maxRetries})
 	return true, nil
 }
 
@@ -295,6 +306,7 @@ func (q *Queue) Next(workerID string) (*Video, error) {
 		if err := q.writeAll(data); err != nil {
 			return nil, err
 		}
+		q.emit(AuditEvent{Type: "claimed", VideoID: data.Videos[i].VideoID, Source: data.Videos[i].Source, Worker: workerID})
 		return &data.Videos[i], nil
 	}
 
@@ -307,7 +319,8 @@ func (q *Queue) Next(workerID string) (*Video, error) {
 
 // Complete 标记视频处理成功（claimed → completed）
 func (q *Queue) Complete(videoID, bvid string) error {
-	return q.transition(videoID, func(v *Video) (bool, string) {
+	pre, _ := q.GetByID(videoID) // 预读用于审计（失败忽略，transition 会报准确错误）
+	err := q.transition(videoID, func(v *Video) (bool, string) {
 		if v.Status != StatusClaimed {
 			return false, fmt.Sprintf("状态不是 claimed (当前: %s)", v.Status)
 		}
@@ -315,12 +328,17 @@ func (q *Queue) Complete(videoID, bvid string) error {
 		v.BVID = bvid
 		return true, ""
 	})
+	if err == nil && pre != nil {
+		q.emit(AuditEvent{Type: "completed", VideoID: videoID, Source: pre.Source, Worker: pre.ClaimedBy, BVID: bvid, DurationMS: durationSince(pre.ClaimedAt)})
+	}
+	return err
 }
 
 // Fail 标记视频处理失败（claimed → failed 或 queued 重试）
 // 自动重试逻辑：retry_count < max_retries → 回到 queued，否则 failed
 func (q *Queue) Fail(videoID, errMsg string) error {
-	return q.transition(videoID, func(v *Video) (bool, string) {
+	pre, _ := q.GetByID(videoID) // 预读用于审计
+	err := q.transition(videoID, func(v *Video) (bool, string) {
 		if v.Status != StatusClaimed {
 			return false, fmt.Sprintf("状态不是 claimed (当前: %s)", v.Status)
 		}
@@ -335,6 +353,35 @@ func (q *Queue) Fail(videoID, errMsg string) error {
 		}
 		return true, ""
 	})
+	if err == nil && pre != nil {
+		retry := pre.RetryCount + 1
+		evType := "retry"
+		if retry >= pre.MaxRetries {
+			evType = "failed"
+		}
+		q.emit(AuditEvent{
+			Type: evType, VideoID: videoID, Source: pre.Source, Worker: pre.ClaimedBy,
+			Error: errMsg, ErrorClass: ClassifyError(errMsg),
+			RetryCount: retry, MaxRetries: pre.MaxRetries, DurationMS: durationSince(pre.ClaimedAt),
+		})
+	}
+	return err
+}
+
+// durationSince 计算 claimed 时刻到现在的毫秒数（用于步骤耗时统计）。
+func durationSince(claimedAt string) int64 {
+	if claimedAt == "" {
+		return 0
+	}
+	parsed, err := time.Parse(time.RFC3339, claimedAt)
+	if err != nil {
+		return 0
+	}
+	d := time.Since(parsed)
+	if d < 0 {
+		return 0
+	}
+	return d.Milliseconds()
 }
 
 // RenewClaim 续租认领：仅当任务仍处于 claimed 且属于该 worker 时刷新 ClaimedAt。
@@ -375,7 +422,8 @@ func (q *Queue) RenewClaim(videoID, workerID string) error {
 
 // Reset 手动将视频重置为 queued（用于人工介入修复后）
 func (q *Queue) Reset(videoID string) error {
-	return q.transition(videoID, func(v *Video) (bool, string) {
+	pre, _ := q.GetByID(videoID)
+	err := q.transition(videoID, func(v *Video) (bool, string) {
 		if v.Status != StatusFailed && v.Status != StatusSkipped {
 			return false, fmt.Sprintf("只能重置 failed/skipped (当前: %s)", v.Status)
 		}
@@ -386,6 +434,10 @@ func (q *Queue) Reset(videoID string) error {
 		v.Error = ""
 		return true, ""
 	})
+	if err == nil && pre != nil {
+		q.emit(AuditEvent{Type: "reset", VideoID: videoID, Source: pre.Source, Worker: pre.ClaimedBy, Error: "manual reset"})
+	}
+	return err
 }
 
 // DaemonWorkerPrefix 标识 daemon 消费者的认领：崩溃恢复只回收本类遗留任务。
@@ -417,6 +469,7 @@ func (q *Queue) RequeueClaimed() (int, error) {
 
 	now := time.Now().Format(time.RFC3339)
 	reset := 0
+	var resetIDs []string
 	for i := range data.Videos {
 		if data.Videos[i].Status == StatusClaimed && strings.HasPrefix(data.Videos[i].ClaimedBy, DaemonWorkerPrefix) {
 			data.Videos[i].Status = StatusQueued
@@ -424,11 +477,15 @@ func (q *Queue) RequeueClaimed() (int, error) {
 			data.Videos[i].ClaimedAt = ""
 			data.Videos[i].UpdatedAt = now
 			reset++
+			resetIDs = append(resetIDs, data.Videos[i].VideoID)
 		}
 	}
 	if reset > 0 {
 		if err := q.writeAll(data); err != nil {
 			return reset, err
+		}
+		for _, id := range resetIDs {
+			q.emit(AuditEvent{Type: "requeued", VideoID: id})
 		}
 	}
 	return reset, nil
