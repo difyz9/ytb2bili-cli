@@ -202,6 +202,13 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 
 	keywords, scorer, uploadDate, maxDuration, maxVideos, minViews := opts.effectiveSearch(cfg)
 
+	// 单实例锁：防止重复启动/重叠运行（否则崩溃恢复 RequeueClaimed 可能把活任务再认领一遍）
+	releaseLock, err := acquireDaemonLock(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer releaseLock()
+
 	q := queue.New(cfg.DataDir)
 	workerID := queue.WorkerID()
 
@@ -342,13 +349,17 @@ func daemonRunAutoBatch(ctx context.Context, cfg *config.Config, q *queue.Queue,
 		return 0
 	}
 
-	// 入队（最多 maxVideos 个，去重由 q.Add 保证）
+	// 入队（最多 maxVideos 个，去重由 q.Add 保证）；重试上限跟随 daemon.max_retries 配置
+	maxRetries := queue.DefaultMaxRetries
+	if cfg.Daemon != nil {
+		maxRetries = cfg.Daemon.EffectiveMaxRetries()
+	}
 	enqueued := 0
 	for _, sv := range scored {
 		if enqueued >= maxVideos {
 			break
 		}
-		added, err := q.Add(sv.ID, sv.URL, sv.Title, sv.ChannelID, "auto")
+		added, err := q.AddWithRetries(sv.ID, sv.URL, sv.Title, sv.ChannelID, "auto", maxRetries)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "  ⚠ 入队失败 [%s]: %v\n", sv.Title, err)
 			continue
@@ -770,4 +781,29 @@ func alertOrPrint(cfg *config.Config, msg string) {
 			fmt.Fprintf(os.Stderr, "  ⚠ 飞书告警失败: %v\n", err)
 		}
 	}
+}
+
+// ─── daemon 单实例锁 ────────────────────────────────────────────────────────
+
+// acquireDaemonLock 获取 daemon 单实例锁（flock LOCK_EX|LOCK_NB on <data>/daemon/daemon.lock）。
+// 已存在运行中的实例时返回错误，防止重叠运行导致 RequeueClaimed 重复认领活任务。
+// 返回的 release 函数释放锁（进程退出/句柄关闭时 flock 自动释放，崩溃也安全）。
+func acquireDaemonLock(dataDir string) (release func(), err error) {
+	dir := filepath.Join(dataDir, "daemon")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("创建 daemon 锁目录失败: %w", err)
+	}
+	lockPath := filepath.Join(dir, "daemon.lock")
+	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("打开 daemon 锁文件失败: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("已有 daemon 实例在运行（锁 %s 被占用），请勿重复启动: %w", lockPath, err)
+	}
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		f.Close()
+	}, nil
 }
