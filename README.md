@@ -139,7 +139,7 @@ ytb auto --duration long --min-views 1000 "machine learning"
 
 ### daemon —— 常驻守护进程
 
-搜索→评分→去重→入队→串行处理，无限循环。**关键词/调度参数单一来源是 `config.yaml` 的 `search:` 与 `daemon:` 段**，改配置后 `systemctl --user restart ytb-batch-loop`。
+搜索→评分→去重→入队→串行处理，无限循环。**关键词/调度参数单一来源是 `config.yaml` 的 `search:` 与 `daemon:` 段**，改配置后 `systemctl --user restart ytb`。
 
 ```bash
 ytb daemon                  # 前台运行（生产环境由 systemd 管理，勿手动重复启动）
@@ -270,7 +270,7 @@ ytb check                         # 配置有效性 + LLM key + 语音合成 + Y
 ytb debug                         # 环境/登录/数据统计全面诊断
 ytb cookies test                  # YouTube cookies 有效性
 ytb cookies refresh               # 从 Chrome 刷新 cookies
-systemctl --user restart ytb-batch-loop        # 改关键词/配置后重启调度
+systemctl --user restart ytb        # 改关键词/配置后重启调度
 journalctl --user -u ytb-batch-loop -f         # 实时日志
 ```
 

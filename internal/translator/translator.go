@@ -486,6 +486,10 @@ func (t *Translator) translateGroup(ctx context.Context, texts []string, prevCon
 }
 
 func parseTranslations(response string, expected int) ([]string, error) {
+	if strings.TrimSpace(response) == "" {
+		// 推理模型常见：completion 预算被 reasoning 耗尽 → finish=length、content 为空。
+		return nil, fmt.Errorf("LLM 返回空内容（若为 deepseek 等推理模型，请确认请求已关闭 thinking；日志含 finish=length 即 max_tokens 截断）")
+	}
 	var structured struct {
 		Translations []struct {
 			Index int    `json:"index"`
@@ -598,7 +602,12 @@ func (t *Translator) callLLM(ctx context.Context, systemPrompt, userContent stri
 		"model":       t.config.Model,
 		"messages":    messages,
 		"temperature": 0.3,
-		"max_tokens":  4096,
+		// 同 DeepSeekProvider：关闭推理 + 加大 max_tokens，避免推理模型把预算烧在
+		// reasoning 上导致 content 为空（finish=length）而翻译数量不匹配。
+		"max_tokens":  8192,
+	}
+	if targetsDeepSeek(t.config.BaseURL) {
+		payload["thinking"] = map[string]interface{}{"type": "disabled"}
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
