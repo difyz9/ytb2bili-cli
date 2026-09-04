@@ -22,6 +22,10 @@ Require:
 - An audio directory containing one clip per subtitle index. Supported names include `1.mp3`, `001.wav`, and `audio_1.mp3`.
 
 Require the IndexTTS2 service at `http://localhost:18765` with a loaded model.
+If the service is started with `INDEX_TTS_API_KEY` set (see index-tts-admin
+`deploy/index-tts-server.py`), the synthesis script must receive the same key
+via `--api-key` (config: `tts.index.api_key`; the Go pipeline and CLI forward
+it automatically). A missing key makes `/synthesize` return 401.
 The synthesis script defaults to the server's reference voice and natural
 emotion, and resumes by skipping existing non-empty WAV clips. The
 synchronization script fails on missing clips by default so incomplete dubbing

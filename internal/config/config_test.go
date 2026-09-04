@@ -119,3 +119,22 @@ func TestDefaultTTSProviderIsEmpty(t *testing.T) {
 		t.Fatalf("default provider=%q, want empty (auto)", cfg.TTS.Provider)
 	}
 }
+
+func TestIndexTTSAPIKeyFromEnvFallback(t *testing.T) {
+	t.Setenv("INDEX_TTS_API_KEY", "env-secret-key")
+	cfg := Default()
+	cfg.Init() // Default() 的 TTS.Index.APIKey 为空 → 应回退环境变量
+	if got := cfg.TTS.Index.APIKey; got != "env-secret-key" {
+		t.Fatalf("env fallback failed: got %q", got)
+	}
+}
+
+func TestIndexTTSAPIKeyConfigWinsOverEnv(t *testing.T) {
+	t.Setenv("INDEX_TTS_API_KEY", "env-secret-key")
+	cfg := Default()
+	cfg.TTS.Index.APIKey = "config-key"
+	cfg.Init()
+	if got := cfg.TTS.Index.APIKey; got != "config-key" {
+		t.Fatalf("config value should win: got %q", got)
+	}
+}
