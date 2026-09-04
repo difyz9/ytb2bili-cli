@@ -291,6 +291,8 @@ type TTSConfig struct {
 type IndexTTSConfig struct {
 	// APIURL IndexTTS2 服务地址（默认 http://localhost:18765）
 	APIURL string `yaml:"api_url"`
+	// APIKey IndexTTS2 服务鉴权 key（服务端设置 INDEX_TTS_API_KEY 时必填，留空=旧版不鉴权服务）
+	APIKey string `yaml:"api_key"`
 	// Emotion 情感预设：default/happy/angry/sad/excited 等（默认 default）
 	Emotion string `yaml:"emotion"`
 	// EmotionAlpha 情感强度 0-1（默认 0.2）
@@ -503,6 +505,13 @@ func (c *Config) Init() {
 		c.Transcriber.Whisper.Model = model
 	}
 	c.Transcriber.Whisper.Model = ExpandHome(c.Transcriber.Whisper.Model)
+
+	// IndexTTS 服务鉴权 key（配置优先，其次环境变量 INDEX_TTS_API_KEY，须与 index-tts.service 一致）
+	if c.TTS != nil && c.TTS.Index != nil && c.TTS.Index.APIKey == "" {
+		if k := os.Getenv("INDEX_TTS_API_KEY"); k != "" {
+			c.TTS.Index.APIKey = k
+		}
+	}
 
 	// 自主搜索调度配置（daemon / auto 共用）
 	if c.Search == nil {

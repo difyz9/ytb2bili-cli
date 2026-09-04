@@ -1,6 +1,11 @@
 # IndexTTS2 HTTP API 文档
 
 > TTS 服务器运行在 `http://localhost:18765`，模型常驻显存，直接 HTTP POST 即可调用。
+>
+> ⚠️ 鉴权：服务器若设置了 `INDEX_TTS_API_KEY`（`deploy/index-tts-server.py` 逻辑），除 `/health` 外的
+> 所有请求必须带 `Authorization: Bearer <INDEX_TTS_API_KEY>` 头，否则返回 401。本机 ytb 侧在
+> `config.yaml → tts.index.api_key` 配置同一 key 即可（cli/pipeline 自动携带）。下方 curl 示例若遇 401，
+> 在请求头补 `-H "Authorization: Bearer <key>"`。
 
 ---
 

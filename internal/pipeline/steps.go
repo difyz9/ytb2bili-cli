@@ -341,6 +341,14 @@ func RunIndexTTSSRT(ctx context.Context, srtPath, outputDir string, idxCfg *conf
 	if idxCfg.ServerOutputDir != "" {
 		args = append(args, "--server-output-dir", idxCfg.ServerOutputDir)
 	}
+	// IndexTTS2 服务鉴权 key（deploy/index-tts-server.py 除 /health 外要求 Bearer）
+	apiKey := strings.TrimSpace(idxCfg.APIKey)
+	if apiKey == "" {
+		apiKey = os.Getenv("INDEX_TTS_API_KEY")
+	}
+	if apiKey != "" {
+		args = append(args, "--api-key", apiKey)
+	}
 
 	fmt.Printf("  🎙 使用本地 IndexTTS 合成分段配音 (%s)\n", apiURL)
 	cmd := exec.CommandContext(ctx, resource.VenvPython(), args...)
