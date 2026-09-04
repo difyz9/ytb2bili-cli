@@ -54,6 +54,9 @@ make install        # 安装到 ~/.local/bin/ytb
 
 ytb init            # 逐项检查环境依赖
 ytb init --venv     # 同时创建配音 Python 环境
+
+# 配置与外部服务自检：配置有效性 + LLM/DeepSeek key + 语音合成 + YouTube 代理
+ytb check           # 退出码 0=全通过 / 非0=有异常；--json 机器可读输出
 ```
 
 ### 2. 配置
@@ -263,6 +266,7 @@ ytb2bili-go/
 ## 运维速查
 
 ```bash
+ytb check                         # 配置有效性 + LLM key + 语音合成 + YouTube 代理连通性自检
 ytb debug                         # 环境/登录/数据统计全面诊断
 ytb cookies test                  # YouTube cookies 有效性
 ytb cookies refresh               # 从 Chrome 刷新 cookies

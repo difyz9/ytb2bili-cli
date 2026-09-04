@@ -63,6 +63,7 @@ tts:
   # 本地 IndexTTS2 服务配置（provider: "index" 时生效）
   index:
     api_url: "http://localhost:18765"      # IndexTTS2 HTTP 服务地址
+    api_key: "${INDEX_TTS_API_KEY}"        # 服务鉴权 key（服务端设 INDEX_TTS_API_KEY 时必填，须一致；留空=旧版不鉴权服务）
     emotion: "auto"                        # 情感预设: default/auto/happy/angry/sad/excited/vec:.../emo_text:...
     emotion_alpha: 0.2                     # 情感强度 0-1（默认 0.2，弱情感更自然）
     ref_audio: "/path/to/ref_audio.wav"    # 参考音频路径（服务端可见，用于语音克隆音色）

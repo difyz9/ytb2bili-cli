@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -14,12 +15,16 @@ from pathlib import Path
 import pysrt
 
 
-def request_json(url: str, payload: dict[str, object] | None, timeout: float) -> dict:
+def request_json(url: str, payload: dict[str, object] | None, timeout: float, api_key: str = "") -> dict:
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        # 服务端（deploy/index-tts-server.py）除 /health 外要求 Bearer 鉴权
+        headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="GET" if payload is None else "POST",
     )
     try:
@@ -40,8 +45,8 @@ def request_json(url: str, payload: dict[str, object] | None, timeout: float) ->
     return result
 
 
-def health_check(api_url: str, timeout: float) -> dict:
-    result = request_json(f"{api_url}/health", None, timeout)
+def health_check(api_url: str, timeout: float, api_key: str = "") -> dict:
+    result = request_json(f"{api_url}/health", None, timeout, api_key)
     if result.get("status") != "ok" or result.get("model_loaded") is False:
         raise RuntimeError(f"IndexTTS2 is not ready: {result}")
     return result
@@ -59,6 +64,7 @@ def synthesize_once(
     use_emo_text: bool,
     emo_text: str,
     timeout: float,
+    api_key: str = "",
 ) -> None:
     payload: dict[str, object] = {
         "text": text,
@@ -72,7 +78,7 @@ def synthesize_once(
     if emo_text:
         payload["emo_text"] = emo_text
 
-    result = request_json(f"{api_url}/synthesize", payload, timeout)
+    result = request_json(f"{api_url}/synthesize", payload, timeout, api_key)
     returned = result.get("output")
     if not returned:
         raise RuntimeError(f"API response has no output path: {result}")
@@ -107,6 +113,7 @@ async def synthesize_entry(
                     args.use_emo_text,
                     args.emo_text,
                     args.timeout,
+                    args.api_key,
                 )
                 return
             except (OSError, RuntimeError, urllib.error.URLError) as exc:
@@ -118,7 +125,7 @@ async def synthesize_entry(
 
 
 async def run(args: argparse.Namespace) -> dict[str, object]:
-    health = await asyncio.to_thread(health_check, args.api_url, args.timeout)
+    health = await asyncio.to_thread(health_check, args.api_url, args.timeout, args.api_key)
     subtitles = pysrt.open(args.srt, encoding="utf-8")
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -170,6 +177,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--srt", required=True, help="UTF-8 SRT subtitle file")
     parser.add_argument("--output-dir", required=True, help="Directory for indexed WAV clips")
     parser.add_argument("--api-url", default="http://localhost:18765")
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("INDEX_TTS_API_KEY", ""),
+        help="IndexTTS2 服务鉴权 key（服务端设置 INDEX_TTS_API_KEY 时必填，留空=不鉴权）",
+    )
     parser.add_argument(
         "--server-output-dir",
         default="",
