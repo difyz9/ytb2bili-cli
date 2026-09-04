@@ -91,7 +91,12 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 	var coverPath string
 	if info.Thumbnail != "" {
 		coverPath = filepath.Join(outputDir, "cover.jpg")
-		coverCmd := exec.CommandContext(ctx, "curl", "-sL", "-o", coverPath, info.Thumbnail)
+		curlArgs := []string{"-sL"}
+		if proxy := strings.TrimSpace(os.Getenv("YOUTUBE_PROXY")); proxy != "" {
+			curlArgs = append(curlArgs, "--proxy", proxy)
+		}
+		curlArgs = append(curlArgs, "-o", coverPath, info.Thumbnail)
+		coverCmd := exec.CommandContext(ctx, "curl", curlArgs...)
 		if coverCmd.Run() == nil {
 			if fi, err := os.Stat(coverPath); err != nil || fi.Size() == 0 {
 				coverPath = ""
@@ -154,6 +159,13 @@ func prepareYTDLP(cookiesPath ...string) (baseArgs, env []string, err error) {
 	// YOUTUBE_COOKIES_FROM_BROWSER to override the browser/profile syntax accepted
 	// by yt-dlp, or to "off" to disable browser-cookie discovery entirely.
 	baseArgs = cookieArgs(cookiesFile, os.Getenv("YOUTUBE_COOKIES_FROM_BROWSER"), runtime.GOOS)
+
+	// YouTube 下载专用代理（可选）：config.yaml `youtube_proxy` 或环境变量 YOUTUBE_PROXY，
+	// 格式如 socks5://user:pass@host:port / http://user:pass@host:port。
+	// 仅传给 yt-dlp（下载 + 取元数据），B站/翻译等国内流量不受影响。
+	if proxy := strings.TrimSpace(os.Getenv("YOUTUBE_PROXY")); proxy != "" {
+		baseArgs = append(baseArgs, "--proxy", proxy)
+	}
 	return baseArgs, env, nil
 }
 
@@ -203,6 +215,12 @@ func InfoContext(ctx context.Context, url string, cookiesPath ...string) (*Video
 
 func cookieArgs(cookiesFile, browser, goos string) []string {
 	if cookiesFile != "" && hasValidCookies(cookiesFile) {
+		// 防御：YouTube 需要完整登录态（含 SID/SSID）。缺 SID 的半登录 cookie（meta 扩展导出常见）
+		// 会导致 yt-dlp 在媒体阶段被 403 / bot 验证拦截，且日志里看不出是 cookie 问题。
+		// 显式配置的文件缺 SID 时大声告警，避免静默失败。
+		if !hasAuthSession(cookiesFile) {
+			log.Printf("⚠ WARNING: cookies %s 缺少 SID/SSID（非完整登录态），YouTube 下载大概率 403/bot 拦截。\n   请从已登录 YouTube 的浏览器重新导出完整 cookie（应包含 SID、__Secure-3PSID、SSID、APISID 等 ≥20 行）", cookiesFile)
+		}
 		return []string{"--cookies", cookiesFile}
 	}
 
@@ -217,6 +235,22 @@ func cookieArgs(cookiesFile, browser, goos string) []string {
 		return []string{"--cookies-from-browser", browser}
 	}
 	return nil
+}
+
+// hasAuthSession 检查 cookie 文件是否含 YouTube 登录态核心字段（SID 或 __Secure-3PSID）。
+// 仅凭 3PSID 仍可能被限（实测 meta 导出有 3PSID 无 SID → 媒体 403），完整会话应含 SID。
+func hasAuthSession(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 7 && (fields[5] == "SID" || fields[5] == "SSID") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasValidCookies checks if a Netscape cookies file has non-zero expiry timestamps
