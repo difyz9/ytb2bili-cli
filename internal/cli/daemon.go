@@ -241,6 +241,11 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 				cur := hb.get()
 				cur.UpdatedAt = time.Now().Format(time.RFC3339)
 				writeDaemonHeartbeat(cfg, cur)
+				// 认领续租：长任务（TTS/上传等）期间保持 ClaimedAt 新鲜，
+				// 防止被 Next() 的死锁回收误判后重复认领（续租失败=任务已不属于本 daemon，忽略即可）
+				if cur.CurrentTask != "" {
+					_ = q.RenewClaim(cur.CurrentTask, workerID)
+				}
 			}
 		}
 	}()

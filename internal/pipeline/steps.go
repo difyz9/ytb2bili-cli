@@ -440,7 +440,9 @@ func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
 		return fmt.Errorf("上传失败: %w", err)
 	}
 	r.BVID = bvid
-	s.tasks.SetBVID(r.TaskID, bvid)
+	if err := s.tasks.SetBVID(r.TaskID, bvid); err != nil {
+		log.Printf("⚠ 任务记录写 BVID 失败(task=%s): %v（不影响投稿结果；历史/pending 已兜底防重复）", r.TaskID, err)
+	}
 	sv := &storage.SubmittedVideo{YouTubeID: r.VideoID, BVID: bvid, Title: state.Metadata.Title, Channel: req.Source}
 	// 关键不变量：上传已成功（bvid 已拿到）后，本地记录失败绝不能让流水线返回错误。
 	// 否则 daemon 重试会再次调用上传接口 → B 站重复投稿。

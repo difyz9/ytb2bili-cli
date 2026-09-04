@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -149,7 +150,9 @@ func (p *Processor) Process(ctx context.Context, req Request) (*Result, error) {
 	if err = executor.Run(ctx, result.Plan, workflow.NewState()); err != nil {
 		return result, err
 	}
-	tasks.SetCompleted(task.ID)
+	if err := tasks.SetCompleted(task.ID); err != nil {
+		log.Printf("warning: SetCompleted(%s): %v", task.ID, err)
+	}
 	result.Duration = time.Since(started)
 	return result, nil
 }
@@ -194,7 +197,9 @@ type taskObserver struct {
 }
 
 func (o *taskObserver) StepStarted(name string, position, total int) {
-	o.tasks.UpdateStep(o.taskID, name, "running")
+	if err := o.tasks.UpdateStep(o.taskID, name, "running"); err != nil {
+		log.Printf("warning: task %s UpdateStep(%s,running): %v", o.taskID, name, err)
+	}
 	if o.report != nil {
 		o.report(Event{Step: name, Position: position, Total: total, Status: "running"})
 	}
@@ -203,9 +208,13 @@ func (o *taskObserver) StepFinished(name string, err error) {
 	status := "completed"
 	if err != nil {
 		status = "failed"
-		o.tasks.UpdateStep(o.taskID, name, status, err.Error())
+		if uerr := o.tasks.UpdateStep(o.taskID, name, status, err.Error()); uerr != nil {
+			log.Printf("warning: task %s UpdateStep(%s,failed): %v", o.taskID, name, uerr)
+		}
 	} else {
-		o.tasks.UpdateStep(o.taskID, name, status)
+		if uerr := o.tasks.UpdateStep(o.taskID, name, status); uerr != nil {
+			log.Printf("warning: task %s UpdateStep(%s,completed): %v", o.taskID, name, uerr)
+		}
 	}
 	if o.report != nil {
 		o.report(Event{Step: name, Status: status, Err: err})
