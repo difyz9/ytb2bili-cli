@@ -4,6 +4,8 @@ llm_base_url: "https://api.deepseek.com"
 llm_model: "deepseek-v4-flash"
 data_dir: "./data"
 download_dir: "./data/downloads"   # 视频下载根目录（命令可用 videoId 直接引用该目录下资源）
+youtube_cookies: "./www.youtube.com_cookies.txt"   # YouTube cookies（yt-dlp 认证）。用户定期导出的完整登录态文件（含 SID）。旧默认 data/cookies/youtube_cookies_from_meta.txt 缺 SID 会 403
+# youtube_proxy: "socks5://user:pass@host:port"          # YouTube 下载专用代理（可选）。仅走 yt-dlp（下载/取信息/封面），B站/翻译不受影响。支持 socks5:// / http:// / https://
 chrome_debug_port: 9222            # Chrome 远程调试起始端口（被占用自动+1，cookies refresh 会用实际端口）
 min_duration_sec: 240              # 入队时低于此秒数的视频跳过（Short/短视频，0=不限制）
 bili_tid: 122

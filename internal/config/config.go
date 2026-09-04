@@ -47,14 +47,15 @@ func ExpandHome(path string) string {
 
 // Config 配置
 type Config struct {
-	DataDir    string `yaml:"data_dir"`
-	DownloadDir string `yaml:"download_dir"` // 视频下载根目录（默认 <data_dir>/downloads）
-	LLMAPIKey  string `yaml:"llm_api_key"`
+	DataDir               string   `yaml:"data_dir"`
+	DownloadDir           string   `yaml:"download_dir"` // 视频下载根目录（默认 <data_dir>/downloads）
+	LLMAPIKey             string   `yaml:"llm_api_key"`
 	LLMBaseURL            string   `yaml:"llm_base_url"`
 	LLMModel              string   `yaml:"llm_model"`
 	TranslationTargetLang string   `yaml:"translation_target_lang"`
 	BiliTid               int      `yaml:"bili_tid"`
 	YouTubeCookies        string   `yaml:"youtube_cookies"`
+	YouTubeProxy          string   `yaml:"youtube_proxy"` // YouTube 下载专用代理 socks5/http/https，仅作用于 yt-dlp（B站/翻译等国内流量不受影响）
 	ServerToken           string   `yaml:"server_token"`
 	AllowedOrigins        []string `yaml:"allowed_origins"`
 	ChromeDebugPort       int      `yaml:"chrome_debug_port"` // Chrome 远程调试起始端口（0=默认 9222，被占用自动 +1 找空闲）
@@ -227,9 +228,9 @@ type TencentCloudConfig struct {
 // TranslationConfig 多翻译服务配置（Phase 1）
 // primary 主服务，fallbacks 降级顺序。deepseek 为默认（兼容现有 llm_* 配置）。
 type TranslationConfig struct {
-	Primary   string   `yaml:"primary"`             // 主服务: deepseek / baidu / tencent / ollama
-	Fallbacks []string `yaml:"fallbacks"`           // 降级顺序（空=不降级）
-	Retries   int      `yaml:"retries"`             // 主服务重试次数（默认 2）
+	Primary   string   `yaml:"primary"`   // 主服务: deepseek / baidu / tencent / ollama
+	Fallbacks []string `yaml:"fallbacks"` // 降级顺序（空=不降级）
+	Retries   int      `yaml:"retries"`   // 主服务重试次数（默认 2）
 	// DeepSeek LLM 翻译
 	DeepSeek *DeepSeekCfg `yaml:"deepseek"`
 	// 百度翻译
@@ -258,9 +259,9 @@ type DeepSeekCfg struct {
 
 // BaiduCfg 百度翻译配置
 type BaiduCfg struct {
-	AppID    string `yaml:"app_id"`
-	AppKey   string `yaml:"app_key"`
-	QPS      int    `yaml:"qps"`
+	AppID  string `yaml:"app_id"`
+	AppKey string `yaml:"app_key"`
+	QPS    int    `yaml:"qps"`
 }
 
 // TencentCfg 腾讯翻译配置（为空时复用 tencent_cloud 凭证）
@@ -396,6 +397,9 @@ func (c *Config) Init() {
 	if cookies := os.Getenv("YOUTUBE_COOKIES"); cookies != "" {
 		c.YouTubeCookies = cookies
 	}
+	if proxy := os.Getenv("YOUTUBE_PROXY"); proxy != "" {
+		c.YouTubeProxy = proxy
+	}
 	if dir := os.Getenv("YTB2BILI_DOWNLOAD_DIR"); dir != "" {
 		c.DownloadDir = dir
 	}
@@ -522,6 +526,12 @@ func (c *Config) Init() {
 	}
 	if c.Daemon.AlertWebhook == "" {
 		c.Daemon.AlertWebhook = os.Getenv("YTB2BILI_ALERT_WEBHOOK")
+	}
+
+	// 把 config.yaml 的 youtube_proxy 导出为 YOUTUBE_PROXY 环境变量，
+	// 使 yt-dlp 子进程（下载/取信息/封面）能继承代理；显式环境变量优先，不被覆盖。
+	if c.YouTubeProxy != "" && os.Getenv("YOUTUBE_PROXY") == "" {
+		os.Setenv("YOUTUBE_PROXY", c.YouTubeProxy)
 	}
 }
 
