@@ -384,7 +384,9 @@ func (s *Server) processVideoTask(task *VideoTask) {
 		task.Status, task.Error = "failed", err.Error()
 		store := storage.NewTaskStore(filepath.Join(s.cfg.DataDir, "tasks"))
 		if persisted, getErr := store.Get(task.ID); getErr == nil && persisted.Status != "failed" {
-			store.UpdateStep(task.ID, "planning", "failed", err.Error())
+			if uerr := store.UpdateStep(task.ID, "planning", "failed", err.Error()); uerr != nil {
+				log.Printf("⚠ UpdateStep(%s, planning, failed): %v", task.ID, uerr)
+			}
 		}
 		log.Printf("❌ 任务失败: %s: %v", task.ID, err)
 		return

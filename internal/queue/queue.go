@@ -38,7 +38,7 @@ const (
 	StatusSkipped    = "skipped"    // 手动跳过
 
 	DefaultMaxRetries = 3
-	ClaimTimeout      = 30 * time.Minute // claimed 超时自动回退
+	ClaimTimeout      = 30 * time.Minute // claimed 超时自动回退（daemon 每 30s 续租，活任务不会被误回收）
 )
 
 // ─── 数据结构 ──────────────────────────────────────────────────────────────────
@@ -73,9 +73,10 @@ type QueueData struct {
 // 数据文件 queue.json 仍用临时文件 + rename 原子替换，
 // 避免"锁在即将被替换的旧 inode 上导致第二个进程对新 inode 加锁成功"的跨进程竞态。
 type Queue struct {
-	path     string // queue.json 的完整路径（数据，可被 rename 替换）
-	lockPath string // queue.lock（flock 目标，inode 永不更换）
-	mu       sync.Mutex
+	path         string // queue.json 的完整路径（数据，可被 rename 替换）
+	lockPath     string // queue.lock（flock 目标，inode 永不更换）
+	claimTimeout time.Duration // claimed 无续租多久视为死锁（默认 ClaimTimeout）
+	mu           sync.Mutex
 }
 
 // ─── 构造 ──────────────────────────────────────────────────────────────────────
@@ -85,8 +86,9 @@ func New(dir string) *Queue {
 	qDir := filepath.Join(dir, "queue")
 	os.MkdirAll(qDir, 0755)
 	return &Queue{
-		path:     filepath.Join(qDir, "queue.json"),
-		lockPath: filepath.Join(qDir, "queue.lock"),
+		path:         filepath.Join(qDir, "queue.json"),
+		lockPath:     filepath.Join(qDir, "queue.lock"),
+		claimTimeout: ClaimTimeout,
 	}
 }
 
@@ -271,7 +273,7 @@ func (q *Queue) Next(workerID string) (*Video, error) {
 		if err != nil {
 			continue
 		}
-		if now.Sub(claimedAt) > ClaimTimeout {
+		if now.Sub(claimedAt) > q.claimTimeout {
 			data.Videos[i].Status = StatusQueued
 			data.Videos[i].ClaimedBy = ""
 			data.Videos[i].ClaimedAt = ""
@@ -333,6 +335,42 @@ func (q *Queue) Fail(videoID, errMsg string) error {
 		}
 		return true, ""
 	})
+}
+
+// RenewClaim 续租认领：仅当任务仍处于 claimed 且属于该 worker 时刷新 ClaimedAt。
+// 长任务（TTS/上传/网络重试可能超过 ClaimTimeout）由处理方周期性调用，
+// 避免被其它 worker 的"死锁回收"误判后重复认领。返回错误表示已不属于该 worker。
+func (q *Queue) RenewClaim(videoID, workerID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll()
+	if err != nil {
+		return err
+	}
+	for i := range data.Videos {
+		v := &data.Videos[i]
+		if v.VideoID != videoID {
+			continue
+		}
+		if v.Status != StatusClaimed {
+			return fmt.Errorf("任务 %s 不在 claimed 状态（当前 %s）", videoID, v.Status)
+		}
+		if v.ClaimedBy != workerID {
+			return fmt.Errorf("任务 %s 属于 worker %s，worker %s 无权续租", videoID, v.ClaimedBy, workerID)
+		}
+		now := time.Now().Format(time.RFC3339)
+		v.ClaimedAt = now
+		v.UpdatedAt = now
+		return q.writeAll(data)
+	}
+	return fmt.Errorf("视频 %s 不在队列中", videoID)
 }
 
 // Reset 手动将视频重置为 queued（用于人工介入修复后）

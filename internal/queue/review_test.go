@@ -227,3 +227,52 @@ func TestCorruptQueueRejected(t *testing.T) {
 		t.Fatalf("还原后仍失败: %v", err)
 	}
 }
+
+// ─── P1：claim 续租 —— 活的长任务不被死锁回收，过期无续租的才被回收 ────────
+
+func TestRenewClaimKeepsLiveTaskSafe(t *testing.T) {
+	q := New(t.TempDir())
+	q.claimTimeout = 300 * time.Millisecond // 缩短租约便于测试
+
+	if _, err := q.Add("live", "https://youtu.be/live", "L", "c", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	v, err := q.Next("w1")
+	if err != nil || v == nil {
+		t.Fatalf("claim 失败: %v", err)
+	}
+
+	// 超过租约一部分后续租（模拟长任务心跳）
+	time.Sleep(200 * time.Millisecond)
+	if err := q.RenewClaim("live", "w1"); err != nil {
+		t.Fatalf("续租失败: %v", err)
+	}
+
+	// 另一 worker 立即 Next：续租后租约新鲜，不应回收
+	if other, err := q.Next("w2"); other != nil || err != nil {
+		t.Fatalf("续租后的活任务不应被其它 worker 回收: v=%v err=%v", other, err)
+	}
+	got, _ := q.GetByID("live")
+	if got.Status != StatusClaimed || got.ClaimedBy != "w1" {
+		t.Fatalf("续租后应仍由 w1 持有: %+v", got)
+	}
+
+	// 错误路径：非持有者无权续租
+	if err := q.RenewClaim("live", "w9"); err == nil {
+		t.Fatal("非持有 worker 续租应报错")
+	}
+
+	// 停更（模拟 worker 崩溃）：租约过期后应被回收
+	time.Sleep(400 * time.Millisecond) // 距上次续租 > 300ms
+	reclaimed, err := q.Next("w2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reclaimed == nil || reclaimed.VideoID != "live" || reclaimed.ClaimedBy != "w2" {
+		t.Fatalf("过期认领应被回收并转给 w2: %+v", reclaimed)
+	}
+	// 旧持有者再续租 → 报错（已被接管）
+	if err := q.RenewClaim("live", "w1"); err == nil {
+		t.Fatal("已被接管的任务，原 worker 续租应报错")
+	}
+}
