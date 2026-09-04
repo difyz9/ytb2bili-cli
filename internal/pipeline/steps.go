@@ -441,8 +441,16 @@ func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
 	}
 	r.BVID = bvid
 	s.tasks.SetBVID(r.TaskID, bvid)
-	if err = s.history.Add(&storage.SubmittedVideo{YouTubeID: r.VideoID, BVID: bvid, Title: state.Metadata.Title, Channel: req.Source}); err != nil {
-		return fmt.Errorf("保存投稿历史失败: %w", err)
+	sv := &storage.SubmittedVideo{YouTubeID: r.VideoID, BVID: bvid, Title: state.Metadata.Title, Channel: req.Source}
+	// 关键不变量：上传已成功（bvid 已拿到）后，本地记录失败绝不能让流水线返回错误。
+	// 否则 daemon 重试会再次调用上传接口 → B 站重复投稿。
+	// 本地写入失败时改为写入 durable pending 补偿日志，由下次处理前 ReconcilePending 补录。
+	if err = s.history.Add(sv); err != nil {
+		if perr := s.history.RecordPending(sv); perr != nil {
+			log.Printf("❌ CRITICAL: 投稿成功(bvid=%s)但历史写入与补偿记录均失败: add=%v recordPending=%v。需人工补录历史以防重复投稿", bvid, err, perr)
+		} else {
+			fmt.Printf("  ⚠ 历史写入失败(%v)，已写入 pending 补偿记录(bvid=%s)，下次处理前自动补录\n", err, bvid)
+		}
 	}
 	_, _ = storage.NewSubtitleStore(filepath.Join(s.config.DataDir, "subtitles")).SyncFromDownload(r.ArtifactID(), bvid, r.DownloadDir)
 	fmt.Printf("  \u2705 B站: https://www.bilibili.com/video/%s\n", bvid)

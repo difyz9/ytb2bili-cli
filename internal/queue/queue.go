@@ -14,6 +14,7 @@
 package queue
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -67,9 +68,14 @@ type QueueData struct {
 }
 
 // Queue 队列管理器
+//
+// 锁与数据分离：flock 锁定独立的 queue.lock（inode 稳定），
+// 数据文件 queue.json 仍用临时文件 + rename 原子替换，
+// 避免"锁在即将被替换的旧 inode 上导致第二个进程对新 inode 加锁成功"的跨进程竞态。
 type Queue struct {
-	path string // queue.json 的完整路径
-	mu   sync.Mutex
+	path     string // queue.json 的完整路径（数据，可被 rename 替换）
+	lockPath string // queue.lock（flock 目标，inode 永不更换）
+	mu       sync.Mutex
 }
 
 // ─── 构造 ──────────────────────────────────────────────────────────────────────
@@ -79,17 +85,19 @@ func New(dir string) *Queue {
 	qDir := filepath.Join(dir, "queue")
 	os.MkdirAll(qDir, 0755)
 	return &Queue{
-		path: filepath.Join(qDir, "queue.json"),
+		path:     filepath.Join(qDir, "queue.json"),
+		lockPath: filepath.Join(qDir, "queue.lock"),
 	}
 }
 
 // ─── 锁定 ──────────────────────────────────────────────────────────────────────
 
-// lock 获取文件级独占锁（flock LOCK_EX），返回文件句柄
+// lock 获取文件级独占锁（flock LOCK_EX），返回锁文件句柄。
+// 锁目标为独立 queue.lock，不随 queue.json 的 rename 更换 inode。
 func (q *Queue) lock() (*os.File, error) {
-	f, err := os.OpenFile(q.path, os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(q.lockPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("打开队列文件失败: %w", err)
+		return nil, fmt.Errorf("打开队列锁文件失败: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		f.Close()
@@ -106,26 +114,51 @@ func unlock(f *os.File) {
 
 // ─── 读写（原子操作） ───────────────────────────────────────────────────────────
 
-// readAll 读取完整队列数据（调用方需持有锁）
-func (q *Queue) readAll(f *os.File) (*QueueData, error) {
-	f.Seek(0, 0)
-	var data QueueData
-	if err := json.NewDecoder(f).Decode(&data); err != nil {
-		// 空文件或损坏 → 返回默认
-		data.Version = 1
-		data.Videos = nil
+// readAll 读取完整队列数据（调用方需持有锁）。
+// 文件不存在或为空 → 返回空队列；非空但解析失败 → 返回错误（拒绝静默覆盖损坏数据）。
+func (q *Queue) readAll() (*QueueData, error) {
+	data, err := os.ReadFile(q.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &QueueData{Version: 1, Videos: []Video{}}, nil
+		}
+		return nil, fmt.Errorf("读取队列文件失败: %w", err)
 	}
-	if data.Version == 0 {
-		data.Version = 1
+	if len(bytes.TrimSpace(data)) == 0 {
+		return &QueueData{Version: 1, Videos: []Video{}}, nil
 	}
-	if data.Videos == nil {
-		data.Videos = []Video{}
+
+	var qd QueueData
+	if err := json.Unmarshal(data, &qd); err != nil {
+		return nil, fmt.Errorf("队列文件损坏（%v）。已停止消费以防覆盖，恢复路径: %s.bak 或人工修复 %s", err, q.path, q.path)
 	}
-	return &data, nil
+	if qd.Version != 0 && qd.Version != 1 {
+		return nil, fmt.Errorf("未知队列版本 %d（%s），请使用兼容版本的工具修复", qd.Version, q.path)
+	}
+	if qd.Version == 0 {
+		qd.Version = 1
+	}
+	if qd.Videos == nil {
+		qd.Videos = []Video{}
+	}
+	return &qd, nil
 }
 
-// writeAll 原子写入队列数据（临时文件 + rename）
+// backup 将当前 queue.json 复制为 queue.json.bak（写入前的崩溃保险，best-effort）。
+func (q *Queue) backup() {
+	data, err := os.ReadFile(q.path)
+	if err != nil {
+		return // 首次写入尚无数据文件，无需备份
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return
+	}
+	os.WriteFile(q.path+".bak", data, 0644)
+}
+
+// writeAll 原子写入队列数据（临时文件 + rename），写入前保留 queue.json.bak
 func (q *Queue) writeAll(data *QueueData) error {
+	q.backup()
 	dir := filepath.Dir(q.path)
 	tmpPath := filepath.Join(dir, fmt.Sprintf(".queue.%d.tmp", rand.Int63()))
 	tmp, err := os.Create(tmpPath)
@@ -149,10 +182,16 @@ func (q *Queue) writeAll(data *QueueData) error {
 
 // ─── 核心操作 ──────────────────────────────────────────────────────────────────
 
-// Add 添加视频到队列（幂等：同一 video_id 已存在或已提交则忽略）
+// Add 添加视频到队列（幂等：同一 video_id 已存在或已提交则忽略），重试上限用默认值。
 // url 格式：https://www.youtube.com/watch?v=VIDEO_ID
 // source 标识来源（channel-sync, ghibli, manual）
 func (q *Queue) Add(videoID, url, title, channelID, source string) (bool, error) {
+	return q.AddWithRetries(videoID, url, title, channelID, source, DefaultMaxRetries)
+}
+
+// AddWithRetries 同 Add，但可指定该任务的最大重试次数（入队时写入任务快照）。
+// maxRetries <= 0 时回退默认值。
+func (q *Queue) AddWithRetries(videoID, url, title, channelID, source string, maxRetries int) (bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -162,7 +201,7 @@ func (q *Queue) Add(videoID, url, title, channelID, source string) (bool, error)
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return false, err
 	}
@@ -179,17 +218,20 @@ func (q *Queue) Add(videoID, url, title, channelID, source string) (bool, error)
 		return false, nil
 	}
 
+	if maxRetries <= 0 {
+		maxRetries = DefaultMaxRetries
+	}
 	now := time.Now().Format(time.RFC3339)
 	video := Video{
-		VideoID:     videoID,
-		URL:         url,
-		Title:       title,
-		ChannelID:   channelID,
-		Source:      source,
-		Status:      StatusQueued,
-		MaxRetries:  DefaultMaxRetries,
+		VideoID:      videoID,
+		URL:          url,
+		Title:        title,
+		ChannelID:    channelID,
+		Source:       source,
+		Status:       StatusQueued,
+		MaxRetries:   maxRetries,
 		DiscoveredAt: now,
-		UpdatedAt:   now,
+		UpdatedAt:    now,
 	}
 	data.Videos = append(data.Videos, video)
 
@@ -212,7 +254,7 @@ func (q *Queue) Next(workerID string) (*Video, error) {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +363,7 @@ func (q *Queue) RequeueClaimed() (int, error) {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return 0, err
 	}
@@ -367,7 +409,7 @@ func (q *Queue) Remove(videoID string) error {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return err
 	}
@@ -393,7 +435,7 @@ func (q *Queue) Clear() error {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return err
 	}
@@ -412,7 +454,7 @@ func (q *Queue) transition(videoID string, fn func(v *Video) (bool, string)) err
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return err
 	}
@@ -445,7 +487,7 @@ func (q *Queue) Status() (*QueueData, error) {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return nil, err
 	}
@@ -469,7 +511,7 @@ func (q *Queue) GetByID(videoID string) (*Video, error) {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return nil, err
 	}
