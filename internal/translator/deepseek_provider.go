@@ -12,21 +12,21 @@ import (
 
 // DeepSeekConfig LLM 翻译配置。
 type DeepSeekConfig struct {
-	APIKey     string
-	BaseURL    string
-	Model      string
-	BatchSize  int
+	APIKey      string
+	BaseURL     string
+	Model       string
+	BatchSize   int
 	ContextSize int
 }
 
 // DeepSeekProvider 基于 LLM 的批量翻译（JSON 结构化输出）。
 type DeepSeekProvider struct {
-	apiKey   string
-	baseURL  string
-	model    string
-	batch    int
-	context  int
-	client   *http.Client
+	apiKey  string
+	baseURL string
+	model   string
+	batch   int
+	context int
+	client  *http.Client
 }
 
 // NewDeepSeekProvider 创建 DeepSeek Provider。
@@ -115,7 +115,13 @@ func (d *DeepSeekProvider) callLLM(ctx context.Context, systemPrompt, userConten
 		"model":       d.model,
 		"messages":    messages,
 		"temperature": 0.3,
-		"max_tokens":  4096,
+		"max_tokens":  8192,
+	}
+	// 字幕翻译不需要链式思考：deepseek-v4-flash 等推理模型会把 completion 预算烧在内部
+	// reasoning 上，触发 finish=length 后 content 为空/截断 → “期望 N 条实际 1 条”。
+	// 对 DeepSeek 官方端点显式关闭 thinking；其他 OpenAI 兼容端点不传该参数（避免被拒）。
+	if targetsDeepSeek(d.baseURL) {
+		payload["thinking"] = map[string]interface{}{"type": "disabled"}
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -155,4 +161,13 @@ func (d *DeepSeekProvider) callLLM(ctx context.Context, systemPrompt, userConten
 	}
 
 	return result.Choices[0].Message.Content, nil
+}
+
+// targetsDeepSeek 判断 baseURL 是否指向 DeepSeek 官方 API（api.deepseek.com）。
+// DeepSeek 的推理模型支持用 thinking:{"type":"disabled"} 关闭链式思考（避免把
+// completion 预算烧在 reasoning 上导致 content 为空）；其他 OpenAI 兼容端点
+// （vllm/ollama/自定义网关等）不保证接受该参数，仅 DeepSeek 才附带。
+func targetsDeepSeek(baseURL string) bool {
+	h := strings.ToLower(strings.TrimSpace(baseURL))
+	return strings.Contains(h, "deepseek.com")
 }
