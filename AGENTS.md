@@ -18,7 +18,7 @@ systemd 用户服务
 ```
 
 - **调度已全部收敛到 `ytb daemon`**（替代旧 batch_loop.sh 的 bash 循环）：搜索→评分→去重→入队→串行处理，无限循环。
-- **关键词/搜索参数单一来源 = `config.yaml` 的 `search:` 段**；调度参数在 `daemon:` 段。改关键词 = 改 yaml + `systemctl --user restart ytb-batch-loop`，不要再改任何脚本。
+- **关键词/搜索参数单一来源 = `config.yaml` 的 `search:` 段**；调度参数在 `daemon:` 段。改关键词 = 改 yaml + `systemctl --user restart ytb`，不要再改任何脚本。
 - 失败任务自动重试（默认 3 次）后停止并飞书告警；步骤超时（下载 30min / TTS 60min）自动 kill 重试。
 - 心跳文件 `data/daemon/heartbeat.json`（批次/PID/当前任务/队列统计/状态），每 30s 刷新。
 
@@ -35,9 +35,14 @@ cd /home/guan/guan/code/ytb2bili-cli
 ./ytb task list / task show <id>   # 任务详情（失败步骤定位）
 ./ytb submit <URL>             # 手动提交单个搬运任务
 ./ytb submit <videoId>         # 续跑已有产物（幂等，跳过已完成步骤）
-systemctl --user restart ytb-batch-loop   # 改配置/关键词后重启
+systemctl --user restart ytb   # 改配置/关键词后重启（ytb 是 ytb-batch-loop.service 的别名，等价）
+systemctl --user status ytb     # 查看服务状态
 journalctl --user -u ytb-batch-loop -f    # 实时日志
 ```
+
+**服务别名**：`ytb-batch-loop.service` 已注册别名 `ytb.service`（位于 `~/.config/systemd/user/`，软链到同名单元），
+因此 `systemctl --user {start,stop,restart,status} ytb` 均可用，效果与长名完全一致。若需重建别名：
+`ln -s ytb-batch-loop.service ~/.config/systemd/user/ytb.service && systemctl --user daemon-reload`。
 
 **注意**：不要手动再起一个 `ytb daemon`（会和 systemd 服务抢队列）；守护进程已由 systemd 管理。失败任务达重试上限后需要人工判断根因（常见：B站上传连接被重置=临时网络、YouTube cookies 过期、TTS 服务挂了），修复后再 `queue retry-failed`。
 

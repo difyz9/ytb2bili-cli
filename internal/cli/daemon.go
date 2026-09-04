@@ -223,6 +223,7 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 	// 避免监控把"忙碌但健康"的 daemon 误判为卡死。
 	heartbeatDone := make(chan struct{})
 	go func() {
+		defer close(heartbeatDone) // goroutine 退出即通知主流程，避免关停死锁
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -236,7 +237,6 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 			}
 		}
 	}()
-	defer func() { close(heartbeatDone) }()
 
 	fmt.Printf("🚀 daemon 启动 (worker=%s, 关键词=%d, scorer=%s, 每批≤%d 个)\n",
 		workerID, len(keywords), scorer, maxVideos)
@@ -294,6 +294,7 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 	}
 
 	writeDaemonHeartbeat(cfg, hb.get().withStatus("stopped"))
+	stop() // 主动取消 ctx → 心跳 goroutine 退出并 close(heartbeatDone)（SIGTERM 已到时幂等）
 	<-heartbeatDone
 	fmt.Println("👋 daemon 已退出")
 	return nil
