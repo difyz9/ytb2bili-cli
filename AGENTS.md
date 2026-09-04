@@ -69,6 +69,12 @@ export DEEPSEEK_API_KEY=***
 # 可选：YouTube cookies（防止下载频率限制）
 export YOUTUBE_COOKIES="/path/to/youtube_cookies.txt"
 
+# 可选：YouTube 下载专用代理（仅走 yt-dlp 下载/取信息，不影响 B站投稿/翻译）
+# 格式: socks5://user:pass@host:port 或 http://user:pass@host:port
+# 也可在 config.yaml 配 youtube_proxy:（环境变量优先）。
+# 注意：机房 SOCKS5 IP 常被 YouTube 风控；代理 + 完整登录态 cookie（含 SID）缺一不可。
+export YOUTUBE_PROXY="socks5://user:pass@host:port"
+
 # 可选：自定义 LLM
 export LLM_MODEL="deepseek-v4-flash"
 export LLM_BASE_URL="https://api.deepseek.com"
