@@ -25,6 +25,37 @@ const (
 	modelID        = "8"
 )
 
+// newJSONRequest 构造带 context 的 JSON 请求；marshal/构造错误显式返回，不静默吞掉。
+func newJSONRequest(ctx context.Context, method, url string, body interface{}) (*http.Request, error) {
+	var reader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("marshal request body: %w", err)
+		}
+		reader = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, fmt.Errorf("new request %s %s: %w", method, url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Bilibili/1.0.0 (https://www.bilibili.com)")
+	return req, nil
+}
+
+// sleepCtx 可取消休眠：ctx 取消时立即返回（Bcut 轮询不再用不可取消的 time.Sleep）。
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // 上传响应
 type uploadResponse struct {
 	Code int `json:"code"`
@@ -158,11 +189,10 @@ func requestUpload(ctx context.Context, fileData []byte) (*uploadResponse, error
 		"ResourceFileType": "mp3",
 		"model_id":         modelID,
 	}
-	payloadBytes, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequestWithContext(ctx, "POST", apiReqUpload, bytes.NewReader(payloadBytes))
-	req.Header.Set("User-Agent", "Bilibili/1.0.0 (https://www.bilibili.com)")
-	req.Header.Set("Content-Type", "application/json")
+	req, err := newJSONRequest(ctx, "POST", apiReqUpload, payload)
+	if err != nil {
+		return nil, err
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -205,7 +235,10 @@ func uploadParts(ctx context.Context, fileData []byte, uploadResp *uploadRespons
 }
 
 func uploadSinglePart(ctx context.Context, uploadURL string, chunk []byte) (string, error) {
-	req, _ := http.NewRequestWithContext(ctx, "PUT", uploadURL, bytes.NewReader(chunk))
+	req, err := http.NewRequestWithContext(ctx, "PUT", uploadURL, bytes.NewReader(chunk))
+	if err != nil {
+		return "", fmt.Errorf("new part request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -230,11 +263,10 @@ func commitUpload(ctx context.Context, uploadResp *uploadResponse, etags []strin
 		"UploadId":   uploadResp.Data.UploadID,
 		"model_id":   modelID,
 	}
-	payloadBytes, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequestWithContext(ctx, "POST", apiCommit, bytes.NewReader(payloadBytes))
-	req.Header.Set("User-Agent", "Bilibili/1.0.0 (https://www.bilibili.com)")
-	req.Header.Set("Content-Type", "application/json")
+	req, err := newJSONRequest(ctx, "POST", apiCommit, payload)
+	if err != nil {
+		return "", err
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -257,11 +289,10 @@ func createTask(ctx context.Context, downloadURL string) (string, error) {
 		"resource": downloadURL,
 		"model_id": modelID,
 	}
-	payloadBytes, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequestWithContext(ctx, "POST", apiCreateTask, bytes.NewReader(payloadBytes))
-	req.Header.Set("User-Agent", "Bilibili/1.0.0 (https://www.bilibili.com)")
-	req.Header.Set("Content-Type", "application/json")
+	req, err := newJSONRequest(ctx, "POST", apiCreateTask, payload)
+	if err != nil {
+		return "", err
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -282,7 +313,13 @@ func createTask(ctx context.Context, downloadURL string) (string, error) {
 func queryResult(ctx context.Context, taskID string) (*bcutResult, error) {
 	maxRetries := 300
 	for i := 0; i < maxRetries; i++ {
-		req, _ := http.NewRequestWithContext(ctx, "GET", apiQueryResult, nil)
+		if err := ctx.Err(); err != nil {
+			return nil, err // 调用方取消：立即退出，不再轮询
+		}
+		req, err := http.NewRequestWithContext(ctx, "GET", apiQueryResult, nil)
+		if err != nil {
+			return nil, fmt.Errorf("new query request: %w", err)
+		}
 		q := req.URL.Query()
 		q.Add("model_id", modelID)
 		q.Add("task_id", taskID)
@@ -291,7 +328,9 @@ func queryResult(ctx context.Context, taskID string) (*bcutResult, error) {
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			time.Sleep(2 * time.Second)
+			if serr := sleepCtx(ctx, 2*time.Second); serr != nil {
+				return nil, serr
+			}
 			continue
 		}
 		bodyBytes, _ := io.ReadAll(resp.Body)
@@ -299,7 +338,9 @@ func queryResult(ctx context.Context, taskID string) (*bcutResult, error) {
 
 		var queryResp queryResponse
 		if err := json.Unmarshal(bodyBytes, &queryResp); err != nil {
-			time.Sleep(2 * time.Second)
+			if serr := sleepCtx(ctx, 2*time.Second); serr != nil {
+				return nil, serr
+			}
 			continue
 		}
 
@@ -319,7 +360,9 @@ func queryResult(ctx context.Context, taskID string) (*bcutResult, error) {
 		if i%10 == 0 && i > 0 {
 			log.Printf("  等待中... (state=%d, %ds)", queryResp.Data.State, i*2)
 		}
-		time.Sleep(2 * time.Second)
+		if err := sleepCtx(ctx, 2*time.Second); err != nil {
+			return nil, err
+		}
 	}
 	return nil, fmt.Errorf("转写超时")
 }
