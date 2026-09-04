@@ -128,6 +128,16 @@ ytb init --pip      # 自动安装 Python 依赖
 ytb init --venv     # 自动创建 audio-video-sync .venv 并安装配音依赖
 ```
 
+### 配置与外部服务自检
+
+```bash
+ytb check           # 检查配置有效性 + LLM/DeepSeek key 可用性 + TTS + YouTube 代理连通性
+ytb check --json    # 机器可读输出（stdout 仅 JSON，退出码 0=全通过 / 非0=有异常）
+```
+
+定位配置问题（如 API key 失效/带空白、IndexTTS 服务没起、代理挂了）优先跑 `ytb check`；
+环境依赖是否安装用 `ytb init`。
+
 ### 搜索视频
 
 ```bash
