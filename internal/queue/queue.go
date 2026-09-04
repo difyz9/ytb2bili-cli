@@ -289,7 +289,7 @@ func (q *Queue) Next(workerID string) (*Video, error) {
 		}
 		data.Videos[i].Status = StatusClaimed
 		data.Videos[i].ClaimedBy = workerID
-		data.Videos[i].ClaimedAt = now.Format(time.RFC3339)
+		data.Videos[i].ClaimedAt = time.Now().Format(time.RFC3339Nano) // 纳秒精度：同秒内续租也能延长租约
 		data.Videos[i].UpdatedAt = now.Format(time.RFC3339)
 
 		if err := q.writeAll(data); err != nil {
@@ -365,7 +365,7 @@ func (q *Queue) RenewClaim(videoID, workerID string) error {
 		if v.ClaimedBy != workerID {
 			return fmt.Errorf("任务 %s 属于 worker %s，worker %s 无权续租", videoID, v.ClaimedBy, workerID)
 		}
-		now := time.Now().Format(time.RFC3339)
+		now := time.Now().Format(time.RFC3339Nano) // 纳秒精度，保证续租真正刷新租约
 		v.ClaimedAt = now
 		v.UpdatedAt = now
 		return q.writeAll(data)
@@ -388,9 +388,18 @@ func (q *Queue) Reset(videoID string) error {
 	})
 }
 
-// RequeueClaimed 将所有 claimed 任务重置回 queued（daemon 崩溃恢复用）。
-// 单 worker 场景下 claimed 只可能是"上一次运行遗留"，重启后需要续跑。
-// 返回被重置的任务数。
+// DaemonWorkerPrefix 标识 daemon 消费者的认领：崩溃恢复只回收本类遗留任务。
+const DaemonWorkerPrefix = "daemon:"
+
+// DaemonWorkerID 返回 daemon 专用 worker 标识（区别于 queue work / CLI 等手动消费者）。
+func DaemonWorkerID() string {
+	return DaemonWorkerPrefix + WorkerID()
+}
+
+// RequeueClaimed 崩溃恢复：只回收 daemon 遗留的 claimed（claimed_by 以 "daemon:" 开头）。
+// 单实例锁保证同一时刻至多一个 daemon，因此此类认领只可能来自已退出的实例，可安全续跑。
+// 其它消费者（如 queue work）的活跃认领不受影响，避免"重启后抢走正在处理的任务"导致重复下载/投稿；
+// 它们意外退出后的遗留认领由 Next() 的 claim 超时回收兜底。
 func (q *Queue) RequeueClaimed() (int, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -409,7 +418,7 @@ func (q *Queue) RequeueClaimed() (int, error) {
 	now := time.Now().Format(time.RFC3339)
 	reset := 0
 	for i := range data.Videos {
-		if data.Videos[i].Status == StatusClaimed {
+		if data.Videos[i].Status == StatusClaimed && strings.HasPrefix(data.Videos[i].ClaimedBy, DaemonWorkerPrefix) {
 			data.Videos[i].Status = StatusQueued
 			data.Videos[i].ClaimedBy = ""
 			data.Videos[i].ClaimedAt = ""

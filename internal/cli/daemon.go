@@ -210,7 +210,7 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 	defer releaseLock()
 
 	q := queue.New(cfg.DataDir)
-	workerID := queue.WorkerID()
+	workerID := queue.DaemonWorkerID() // 带 daemon: 前缀，崩溃恢复只回收本类遗留认领
 
 	// 崩溃恢复：把上次运行遗留的 claimed 任务重置回 queued 续跑
 	if n, err := q.RequeueClaimed(); err == nil && n > 0 {

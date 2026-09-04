@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -274,5 +275,87 @@ func TestRenewClaimKeepsLiveTaskSafe(t *testing.T) {
 	// 旧持有者再续租 → 报错（已被接管）
 	if err := q.RenewClaim("live", "w1"); err == nil {
 		t.Fatal("已被接管的任务，原 worker 续租应报错")
+	}
+}
+
+// ─── P0：崩溃恢复只回收 daemon 遗留认领，不抢其它消费者的活任务 ─────────────
+
+func TestRequeueClaimedScopedToDaemon(t *testing.T) {
+	q := New(t.TempDir())
+
+	// daemon 遗留认领（上轮崩溃，ClaimedBy 带 daemon: 前缀）
+	if _, err := q.AddWithRetries("d1", "https://youtu.be/d1", "D1", "c", "auto", 3); err != nil {
+		t.Fatal(err)
+	}
+	// 另一个活跃消费者（如 queue work）的认领
+	if _, err := q.Add("w1", "https://youtu.be/w1", "W1", "c", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	// d1 由崩溃的 daemon 认领
+	if v, _ := q.Next(DaemonWorkerID() + ":deadpid"); v == nil || v.VideoID != "d1" {
+		t.Fatal("d1 claim 失败")
+	}
+	// w1 由 queue work 认领（无 daemon: 前缀）
+	if v, _ := q.Next("queuework:123"); v == nil || v.VideoID != "w1" {
+		t.Fatal("w1 claim 失败")
+	}
+
+	n, err := q.RequeueClaimed() // daemon 重启后的崩溃恢复
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("应只恢复 1 条 daemon 遗留认领，实际 %d", n)
+	}
+	// d1 回到 queued；w1 仍是活跃消费者持有
+	if got, _ := q.GetByID("d1"); got.Status != StatusQueued {
+		t.Fatalf("d1 应被恢复为 queued: %+v", got)
+	}
+	if got, _ := q.GetByID("w1"); got.Status != StatusClaimed || got.ClaimedBy != "queuework:123" {
+		t.Fatalf("活跃消费者的认领不应被回收: %+v", got)
+	}
+}
+
+// ─── P1：损坏后可用 .bak 恢复，不丢任务 ─────────────────────────────────────
+
+func TestQueueBackupRestore(t *testing.T) {
+	dir := t.TempDir()
+	q := New(dir)
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("bk%d", i)
+		if _, err := q.Add(id, "https://youtu.be/"+id, "B", "c", "manual"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	qDir := filepath.Join(dir, "queue")
+
+	// 每次写盘前都会先备份 → .bak 存在且非空（内容是上一次写入前的快照）
+	bak, err := os.ReadFile(filepath.Join(qDir, "queue.json.bak"))
+	if err != nil {
+		t.Fatalf("写入后应保留 .bak: %v", err)
+	}
+	var bakData struct {
+		Videos []json.RawMessage `json:"videos"`
+	}
+	if err := json.Unmarshal(bak, &bakData); err != nil {
+		t.Fatalf(".bak 内容非法: %v", err)
+	}
+	// 模拟损坏
+	if err := os.WriteFile(filepath.Join(qDir, "queue.json"), []byte(`{"version":1,`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Status(); err == nil {
+		t.Fatal("损坏应被识别")
+	}
+	// 人工用 .bak 恢复（损坏错误信息中也会提示该路径）
+	if err := os.WriteFile(filepath.Join(qDir, "queue.json"), bak, 0644); err != nil {
+		t.Fatal(err)
+	}
+	data, err := q.Status()
+	if err != nil {
+		t.Fatalf("恢复后读取失败: %v", err)
+	}
+	if len(data.Videos) != len(bakData.Videos) {
+		t.Fatalf("恢复后任务数 %d 应与 .bak 快照 %d 一致", len(data.Videos), len(bakData.Videos))
 	}
 }
