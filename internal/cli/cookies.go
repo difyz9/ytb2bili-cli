@@ -5,11 +5,11 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/zolagz/ytb2bili-go/internal/cdp"
+	"github.com/zolagz/ytb2bili-go/internal/download"
 )
 
 // ─── Cookies ───────────────────────────────────────────────────────────────
@@ -26,30 +26,16 @@ func newCookiesCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := loadConfig()
 			cookiesFile := cfg.EffectiveCookiesPath()
-			os.MkdirAll(filepath.Dir(cookiesFile), 0755)
-
-			port := readChromePort(cfg)
 			fmt.Printf("🍪 刷新 YouTube cookies → %s\n", cookiesFile)
-			fmt.Printf("🔗 连接到 Chrome (端口 %d)...\n", port)
-
-			cm := cdp.NewChromeManager(cdp.WithPort(port))
-			ctx, cancel, err := cm.ConnectExisting(port)
-			if err != nil {
-				return fmt.Errorf("连接 Chrome 失败: %w", err)
+			if err := refreshYouTubeCookiesFromDebugChrome(cfg); err != nil {
+				return err
 			}
-			defer cancel()
-
-			fmt.Println("🌐 打开 YouTube 获取 cookies...")
-			count, err := cdp.RefreshYouTubeCookies(ctx, cookiesFile)
-			if err != nil {
-				return fmt.Errorf("刷新 cookies 失败: %w", err)
-			}
-			fmt.Printf("✅ 已刷新 %d 个 cookies\n", count)
-
-			if err := cdp.TestYouTubeCookies(cookiesFile); err != nil {
+			// 与下载流水线一致：先剔除已轮换的 PSIDTS 令牌再测
+			sanitized := download.SanitizeCookieFile(cookiesFile)
+			if err := cdp.TestYouTubeCookies(sanitized); err != nil {
 				return fmt.Errorf("cookies 验证失败: %w", err)
 			}
-			fmt.Println("✅ cookies 有效！")
+			fmt.Println("✅ cookies 已刷新且有效！")
 			return nil
 		},
 	}
@@ -63,6 +49,9 @@ func newCookiesCmd() *cobra.Command {
 			if _, err := os.Stat(cookiesFile); err != nil {
 				return fmt.Errorf("cookies 文件不存在: %s", cookiesFile)
 			}
+			// 与下载流水线一致：先剔除已轮换的 PSIDTS 令牌再测，
+			// 避免原文件合 st令牌失效而误报（下载时实际用的是净化副本）。
+			cookiesFile = download.SanitizeCookieFile(cookiesFile)
 			if err := cdp.TestYouTubeCookies(cookiesFile); err != nil {
 				return fmt.Errorf("cookies 无效: %w", err)
 			}
