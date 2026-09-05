@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestInitLoadsServerSecurityEnvironment(t *testing.T) {
@@ -136,5 +137,105 @@ func TestIndexTTSAPIKeyConfigWinsOverEnv(t *testing.T) {
 	cfg.Init()
 	if got := cfg.TTS.Index.APIKey; got != "config-key" {
 		t.Fatalf("config value should win: got %q", got)
+	}
+}
+
+// --- EffectiveCookiesPath: data/cookies 最新文件选择 ---
+
+// writeCookies 写一个 Netscape 格式的有效 cookies 文件，mtime 设为指定时间。
+func writeCookies(t *testing.T, path string, mtime time.Time) {
+	t.Helper()
+	valid := "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1728000000\tSID\tvalue\n"
+	if err := os.WriteFile(path, []byte(valid), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEffectiveCookiesPathPicksNewestFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Default()
+	cfg.DataDir = dir
+
+	base := time.Now()
+	older := filepath.Join(dir, "cookies", "old_cookies.txt")
+	newer := filepath.Join(dir, "cookies", "fresh_cookies.txt")
+	os.MkdirAll(filepath.Join(dir, "cookies"), 0o755)
+	writeCookies(t, older, base.Add(-2*time.Hour))
+	writeCookies(t, newer, base)
+
+	if got := cfg.EffectiveCookiesPath(); got != newer {
+		t.Fatalf("EffectiveCookiesPath() = %q, want newest %q", got, newer)
+	}
+}
+
+func TestEffectiveCookiesPathSkipsInvalidNewestFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Default()
+	cfg.DataDir = dir
+	cookiesDir := filepath.Join(dir, "cookies")
+	os.MkdirAll(cookiesDir, 0o755)
+
+	base := time.Now()
+	// 最新的文件内容无效（无有效 cookie 行），应跳过取次新的有效文件
+	badNewest := filepath.Join(cookiesDir, "broken.txt")
+	os.WriteFile(badNewest, []byte("# empty\n"), 0o600)
+	os.Chtimes(badNewest, base, base)
+	goodOlder := filepath.Join(cookiesDir, "youtube_cookies_from_meta.txt")
+	writeCookies(t, goodOlder, base.Add(-1*time.Hour))
+
+	if got := cfg.EffectiveCookiesPath(); got != goodOlder {
+		t.Fatalf("EffectiveCookiesPath() = %q, want valid older %q", got, goodOlder)
+	}
+}
+
+func TestEffectiveCookiesPathIgnoresHiddenAndNonTxtFiles(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Default()
+	cfg.DataDir = dir
+	cookiesDir := filepath.Join(dir, "cookies")
+	os.MkdirAll(cookiesDir, 0o755)
+
+	base := time.Now()
+	// .DS_Store / .json 不应参与候选
+	os.WriteFile(filepath.Join(cookiesDir, ".DS_Store"), []byte("junk"), 0o600)
+	os.Chtimes(filepath.Join(cookiesDir, ".DS_Store"), base.Add(time.Hour), base.Add(time.Hour))
+	os.WriteFile(filepath.Join(cookiesDir, "notes.md"), []byte("junk"), 0o600)
+	os.Chtimes(filepath.Join(cookiesDir, "notes.md"), base.Add(time.Hour), base.Add(time.Hour))
+	want := filepath.Join(cookiesDir, "cookies.txt")
+	writeCookies(t, want, base)
+
+	if got := cfg.EffectiveCookiesPath(); got != want {
+		t.Fatalf("EffectiveCookiesPath() = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveCookiesPathExplicitConfigWins(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Default()
+	cfg.DataDir = dir
+	explicit := filepath.Join(dir, "explicit_cookies.txt")
+	writeCookies(t, explicit, time.Now().Add(-24*time.Hour)) // 故意更旧
+	cfg.YouTubeCookies = explicit
+	// data/cookies 里放一个更新的文件，但显式配置优先
+	cookiesDir := filepath.Join(dir, "cookies")
+	os.MkdirAll(cookiesDir, 0o755)
+	writeCookies(t, filepath.Join(cookiesDir, "newer.txt"), time.Now())
+
+	if got := cfg.EffectiveCookiesPath(); got != explicit {
+		t.Fatalf("EffectiveCookiesPath() = %q, want explicit %q", got, explicit)
+	}
+}
+
+func TestEffectiveCookiesPathFallsBackToDefaultName(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Default()
+	cfg.DataDir = dir // 无任何 cookies 文件
+
+	want := filepath.Join(dir, "cookies", DefaultCookiesFile)
+	if got := cfg.EffectiveCookiesPath(); got != want {
+		t.Fatalf("EffectiveCookiesPath() = %q, want %q", got, want)
 	}
 }

@@ -40,7 +40,7 @@ YouTube → Bilibili 视频搬运工具。Go 编写的 CLI（`ytb`），覆盖 �
 | 依赖 | 用途 | 安装 |
 |------|------|------|
 | Go >= 1.26 | 编译 | https://go.dev |
-| yt-dlp | 视频下载 | `ytb init --update` 可自动更新 |
+| yt-dlp | 视频下载 | 缺失时自动安装到 `~/.local/bin`（无需 sudo）；`ytb init --update` 可自动更新 |
 | ffmpeg | 音视频处理 | `brew install ffmpeg` / `apt install ffmpeg` |
 | deno | yt-dlp JS 运行时 | `brew install deno` |
 | whisper-cli | 本地转录（可选，否则走 Bcut 云端） | [whisper.cpp](https://github.com/ggml-org/whisper.cpp) |
@@ -268,8 +268,8 @@ ytb2bili-go/
 ```bash
 ytb check                         # 配置有效性 + LLM key + 语音合成 + YouTube 代理连通性自检
 ytb debug                         # 环境/登录/数据统计全面诊断
-ytb cookies test                  # YouTube cookies 有效性
-ytb cookies refresh               # 从 Chrome 刷新 cookies
+ytb cookies test                  # YouTube cookies 有效性（自动选 data/cookies/ 最新文件）
+ytb cookies refresh               # 从 Chrome 刷新 cookies（写入当前生效的 cookies 文件）
 systemctl --user restart ytb        # 改关键词/配置后重启调度
 journalctl --user -u ytb-batch-loop -f         # 实时日志
 ```
