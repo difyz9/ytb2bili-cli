@@ -35,88 +35,17 @@ func Video(url, outputDir, lang string, cookiesPath ...string) (*Result, error) 
 func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath ...string) (*Result, error) {
 	os.MkdirAll(outputDir, 0755)
 
-	// Check yt-dlp
-	if _, err := exec.LookPath("yt-dlp"); err != nil {
-		return nil, fmt.Errorf("yt-dlp 未安装，请先安装: sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp")
-	}
-
-	// Ensure deno is in PATH for yt-dlp YouTube JS challenges
-	env := os.Environ()
-	denoPath := os.Getenv("DENO_PATH")
-	if denoPath == "" {
-		denoPath = filepath.Join(os.Getenv("HOME"), ".deno", "bin")
-	}
-	if runtime.GOOS != "windows" {
-		pathExists := false
-		for _, p := range strings.Split(os.Getenv("PATH"), ":") {
-			if p == denoPath {
-				pathExists = true
-				break
-			}
-		}
-		if !pathExists {
-			env = append(env, "PATH="+denoPath+":"+os.Getenv("PATH"))
-		}
-	}
-
-	// Resolve cookies: prefer explicit cookie file, fallback to browser session
-	cookiesFile := ""
-	if len(cookiesPath) > 0 && cookiesPath[0] != "" {
-		cookiesFile = cookiesPath[0]
-	}
-	// If the provided cookie file is empty or has no valid entries, try global YOUTUBE_COOKIES env var.
-	if cookiesFile == "" || !hasValidCookies(cookiesFile) {
-		if global := os.Getenv("YOUTUBE_COOKIES"); global != "" {
-			if _, err := os.Stat(global); err == nil {
-				cookiesFile = global
-			}
-		}
-	}
-
-	// On macOS, prefer --cookies-from-browser chrome over a stale cookies file,
-	// since Chrome keeps an active YouTube login session.  Set
-	// YOUTUBE_COOKIES_FROM_BROWSER to override the browser/profile syntax accepted
-	// by yt-dlp, or to "off" to disable browser-cookie discovery entirely.
-	baseArgs := cookieArgs(cookiesFile, os.Getenv("YOUTUBE_COOKIES_FROM_BROWSER"), runtime.GOOS)
-
-	// Get video info first
-	infoArgs := append(baseArgs, "--dump-json", "--no-download", "--remote-components", "ejs:github", url)
-	infoCmd := exec.CommandContext(ctx, "yt-dlp", infoArgs...)
-	infoCmd.Env = env
-	var infoStderr bytes.Buffer
-	infoCmd.Stderr = &infoStderr
-	infoOut, err := infoCmd.Output()
+	ytdlpBin, baseArgs, env, err := prepareYTDLP(ctx, cookiesPath...)
 	if err != nil {
-		stderrStr := strings.TrimSpace(infoStderr.String())
-		// Extract the most relevant error line (first ERROR: line)
-		errMsg := err.Error()
-		for _, line := range strings.Split(stderrStr, "\n") {
-			if strings.HasPrefix(line, "ERROR:") {
-				errMsg = strings.TrimSpace(line)
-				break
-			}
-		}
-		if errMsg == err.Error() && stderrStr != "" {
-			lines := strings.Split(stderrStr, "\n")
-			errMsg = strings.TrimSpace(lines[len(lines)-1])
-		}
-		return nil, fmt.Errorf("获取视频信息失败: %s", errMsg)
+		return nil, err
 	}
 
-	var info VideoInfo
-	if err := json.Unmarshal(infoOut, &info); err != nil {
-		// Try just the first line in case yt-dlp prefix metadata on the first line
-		lines := strings.SplitN(string(infoOut), "\n", 2)
-		if len(lines) > 0 {
-			if err2 := json.Unmarshal([]byte(lines[0]), &info); err2 != nil {
-				return nil, fmt.Errorf("解析视频信息 JSON 失败: %w (second attempt: %v)", err, err2)
-			}
-		} else {
-			return nil, fmt.Errorf("解析视频信息 JSON 失败: %w", err)
-		}
+	// Get video info first (轻量元数据，不含视频下载)
+	info, err := InfoContext(ctx, url, cookiesPath...)
+	if err != nil {
+		return nil, err
 	}
 
-	// Check subtitle languages
 	// Download video (字幕通过 BCut ASR 单独听录，不使用 yt-dlp 下载的字幕)
 	template := filepath.Join(outputDir, "%(id)s.%(ext)s")
 
@@ -134,12 +63,31 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 		url,
 	)
 
-	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	cmd := exec.CommandContext(ctx, ytdlpBin, args...)
 	cmd.Stdout = log.Writer()
 	cmd.Stderr = log.Writer()
 	cmd.Env = env
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("下载失败: %w", err)
+		// cookies 会话失效（PSIDTS 轮换等）：换浏览器 cookies 重试一次
+		retried := false
+		if isStaleCookieError(err.Error()) {
+			if retryArgs := swapCookiesToBrowser(args); retryArgs != nil {
+				log.Printf("  ⚠ %s，改用浏览器 cookies 重试...\n", cookieFallbackReason(err))
+				retry := exec.CommandContext(ctx, ytdlpBin, retryArgs...)
+				retry.Stdout = log.Writer()
+				retry.Stderr = log.Writer()
+				retry.Env = env
+				if rerr := retry.Run(); rerr != nil {
+					return nil, fmt.Errorf("下载失败: %w（已尝试浏览器 cookies 重试: %v）", err, rerr)
+				}
+				retried = true
+			} else {
+				log.Printf("  ⚠ %s，且无法回退浏览器 cookies（非 macOS 或已禁用）\n", cookieFallbackReason(err))
+			}
+		}
+		if !retried {
+			return nil, fmt.Errorf("下载失败: %w", err)
+		}
 	}
 
 	// Find video file
@@ -162,7 +110,12 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 	var coverPath string
 	if info.Thumbnail != "" {
 		coverPath = filepath.Join(outputDir, "cover.jpg")
-		coverCmd := exec.CommandContext(ctx, "curl", "-sL", "-o", coverPath, info.Thumbnail)
+		curlArgs := []string{"-sL"}
+		if proxy := strings.TrimSpace(os.Getenv("YOUTUBE_PROXY")); proxy != "" {
+			curlArgs = append(curlArgs, "--proxy", proxy)
+		}
+		curlArgs = append(curlArgs, "-o", coverPath, info.Thumbnail)
+		coverCmd := exec.CommandContext(ctx, "curl", curlArgs...)
 		if coverCmd.Run() == nil {
 			if fi, err := os.Stat(coverPath); err != nil || fi.Size() == 0 {
 				coverPath = ""
@@ -176,12 +129,167 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 		VideoPath:    videoPath,
 		SubtitlePath: srtPath,
 		CoverPath:    coverPath,
-		Info:         info,
+		Info:         *info,
 	}, nil
 }
 
+// prepareYTDLP 解析 yt-dlp 可执行文件（缺失时自动安装）并构建基础参数（deno PATH + cookies 解析）。
+// 返回 bin（yt-dlp 绝对路径，后续 exec 直接用它，避免依赖进程 PATH）、
+// baseArgs（给 yt-dlp 的通用参数）和 env（含 deno PATH）。
+func prepareYTDLP(ctx context.Context, cookiesPath ...string) (bin string, baseArgs, env []string, err error) {
+	bin, err = ytdlpBinary(ctx)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	// Ensure deno is in PATH for yt-dlp YouTube JS challenges
+	env = os.Environ()
+	denoPath := os.Getenv("DENO_PATH")
+	if denoPath == "" {
+		denoPath = filepath.Join(os.Getenv("HOME"), ".deno", "bin")
+	}
+	if runtime.GOOS != "windows" {
+		pathExists := false
+		for _, p := range strings.Split(os.Getenv("PATH"), ":") {
+			if p == denoPath {
+				pathExists = true
+				break
+			}
+		}
+		if !pathExists {
+			env = append(env, "PATH="+denoPath+":"+os.Getenv("PATH"))
+		}
+		// ~/.local/bin 也加入 PATH（自动安装的 yt-dlp/ffmpeg 等放在这里）
+		if udir, uerr := userBinDir(); uerr == nil {
+			inPath := false
+			for _, p := range strings.Split(os.Getenv("PATH"), ":") {
+				if p == udir {
+					inPath = true
+					break
+				}
+			}
+			if !inPath {
+				env = append(env, "PATH="+udir+":"+os.Getenv("PATH"))
+			}
+		}
+	}
+
+	// Resolve cookies: prefer explicit cookie file, fallback to browser session
+	cookiesFile := ""
+	if len(cookiesPath) > 0 && cookiesPath[0] != "" {
+		cookiesFile = cookiesPath[0]
+	}
+	// If the provided cookie file is empty or has no valid entries, try global YOUTUBE_COOKIES env var.
+	if cookiesFile == "" || !HasValidCookies(cookiesFile) {
+		if global := os.Getenv("YOUTUBE_COOKIES"); global != "" {
+			if _, err := os.Stat(global); err == nil {
+				cookiesFile = global
+			}
+		}
+	}
+	// 剔除短周期轮换令牌（__Secure-*PSIDTS）：文件副本几乎必然已过期，
+	// 带着 stale 令牌会被 YouTube 直接拒绝（"The page needs to be reloaded"）。
+	// 原文件不动（扩展/刷新流程继续原地更新），净化副本用 .sanitized 后缀。
+	if cookiesFile != "" {
+		if s := SanitizeCookieFile(cookiesFile); s != cookiesFile {
+			log.Printf("  🍪 剔除已轮换的 PSIDTS 令牌: %s → %s\n", filepath.Base(cookiesFile), filepath.Base(s))
+			cookiesFile = s
+		}
+	}
+
+	// On macOS, prefer --cookies-from-browser chrome over a stale cookies file,
+	// since Chrome keeps an active YouTube login session.  Set
+	// YOUTUBE_COOKIES_FROM_BROWSER to override the browser/profile syntax accepted
+	// by yt-dlp, or to "off" to disable browser-cookie discovery entirely.
+	baseArgs = cookieArgs(cookiesFile, os.Getenv("YOUTUBE_COOKIES_FROM_BROWSER"), runtime.GOOS)
+
+	// YouTube 下载专用代理（可选）：config.yaml `youtube_proxy` 或环境变量 YOUTUBE_PROXY，
+	// 格式如 socks5://user:pass@host:port / http://user:pass@host:port。
+	// 仅传给 yt-dlp（下载 + 取元数据），B站/翻译等国内流量不受影响。
+	if proxy := strings.TrimSpace(os.Getenv("YOUTUBE_PROXY")); proxy != "" {
+		baseArgs = append(baseArgs, "--proxy", proxy)
+	}
+	return bin, baseArgs, env, nil
+}
+
+// InfoContext 仅获取视频元数据（不下载视频），返回 VideoInfo。
+func InfoContext(ctx context.Context, url string, cookiesPath ...string) (*VideoInfo, error) {
+	ytdlpBin, baseArgs, env, err := prepareYTDLP(ctx, cookiesPath...)
+	if err != nil {
+		return nil, err
+	}
+	infoArgs := append(baseArgs, "--dump-json", "--no-download", "--remote-components", "ejs:github", url)
+	infoCmd := exec.CommandContext(ctx, ytdlpBin, infoArgs...)
+	infoCmd.Env = env
+	var infoStderr bytes.Buffer
+	infoCmd.Stderr = &infoStderr
+	infoOut, err := infoCmd.Output()
+	if err != nil {
+		stderrStr := strings.TrimSpace(infoStderr.String())
+		errMsg := extractYTDLPError(err, stderrStr)
+
+		// cookies 会话失效（bot check/轮换）时换浏览器 cookies 重试一次
+		if isStaleCookieError(errMsg) {
+			if retryArgs := swapCookiesToBrowser(infoArgs); retryArgs != nil {
+				log.Printf("  ⚠ cookies 会话失效（%s），改用浏览器 cookies 重试...\n", errMsg)
+				retryCmd := exec.CommandContext(ctx, ytdlpBin, retryArgs...)
+				retryCmd.Env = env
+				var retryStderr bytes.Buffer
+				retryCmd.Stderr = &retryStderr
+				infoOut, err = retryCmd.Output()
+				if err != nil {
+					errMsg = extractYTDLPError(err, strings.TrimSpace(retryStderr.String()))
+				}
+			} else {
+				log.Printf("  ⚠ cookies 会话失效（%s），且无法回退浏览器 cookies（非 macOS 或已禁用）\n", errMsg)
+			}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("获取视频信息失败: %s", errMsg)
+		}
+	}
+
+	var info VideoInfo
+	if err := json.Unmarshal(infoOut, &info); err != nil {
+		// Try just the first line in case yt-dlp prefix metadata on the first line
+		lines := strings.SplitN(string(infoOut), "\n", 2)
+		if len(lines) > 0 {
+			if err2 := json.Unmarshal([]byte(lines[0]), &info); err2 != nil {
+				return nil, fmt.Errorf("解析视频信息 JSON 失败: %w (second attempt: %v)", err, err2)
+			}
+		} else {
+			return nil, fmt.Errorf("解析视频信息 JSON 失败: %w", err)
+		}
+	}
+	return &info, nil
+}
+
+// extractYTDLPError 从 yt-dlp 失败输出中提取最相关的错误信息（首个 ERROR: 行，
+// 无则取 stderr 末行，再无则用退出错误本身）。
+func extractYTDLPError(err error, stderrStr string) string {
+	for _, line := range strings.Split(stderrStr, "\n") {
+		if strings.HasPrefix(line, "ERROR:") {
+			return strings.TrimSpace(line)
+		}
+	}
+	if stderrStr != "" {
+		lines := strings.Split(stderrStr, "\n")
+		return strings.TrimSpace(lines[len(lines)-1])
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "yt-dlp failed"
+}
+
 func cookieArgs(cookiesFile, browser, goos string) []string {
-	if cookiesFile != "" && hasValidCookies(cookiesFile) {
+	if cookiesFile != "" && HasValidCookies(cookiesFile) {
+		// 防御：YouTube 需要完整登录态（含 SID/SSID）。缺 SID 的半登录 cookie（meta 扩展导出常见）
+		// 会导致 yt-dlp 在媒体阶段被 403 / bot 验证拦截，且日志里看不出是 cookie 问题。
+		// 显式配置的文件缺 SID 时大声告警，避免静默失败。
+		if !hasAuthSession(cookiesFile) {
+			log.Printf("⚠ WARNING: cookies %s 缺少 SID/SSID（非完整登录态），YouTube 下载大概率 403/bot 拦截。\n   请从已登录 YouTube 的浏览器重新导出完整 cookie（应包含 SID、__Secure-3PSID、SSID、APISID 等 ≥20 行）", cookiesFile)
+		}
 		return []string{"--cookies", cookiesFile}
 	}
 
@@ -198,8 +306,25 @@ func cookieArgs(cookiesFile, browser, goos string) []string {
 	return nil
 }
 
-// hasValidCookies checks if a Netscape cookies file has non-zero expiry timestamps
-func hasValidCookies(path string) bool {
+// hasAuthSession 检查 cookie 文件是否含 YouTube 登录态核心字段（SID 或 __Secure-3PSID）。
+// 仅凭 3PSID 仍可能被限（实测 meta 导出有 3PSID 无 SID → 媒体 403），完整会话应含 SID。
+func hasAuthSession(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 7 && (fields[5] == "SID" || fields[5] == "SSID") {
+			return true
+		}
+	}
+	return false
+}
+
+// HasValidCookies 检查 Netscape cookies 文件是否含非零过期时间戳的有效条目。
+// （导出供 config 层选择最新有效 cookies 文件使用。）
+func HasValidCookies(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false

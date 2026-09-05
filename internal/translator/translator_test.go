@@ -42,7 +42,7 @@ func TestTranslateTextsSkipsSameLanguage(t *testing.T) {
 	}
 }
 
-func TestTranslateSRTFilePreservesEntryCountAndTimeline(t *testing.T) {
+func TestTranslateSRTFileDeduplicatesConsecutiveDuplicates(t *testing.T) {
 	directory := t.TempDir()
 	inputPath := filepath.Join(directory, "video.zh.srt")
 	outputPath := filepath.Join(directory, "video.zh-Hans.srt")
@@ -74,11 +74,15 @@ func TestTranslateSRTFilePreservesEntryCountAndTimeline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 3 {
-		t.Fatalf("translated entries=%d, want 3", len(entries))
+	// 连续重复字幕被去重（保留首条时间码），条目重新编号
+	if len(entries) != 2 {
+		t.Fatalf("translated entries=%d, want 2", len(entries))
 	}
-	if entries[1].Index != 2 || entries[1].TimeCode != "00:00:01,000 --> 00:00:02,000" {
-		t.Fatalf("subtitle structure changed: %#v", entries[1])
+	if entries[0].Index != 1 || entries[0].TimeCode != "00:00:00,000 --> 00:00:01,000" || entries[0].Text != "重复字幕" {
+		t.Fatalf("first entry changed: %#v", entries[0])
+	}
+	if entries[1].Index != 2 || entries[1].TimeCode != "00:00:02,000 --> 00:00:03,000" || entries[1].Text != "下一条字幕" {
+		t.Fatalf("second entry changed: %#v", entries[1])
 	}
 }
 

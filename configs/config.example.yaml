@@ -1,0 +1,136 @@
+# ytb2bili-go 配置示例（复制为 ./config.yaml 后填入真实值）
+# 查找顺序: --config <path> → $YTB2BILI_CONFIG → 当前目录 config.yaml
+# ⚠️ config.yaml 含密钥，已被 .gitignore 排除，不要提交入库
+llm_api_key: ""                      # DeepSeek API Key（也可用环境变量 DEEPSEEK_API_KEY）
+llm_base_url: "https://api.deepseek.com"
+llm_model: "deepseek-v4-flash"
+data_dir: "./data"
+download_dir: "./data/downloads"     # 视频下载根目录（命令可用 videoId 直接引用该目录下资源）
+skills_dir: ""                       # 技能资源目录（空=自动探测项目根下 skills/；可填绝对路径，如 IndexTTS 脚本位置随安装变化时用）
+chrome_debug_port: 9222              # Chrome 远程调试起始端口（被占用自动+1，cookies refresh 会用实际端口）
+min_duration_sec: 240                # 入队时低于此秒数的视频跳过（Short/短视频，0=不限制）
+bili_tid: 122
+translation_target_lang: zh-Hans
+
+# 腾讯云配置（TTS + 翻译降级共用；在 https://console.cloud.tencent.com/cam/capi 申请）
+tencent_cloud:
+  secret_id: ""
+  secret_key: ""
+  region: "ap-beijing"
+
+# 多翻译服务配置（DeepSeek 主 + 腾讯/百度/Ollama 降级）
+# primary 主服务；fallbacks 降级顺序（DeepSeek 高峰限流时自动切换）
+translation:
+  primary: "deepseek"                # 主服务: deepseek / baidu / tencent
+  fallbacks: ["tencent", "ollama"]   # 降级顺序（可多级: ["tencent", "baidu"]）
+  retries: 2                         # 主服务失败重试次数
+  deepseek:
+    api_key: "${DEEPSEEK_API_KEY}"   # 留空则用顶层 llm_api_key
+    base_url: "https://api.deepseek.com"
+    model: "deepseek-v4-flash"
+    batch_size: 15                   # 批大小（调低规避限流截断）
+    context_size: 2
+  baidu:                             # 百度翻译（需自行申请: https://api.fanyi.baidu.com）
+    app_id: ""
+    app_key: ""
+    qps: 1                           # 百度免费版 QPS=1
+  tencent:                           # 腾讯翻译（留空自动复用 tencent_cloud 凭证）
+    secret_id: ""
+    secret_key: ""
+    region: "ap-beijing"
+  ollama:                            # 本地 Ollama（零成本兜底，需先 ollama pull qwen2.5:7b）
+    base_url: "http://localhost:11434"
+    model: "qwen2.5:7b"
+    batch_size: 10
+
+# YouTube OAuth 授权配置（ytb yt-oauth login 使用）
+# 在 Google Cloud Console → APIs & Services → Credentials 创建 OAuth 2.0 客户端
+# 应用类型选 "桌面应用" 或 "TV and Limited Input devices"（支持设备码流程）
+# client_tv.json / client_web.apps.googleusercontent.com.json 即下载的凭证文件，不要提交入库
+youtube_oauth:
+  client_id: ""                      # 你的 Google OAuth Client ID
+  client_secret: ""                  # 你的 Google OAuth Client Secret
+
+# TTS 音频参数
+tts:
+  provider: "index"                  # 合成器: index(本地IndexTTS,默认) / tencent(腾讯云) / 空=自动检测
+  voice_type: 502005                 # 腾讯云音色：101008-智琪(女声), 101007-智慧(女声), 101003-智云(男声)
+  volume: 5                          # 音量：0-10
+  speed: 1.0                         # 语速：0.6-1.5
+  primary_language: 1                # 主语言：1-中文，2-英文
+  sample_rate: 16000                 # 采样率
+  codec: "mp3"                       # 编码格式
+  # 本地 IndexTTS2 服务配置（provider: "index" 时生效）
+  index:
+    api_url: "http://localhost:18765"      # IndexTTS2 HTTP 服务地址
+    api_key: "${INDEX_TTS_API_KEY}"        # 服务鉴权 key（服务端设 INDEX_TTS_API_KEY 时必填，须一致；留空=旧版不鉴权服务）
+    emotion: "auto"                        # 情感预设: default/auto/happy/angry/sad/excited/vec:.../emo_text:...
+    emotion_alpha: 0.2                     # 情感强度 0-1（默认 0.2，弱情感更自然）
+    ref_audio: "/path/to/ref_audio.wav"    # 参考音频路径（服务端可见，用于语音克隆音色）
+    use_emo_text: false                    # 是否使用文本情感描述
+    emo_text: ""                           # 文本情感描述（use_emo_text=true 时生效）
+    concurrency: 4                         # 并发合成数
+    retries: 3                             # 失败重试次数
+    timeout: 180                           # 单条请求超时秒数
+
+# 并发处理配置
+concurrent:
+  max_workers: 5                     # 最大并发数
+  rate_limit: 20                     # 每秒请求限制
+  batch_size: 10                     # 批处理大小
+
+# 转录后端配置
+transcriber:
+  provider: whisper                  # bcut(云ASR) | whisper(本地whisper.cpp)
+  whisper:
+    binary: whisper-cli              # whisper-cli 可执行路径（按 PATH 查找）
+    model: ~/.biliup/models/ggml-base.bin   # GGML 模型文件路径（支持 ~/ 展开）
+    threads: 4                       # 推理线程数
+
+# 多 B站账号投稿路由（可选）
+# 按稿件标题/标签关键词匹配账号：命中 TypeRule 中任意关键词 → 投稿到该账号
+# 未匹配任何规则 → 使用 IsDefault 账号；无默认账号 → 默认账号（bilibili.json）
+# 登录: ytb login --account "账号名"    查看: ytb accounts    显式投稿: ytb publish --account X
+accounts:
+  - name: "主账号"
+    type_rule: ["AI", "人工智能", "ChatGPT", "教程"]   # 稿件类型关键词
+    is_default: true                 # 默认账号（兜底）
+  # - name: "副业号"                  # 示例：第二个账号
+  #   type_rule: ["副业", "赚钱", "收入"]
+  #   is_default: false
+
+# ── 自主搜索调度配置（auto / daemon 共用，关键词单一来源）────────────────
+# 改关键词 = 改此段 + systemctl --user restart ytb-batch-loop。
+search:
+  keywords:
+    - "AI tutorial"
+    - "ChatGPT"
+    - "AI automation"
+    # ...按需增删
+  scorer: "nowcast"                  # popular / fresh / balanced / nowcast
+  upload_date: "this_month"          # last_hour / today / this_week / this_month / this_year
+  max_duration: 40                   # 最大视频时长（分钟），0=不限
+  max_videos: 5                      # 每批最多处理视频数
+  min_views: 0                       # 最低播放量过滤，0=不限制
+  # duration: ""                     # 时长档位: short(<4m) / medium(4-20m) / long(>20m)
+  # skip_translate: false            # 跳过翻译
+
+# ── daemon 守护进程配置（替代 batch_loop.sh 的调度参数）─────────────────
+daemon:
+  interval_sec: 60                   # 批间休息秒数
+  max_batches: 0                     # 最大批次数（0=无限）
+  consume_per_batch: 2               # 每批消费排队任务上限
+  max_retries: 3                     # 失败任务自动重试上限，达上限停止并告警
+  step_timeout_sec:                  # 单步骤超时（秒），超时自动 kill 重试
+    download: 1800                   #   下载 30 分钟
+    transcribe: 1800                 #   转写 30 分钟
+    translate: 1800                  #   翻译 30 分钟
+    tts: 3600                        #   TTS 60 分钟
+    audio-sync: 1800                 #   音画同步 30 分钟
+    metadata: 600                    #   元数据 10 分钟
+    upload: 600                      #   上传 10 分钟
+  task_timeout_sec: 0                # 单任务总超时（秒），0=不限制（仅靠步骤超时兜底）
+  heartbeat_file: "daemon/heartbeat.json"   # 心跳文件（相对 data_dir）
+  alert_webhook: ""                  # 飞书自定义机器人 webhook（任务失败/心跳过期告警），留空=不告警
+  alert_failed: true                 # 任务重试达上限后是否飞书告警
+  cookies_refresh_hours: 6           # YouTube cookies 定期刷新周期（小时，默认 6；0=禁用）。刷新走调试 Chrome（CDP 提取登录态），不在运行则自动拉起

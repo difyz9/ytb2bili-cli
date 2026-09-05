@@ -102,3 +102,19 @@ func TestUnknownPlannerDoesNotLeaveTask(t *testing.T) {
 		t.Fatalf("unknown planner created task directory: %v", statErr)
 	}
 }
+
+func TestNormalizeURL(t *testing.T) {
+	tests := []struct{ name, url, videoID, want string }{
+		{"bare video id", "dQw4w9WgXcQ", "dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+		{"full watch url unchanged", "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "dQw4w9WgXcQ", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"},
+		{"youtu.be unchanged", "https://youtu.be/dQw4w9WgXcQ", "dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ"},
+		{"empty url unchanged", "", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizeURL(tc.url, tc.videoID); got != tc.want {
+				t.Fatalf("normalizeURL(%q, %q)=%q, want %q", tc.url, tc.videoID, got, tc.want)
+			}
+		})
+	}
+}

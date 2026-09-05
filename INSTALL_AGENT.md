@@ -145,7 +145,7 @@ echo "ffmpeg: $(ffmpeg -version 2>/dev/null | head -1 || echo '❌')"
 echo "Deno: $(deno --version 2>/dev/null | head -1 || echo '❌')"
 ```
 
-✅ **所有 4 个依赖都必须就绪才能继续。**
+✅ **所有 4 个依赖都必须就绪才能继续。** 也可以直接运行 `./ytb init` 让工具自动检查。
 
 ---
 
@@ -169,13 +169,24 @@ cd ytb2bili-go
 
 ## 步骤 3：编译项目
 
+项目当前使用 **cobra** 命令行框架，构建产物为 `ytb`（root 命令 `Use: "ytb"`）。
+
 ```bash
-go build -o ytb2bili .
+# 方式一：Go 直接构建
+go build -o ytb ./cmd/ytb
+
+# 方式二：Makefile（推荐）
+make build
+
+# 方式三：安装到 ~/.local/bin
+make install
 
 # 验证编译成功
-ls -lh ytb2bili
-# 期望输出: -rwxr-xr-x ... ytb2bili (~35MB)
+ls -lh ytb
+# 期望输出: -rwxr-xr-x ... ytb (~30-35MB)
 ```
+
+> **注意**：旧版部署脚本 `scripts/deploy.sh` 构建的产物名为 `ytb2bili`，与当前代码的 `ytb` 不一致。请以 `ytb` 为准，避免新旧二进制混淆。
 
 ### 编译失败排查
 
@@ -199,11 +210,45 @@ ls -la data/
 # 期望看到: downloads/  history/  cookies/
 ```
 
+> 数据目录默认是当前目录下的 `./data`，可通过 `config.yaml` 的 `data_dir` 字段或 `--config` 指定配置文件来修改。
+
 ---
 
-## 步骤 5：配置环境变量
+## 步骤 5：配置
 
-### 5.1 必需变量
+### 5.1 配置文件（推荐）
+
+配置文件默认查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `config.yaml`。找不到时使用默认值。
+
+> ⚠️ `config.yaml` 含密钥不入库。首次使用请复制示例：
+> ```bash
+> cp configs/config.example.yaml ./config.yaml
+> # 然后填入 llm_api_key / tencent_cloud / youtube_oauth 等真实值
+> ```
+> 同理，`cookies.txt`、`client_tv.json`、`client_web.apps.googleusercontent.com.json` 等凭证文件均已从仓库移除跟踪（见 .gitignore），请在部署机本地维护。
+
+```bash
+# 用 --config 显式指定（优先级最高）
+./ytb --config /path/to/config.yaml search "test"
+
+# 或用环境变量
+export YTB2BILI_CONFIG="/path/to/config.yaml"
+```
+
+`config.yaml` 支持字段（均可被环境变量覆盖）：
+
+```yaml
+data_dir: "./data"                  # 数据目录
+llm_api_key: "sk-..."               # 或 DEEPSEEK_API_KEY
+llm_base_url: "https://api.deepseek.com"   # 或 LLM_BASE_URL
+llm_model: "deepseek-v4-flash"      # 或 LLM_MODEL
+translation_target_lang: zh-Hans    # 或 YTB2BILI_TRANSLATION_TARGET_LANG
+bili_tid: 122                       # B站默认分区
+youtube_cookies: ""                 # 或 YOUTUBE_COOKIES
+server_token: ""                    # 或 YTB2BILI_SERVER_TOKEN
+```
+
+### 5.2 必需环境变量
 
 ```bash
 # DeepSeek API Key - 用于字幕翻译和元数据生成
@@ -211,7 +256,7 @@ export DEEPSEEK_API_KEY="sk-your-key-here"
 echo 'export DEEPSEEK_API_KEY="sk-your-key-here"' >> ~/.bashrc
 ```
 
-### 5.2 可选变量
+### 5.3 可选环境变量
 
 ```bash
 # YouTube cookies 文件路径（防止下载频率限制）
@@ -222,9 +267,12 @@ export LLM_MODEL="deepseek-chat"
 
 # 自定义 LLM API 地址（默认 https://api.deepseek.com）
 export LLM_BASE_URL="https://api.deepseek.com"
+
+# HTTP 服务 token（配合 start/stop 服务使用）
+export YTB2BILI_SERVER_TOKEN="your-token"
 ```
 
-### 5.3 飞书多维表格（可选，配合 Chrome 扩展使用）
+### 5.4 飞书多维表格（可选，配合 Chrome 扩展使用）
 
 ```bash
 export FEISHU_APP_ID="cli_xxx"
@@ -233,7 +281,15 @@ export BITABLE_APP_TOKEN="xxx"
 export BITABLE_TABLE_ID="xxx"
 ```
 
-### 5.4 验证环境变量已生效
+### 5.5 腾讯云 TTS（可选，配音功能需要）
+
+```bash
+export TENCENTCLOUD_SECRET_ID="AKIDxxx"
+export TENCENTCLOUD_SECRET_KEY="xxx"
+export TENCENTCLOUD_REGION="ap-beijing"
+```
+
+### 5.6 验证环境变量已生效
 
 ```bash
 echo "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:0:8}..."  # 只显示前8位
@@ -246,35 +302,55 @@ echo "DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:0:8}..."  # 只显示前8位
 ### 6.1 查看帮助
 
 ```bash
-./ytb2bili --help
+./ytb --help
 ```
 
-**期望输出（8 个命令）：**
+**期望输出（20+ 命令）：**
 
 ```
-COMMANDS:
-   login    B站扫码登录
-   search   搜索 YouTube 视频
-   submit   提交搬运任务
-   task     任务管理
-   channel  YouTube 频道监控管理
-   server   启动 HTTP API 服务器
-   debug    调试模式
-   bitable  从飞书多维表格读取任务
+Usage:
+  ytb [command]
+
+Available Commands:
+  auto        自主模式：自动搜索高价值视频并批量处理
+  bcut        使用 Bcut ASR 听录音频
+  chain       任务链管理
+  channel     YouTube 频道监控管理
+  cookies     管理 YouTube cookies
+  download    下载 YouTube 视频
+  init        检查并修复环境依赖
+  login       B站扫码登录
+  queue       作业队列管理
+  search      搜索 YouTube 视频
+  start       以后台守护进程方式启动 HTTP API 服务器
+  submit      提交搬运任务
+  subtitle    字幕管理
+  task        任务管理
+  tencent-tts 腾讯云 TTS 语音合成
+  translate   翻译 SRT 字幕文件
+  whoami      查看当前登录的B站账号信息
+  ...
 ```
 
-### 6.2 测试搜索
+### 6.2 检查环境依赖
 
 ```bash
-./ytb2bili search --max 3 "Go programming tutorial"
+./ytb init
+# 期望：依次检查 ffmpeg / yt-dlp / Python / deno 并输出 ✅ 或 💡
+```
+
+### 6.3 测试搜索
+
+```bash
+./ytb search --max 3 "Go programming tutorial"
 ```
 
 **期望输出：** 返回 3 个 YouTube 搜索结果，包含标题、频道、时长、播放量。
 
-### 6.3 测试 JSON 输出
+### 6.4 测试 JSON 输出
 
 ```bash
-./ytb2bili search --max 2 --json "AI tutorial"
+./ytb search --max 2 --json "AI tutorial"
 ```
 
 **期望输出：** 合法的 JSON 对象，包含 `query`、`videos` 等字段。
@@ -284,11 +360,11 @@ COMMANDS:
 ## 步骤 7：B站登录（首次使用）
 
 ```bash
-# 执行登录，会生成二维码
-./ytb2bili login
+# 执行登录，会生成二维码（终端内直接打印）
+./ytb login
 
 # 用 B站 APP 扫描终端中显示的二维码
-# 等待提示 "登录成功"
+# 等待提示 "✅ 扫码成功"
 ```
 
 ### 登录说明
@@ -297,7 +373,7 @@ COMMANDS:
 |------|------|
 | **首次登录** | 二维码有效期为 120 秒，扫码后自动保存 token |
 | **重新登录** | 删除 `data/cookies/` 下的文件后重新执行 |
-| **登录状态检查** | 直接执行 `./ytb2bili submit <url>`，如已登录会直接上传 |
+| **登录状态检查** | 执行 `./ytb whoami` 查看当前账号 |
 | **登录失败** | 检查系统时间是否正确，二维码可能与时间戳绑定 |
 
 ---
@@ -322,17 +398,17 @@ go env -w GOPROXY=https://goproxy.cn,direct
 go env -w GOSUMDB=sum.golang.org
 ```
 
-### Q3: `./ytb2bili search` 返回 `No help topic for 'search'`
+### Q3: `./ytb search` 报 "未知命令" 或行为与文档不符
 
 ```bash
-# 原因是二进制文件是旧版本，需要重新编译
+# 原因是二进制文件是旧版本（urfave/cli 旧框架），需要重新编译
 # 检查编译时间与代码修改时间
-ls -l ytb2bili main.go
-stat -c '%Y' ytb2bili 2>/dev/null  # 编译时间戳
-stat -c '%Y' main.go 2>/dev/null   # 代码修改时间戳
+ls -l ytb main.go
+stat -f '%Y' ytb 2>/dev/null      # macOS 时间戳
+stat -c '%Y' ytb 2>/dev/null      # Linux 时间戳
 
 # 如果代码更新，重新编译
-go build -o ytb2bili .
+go build -o ytb ./cmd/ytb
 ```
 
 ### Q4: YouTube 搜索返回空结果
@@ -344,16 +420,24 @@ curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "https://www.youtube.
 # 设置 HTTP_PROXY 后再试：
 export HTTP_PROXY="http://proxy:port"
 export HTTPS_PROXY="http://proxy:port"
-./ytb2bili search --max 3 "test"
+./ytb search --max 3 "test"
 ```
 
 ### Q5: 编译后二进制比预期小很多
 
 ```bash
-# 正常的 ytb2bili 约 30-35MB
+# 正常的 ytb 约 30-35MB
 # 如果只有几 MB，可能是 go build 有缓存问题
 go clean -cache
-go build -o ytb2bili .
+go build -o ytb ./cmd/ytb
+```
+
+### Q6: 配置文件加载但数据目录不对
+
+```bash
+# 显式指定配置文件，确认 data_dir 字段
+./ytb --config /path/to/config.yaml whoami
+# 或检查当前目录是否有 config.yaml（会优先使用）
 ```
 
 ---
@@ -367,12 +451,13 @@ go build -o ytb2bili .
 | 1.3 | ffmpeg 已安装 | `ffmpeg -version` |
 | 1.4 | Deno 已安装 + 在 PATH | `deno --version` |
 | 2 | 项目已克隆 | `ls ytb2bili-go/main.go` |
-| 3 | 编译成功 | `ls -lh ytb2bili` (~35MB) |
+| 3 | 编译成功 | `ls -lh ytb` (~30-35MB) |
 | 4 | 数据目录已创建 | `ls data/downloads/` |
 | 5 | DEEPSEEK_API_KEY 已设置 | `echo $DEEPSEEK_API_KEY` |
-| 6.1 | 帮助正常 | `./ytb2bili --help` (8 cmds) |
-| 6.2 | 搜索正常 | `./ytb2bili search --max 1 "test"` |
-| 7 | B站已登录 | `./ytb2bili login` |
+| 6.1 | 帮助正常 | `./ytb --help` (20+ cmds) |
+| 6.2 | 环境检查正常 | `./ytb init` |
+| 6.3 | 搜索正常 | `./ytb search --max 1 "test"` |
+| 7 | B站已登录 | `./ytb whoami` |
 
 ---
 
@@ -383,11 +468,12 @@ go build -o ytb2bili .
 ```bash
 git clone https://github.com/zolagz/ytb2bili-go.git
 cd ytb2bili-go
-bash deploy.sh
+go build -o ytb ./cmd/ytb
+./ytb init      # 自动检查环境依赖
 ```
 
-`deploy.sh` 脚本会自动完成：依赖检查 → 编译 → 创建目录 → 提示环境变量配置。
+> 旧版 `scripts/deploy.sh` 仍可用但产物名为 `ytb2bili`；`make build` 产出统一的 `ytb`。
 
 ---
 
-*本文档供 AI Agent 使用，详见 [AGENTS.md](./AGENTS.md) 获取使用说明。*
+*本文档供 AI Agent 使用，详见 [AGENTS.md](./AGENTS.md) 获取使用说明。项目内置 Claude Code skills（`.claude/skills/`）可让 Agent 直接调用工作流。*

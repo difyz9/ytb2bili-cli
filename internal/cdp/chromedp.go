@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chromedp/chromedp"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/chromedp"
 )
 
 // ─── 类型定义 ──────────────────────────────────────────────────────────────
@@ -295,20 +295,29 @@ func (m *ChromeManager) ConnectExisting(port int) (context.Context, context.Canc
 	m.cancel = cancel
 
 	opts := []chromedp.ContextOption{}
-	ctx, _ := chromedp.NewContext(allocCtx, opts...)
+	sessCtx, _ := chromedp.NewContext(allocCtx, opts...)
 
-	// 测试连接
-	ctx, cancelTimeout := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelTimeout()
-
-	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return nil
-	})); err != nil {
+	// 建立会话：chromedp 的会话生命周期绑定到首次 Run 的 ctx，
+	// 绝不能用带超时的子 ctx（函数返回超时即触发，会话立刻死掉 → 调用方拿到手就 context canceled）。
+	// 防挂起用看门狗 goroutine：超时则杀 allocator 中断 Run。
+	done := make(chan error, 1)
+	go func() {
+		done <- chromedp.Run(sessCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return nil
+		}))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			cancel()
+			return nil, nil, fmt.Errorf("连接 Chrome 失败: %w", err)
+		}
+	case <-time.After(10 * time.Second):
 		cancel()
-		return nil, nil, fmt.Errorf("连接 Chrome 失败: %w", err)
+		return nil, nil, fmt.Errorf("连接 Chrome 超时（10s 未建立会话）")
 	}
 
-	return ctx, cancel, nil
+	return sessCtx, cancel, nil
 }
 
 // ─── 浏览器操作 ───────────────────────────────────────────────────────────
@@ -428,8 +437,10 @@ func RefreshYouTubeCookies(ctx context.Context, outputPath string) (int, error) 
 	ctx, cancel := chromedp.NewContext(ctx)
 	defer cancel()
 
-	// 打开 YouTube 首页以触发 cookie 同步
-	if err := chromedp.Run(ctx,
+	// YouTube 首页加载（首次 CDP 会话建立 + 导航）给足时间，避免大页慢加载误报「可能需要登录」
+	navCtx, navCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer navCancel()
+	if err := chromedp.Run(navCtx,
 		chromedp.Navigate("https://www.youtube.com"),
 		chromedp.WaitReady("body"),
 	); err != nil {
@@ -555,22 +566,28 @@ func networkGetAllCookies(ctx context.Context) ([]map[string]interface{}, error)
 
 // TestYouTubeCookies 测试 cookies 是否有效（尝试获取一个视频的信息）
 func TestYouTubeCookies(cookiesPath string) error {
-	cmd := exec.Command("yt-dlp",
-		"--impersonate", "chrome",
-		"--cookies", cookiesPath,
-		"--dump-json", "--no-download",
-		"--remote-components", "ejs:github",
-		"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-	)
-	out, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("cookies 验证失败（可能需要重新登录 YouTube）: %w", err)
+	// 先尝试带 impersonate（需要 curl_cffi，可能未安装）；失败则回退到不带 impersonate，
+	// 避免 "impersonate 不可用" 掩盖 cookies 过期等真实原因。
+	for _, withImpersonate := range []bool{true, false} {
+		args := []string{
+			"--cookies", cookiesPath,
+			"--dump-json", "--no-download",
+			"--remote-components", "ejs:github",
+			"https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+		}
+		if withImpersonate {
+			args = append([]string{"--impersonate", "chrome"}, args...)
+		}
+		out, err := exec.Command("yt-dlp", args...).Output()
+		if err != nil {
+			continue
+		}
+		// 返回数据异常（未包含 title）也视为失败，继续回退
+		if strings.Contains(string(out), `"title"`) {
+			return nil
+		}
 	}
-	// 检查是否包含 title
-	if !strings.Contains(string(out), `"title"`) {
-		return fmt.Errorf("cookies 验证失败：返回数据异常")
-	}
-	return nil
+	return fmt.Errorf("cookies 验证失败（cookies 已过期或被轮换，请运行 ytb cookies refresh 重新获取）")
 }
 
 // ShowImageSystem 使用系统图片查看器显示图片

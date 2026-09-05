@@ -34,6 +34,9 @@ type Config struct {
 	MaxWorkers  int
 	RetryCount  int
 	ContextSize int
+	// Router 多服务路由器（Phase 1）。非 nil 时 translateGroup 走 Router 主备切换；
+	// nil 时退化为直接 LLM 调用（向后兼容）。
+	Router *Router
 }
 
 // Result 翻译结果
@@ -260,6 +263,15 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 		shouldTranslate = true
 	}
 	if !shouldTranslate {
+		// 防御：判定"不需要翻译"时，验证内容确实是目标语言。
+		// 历史 bug：chain run 未传 source-lang → 误判短路 → 英文原文被当"翻译结果"
+		// 写入 .zh-Hans.srt，导致 TTS 合成英文配音、投稿英文视频（BV1GKMr6fEZy）。
+		if !looksLikeTargetLanguage(texts, t.config.TargetLang) {
+			log.Printf("  ⚠ 语言判定跳过翻译，但内容不符合目标语言(%s)，强制翻译", t.config.TargetLang)
+			shouldTranslate = true
+		}
+	}
+	if !shouldTranslate {
 		copied := append([]string(nil), texts...)
 		return &Result{
 			OriginalTexts: texts, TranslatedTexts: copied,
@@ -356,6 +368,12 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 		return nil, fmt.Errorf("翻译总数不匹配: 期望 %d 条，实际 %d 条", len(texts), len(allTranslated))
 	}
 
+	// 防御：翻译完成后验证产物确实是目标语言。
+	// 若目标语言含中文而译文几乎无中文 → 判定翻译失败（避免英文原文被当译文投稿）。
+	if !looksLikeTargetLanguage(allTranslated, t.config.TargetLang) {
+		return nil, fmt.Errorf("翻译结果语言校验失败: 目标语言 %s，但译文含目标语言字符比例过低（疑似翻译失败/原文直通）", t.config.TargetLang)
+	}
+
 	return &Result{
 		OriginalTexts:    texts,
 		TranslatedTexts:  allTranslated,
@@ -395,17 +413,30 @@ func (t *Translator) translateGroup(ctx context.Context, texts []string, prevCon
 		return []string{}, nil
 	}
 
+	// Phase 1: 配置了 Router 时走多服务主备切换
+	if t.config.Router != nil {
+		out, err := t.config.Router.TranslateBatch(ctx, texts, t.config.SourceLang, t.config.TargetLang)
+		if err == nil && len(out) == len(texts) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		// 数量不匹配 → 报错让上层重试
+		return nil, fmt.Errorf("翻译数量不匹配: 期望 %d，实际 %d", len(texts), len(out))
+	}
+
+	// 向后兼容：直接 LLM 调用
 	// 构建提示词
 	contextInfo := ""
 	if len(prevContext) > 0 || len(nextContext) > 0 {
 		contextInfo = fmt.Sprintf(`
-
 上下文信息：
 - 前置上下文：%d 句（仅供参考，不需要翻译）
 - 目标翻译：%d 句（需要逐条翻译）
 - 后置上下文：%d 句（仅供参考，不需要翻译）
 
-			请只翻译 target_subtitles，但要充分考虑前后文的连贯性。`,
+		请只翻译 target_subtitles，但要充分考虑前后文的连贯性。`,
 			len(prevContext), len(texts), len(nextContext))
 	}
 
@@ -455,6 +486,10 @@ func (t *Translator) translateGroup(ctx context.Context, texts []string, prevCon
 }
 
 func parseTranslations(response string, expected int) ([]string, error) {
+	if strings.TrimSpace(response) == "" {
+		// 推理模型常见：completion 预算被 reasoning 耗尽 → finish=length、content 为空。
+		return nil, fmt.Errorf("LLM 返回空内容（若为 deepseek 等推理模型，请确认请求已关闭 thinking；日志含 finish=length 即 max_tokens 截断）")
+	}
 	var structured struct {
 		Translations []struct {
 			Index int    `json:"index"`
@@ -463,6 +498,8 @@ func parseTranslations(response string, expected int) ([]string, error) {
 	}
 	if err := json.Unmarshal([]byte(extractJSON(response)), &structured); err == nil && len(structured.Translations) > 0 {
 		if len(structured.Translations) != expected {
+			// 调试：输出原始响应前 300 字符定位截断原因
+			log.Printf("  调试: 期望 %d 条实际 %d 条，原始响应前 300: %s", expected, len(structured.Translations), truncateStr(response, 300))
 			return nil, fmt.Errorf("翻译数量不匹配: 当前批次包含 %d 条待翻译字幕，实际返回 %d 条", expected, len(structured.Translations))
 		}
 		translated := make([]string, expected)
@@ -547,6 +584,14 @@ func extractJSON(response string) string {
 	return response
 }
 
+// truncateStr 截断字符串用于调试日志（避免刷屏）。
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
+}
+
 func (t *Translator) callLLM(ctx context.Context, systemPrompt, userContent string) (string, error) {
 	messages := []map[string]string{
 		{"role": "system", "content": systemPrompt},
@@ -557,7 +602,12 @@ func (t *Translator) callLLM(ctx context.Context, systemPrompt, userContent stri
 		"model":       t.config.Model,
 		"messages":    messages,
 		"temperature": 0.3,
-		"max_tokens":  4096,
+		// 同 DeepSeekProvider：关闭推理 + 加大 max_tokens，避免推理模型把预算烧在
+		// reasoning 上导致 content 为空（finish=length）而翻译数量不匹配。
+		"max_tokens":  8192,
+	}
+	if targetsDeepSeek(t.config.BaseURL) {
+		payload["thinking"] = map[string]interface{}{"type": "disabled"}
 	}
 	payloadBytes, _ := json.Marshal(payload)
 
@@ -845,6 +895,68 @@ func sameLanguage(source, target string) bool {
 	return source != "" && source == target
 }
 
+// looksLikeTargetLanguage 启发式校验文本是否为目标语言。
+// 规则（按目标语言分类）：
+//   - zh / zh-Hans / zh-Hant / cn：至少 30% 的文本行含 CJK 汉字
+//   - ja：至少 30% 的行含日文假名（ひらがな/カタカナ）
+//   - 其他（en/ko/...）：不校验（返回 true），避免误伤
+//
+// 用途：防御"翻译被短路/直通"导致的英文原文被当译文写入 .zh-Hans.srt。
+func looksLikeTargetLanguage(texts []string, targetLang string) bool {
+	canonical := strings.ToLower(strings.TrimSpace(targetLang))
+	switch {
+	case canonical == "zh" || canonical == "zh-hans" || canonical == "zh-hant" || canonical == "cn" || strings.HasPrefix(canonical, "zh"):
+		return cjkRatio(texts) >= 0.30
+	case canonical == "ja" || canonical == "ja-jp":
+		return kanaRatio(texts) >= 0.30
+	default:
+		// 非 CJK 目标语言暂不校验（避免误伤），后续可按需扩展
+		return true
+	}
+}
+
+// cjkRatio 计算含 CJK 汉字的行占比。
+func cjkRatio(texts []string) float64 {
+	if len(texts) == 0 {
+		return 0
+	}
+	hanLines := 0
+	for _, t := range texts {
+		hasHan := false
+		for _, r := range t {
+			if r >= 0x4E00 && r <= 0x9FFF { // CJK Unified Ideographs
+				hasHan = true
+				break
+			}
+		}
+		if hasHan {
+			hanLines++
+		}
+	}
+	return float64(hanLines) / float64(len(texts))
+}
+
+// kanaRatio 计算含日文假名的行占比。
+func kanaRatio(texts []string) float64 {
+	if len(texts) == 0 {
+		return 0
+	}
+	kanaLines := 0
+	for _, t := range texts {
+		hasKana := false
+		for _, r := range t {
+			if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) { // 平假名+片假名
+				hasKana = true
+				break
+			}
+		}
+		if hasKana {
+			kanaLines++
+		}
+	}
+	return float64(kanaLines) / float64(len(texts))
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a
@@ -879,6 +991,8 @@ func SRT(inputPath, sourceLang, targetLang string, cfg interface{}) (string, err
 
 func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, cfg interface{}) (string, error) {
 	var apiKey, baseURL, model string
+	var transCfg *config.TranslationConfig
+	var tc *config.TencentCloudConfig
 
 	switch c := cfg.(type) {
 	case *Config:
@@ -889,6 +1003,8 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 		apiKey = c.LLMAPIKey
 		baseURL = c.LLMBaseURL
 		model = c.LLMModel
+		transCfg = c.Translation
+		tc = c.TencentCloud
 	default:
 		return "", fmt.Errorf("unsupported config type")
 	}
@@ -896,17 +1012,22 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 	// 生成输出路径
 	outputPath := TranslatedSRTPath(inputPath, targetLang)
 
+	// 构建多服务 Router（Phase 1）
+	router := buildRouter(transCfg, apiKey, baseURL, model, tc)
+
 	// 创建翻译器
+	// 注意：并发/批大小调低以规避 DeepSeek 高峰期限流（25条长字幕+3并发易触发截断响应）
 	translator := New(Config{
 		APIKey:      apiKey,
 		BaseURL:     baseURL,
 		Model:       model,
 		SourceLang:  sourceLang,
 		TargetLang:  targetLang,
-		BatchSize:   25,
-		MaxWorkers:  3,
-		RetryCount:  2,
+		BatchSize:   15,
+		MaxWorkers:  1,
+		RetryCount:  3,
 		ContextSize: 2,
+		Router:      router,
 	})
 
 	// 翻译
@@ -915,6 +1036,200 @@ func SRTContext(ctx context.Context, inputPath, sourceLang, targetLang string, c
 	}
 
 	return outputPath, nil
+}
+
+// buildRouter 根据配置构建多服务翻译路由器。
+//   - 未配置 translation 段 → 返回 nil（退化为直接 LLM，向后兼容）
+//   - primary: deepseek（默认）/ baidu / tencent
+//   - fallbacks: 按顺序降级
+func buildRouter(transCfg *config.TranslationConfig, apiKey, baseURL, model string, tc *config.TencentCloudConfig) *Router {
+	if transCfg == nil || transCfg.Primary == "" {
+		return nil // 未配置 → 兼容旧行为（直接 LLM）
+	}
+
+	// 构建 deepseek provider（默认 primary）
+	dsAPIKey := apiKey
+	dsBaseURL := baseURL
+	dsModel := model
+	batch := 15
+	contextSize := 2
+	if transCfg.DeepSeek != nil {
+		if transCfg.DeepSeek.APIKey != "" {
+			dsAPIKey = transCfg.DeepSeek.APIKey
+		}
+		if transCfg.DeepSeek.BaseURL != "" {
+			dsBaseURL = transCfg.DeepSeek.BaseURL
+		}
+		if transCfg.DeepSeek.Model != "" {
+			dsModel = transCfg.DeepSeek.Model
+		}
+		if transCfg.DeepSeek.BatchSize > 0 {
+			batch = transCfg.DeepSeek.BatchSize
+		}
+		if transCfg.DeepSeek.ContextSize >= 0 {
+			contextSize = transCfg.DeepSeek.ContextSize
+		}
+	}
+	deepseek := NewDeepSeekProvider(DeepSeekConfig{
+		APIKey:      dsAPIKey,
+		BaseURL:     dsBaseURL,
+		Model:       dsModel,
+		BatchSize:   batch,
+		ContextSize: contextSize,
+	})
+
+	// provider 注册表
+	providers := map[string]Provider{
+		"deepseek": deepseek,
+	}
+	// tencent（复用 tencent_cloud 凭证）
+	if tc != nil && tc.SecretID != "" && tc.SecretKey != "" {
+		tRegion := tc.Region
+		if transCfg.Tencent != nil && transCfg.Tencent.Region != "" {
+			tRegion = transCfg.Tencent.Region
+		}
+		tSecretID, tSecretKey := tc.SecretID, tc.SecretKey
+		if transCfg.Tencent != nil {
+			if transCfg.Tencent.SecretID != "" {
+				tSecretID = transCfg.Tencent.SecretID
+			}
+			if transCfg.Tencent.SecretKey != "" {
+				tSecretKey = transCfg.Tencent.SecretKey
+			}
+		}
+		providers["tencent"] = NewTencentProvider(TencentConfig{
+			SecretID:  tSecretID,
+			SecretKey: tSecretKey,
+			Region:    tRegion,
+		})
+	}
+	// baidu
+	if transCfg.Baidu != nil && transCfg.Baidu.AppID != "" && transCfg.Baidu.AppKey != "" {
+		providers["baidu"] = NewBaiduProvider(BaiduConfig{
+			AppID:  transCfg.Baidu.AppID,
+			AppKey: transCfg.Baidu.AppKey,
+			QPS:    transCfg.Baidu.QPS,
+		})
+	}
+	// ollama（本地，零成本）
+	if transCfg.Ollama != nil {
+		ollamaModel := transCfg.Ollama.Model
+		ollamaBase := transCfg.Ollama.BaseURL
+		ollamaBatch := transCfg.Ollama.Batch
+		// 未指定模型时自动探测
+		if ollamaModel == "" {
+			ollamaModel = detectOllamaModel(ollamaBase)
+		}
+		providers["ollama"] = NewOllamaProvider(OllamaConfig{
+			BaseURL: ollamaBase,
+			Model:   ollamaModel,
+			Batch:   ollamaBatch,
+		})
+	}
+
+	// primary
+	primary, ok := providers[transCfg.Primary]
+	if !ok {
+		primary = deepseek // 未知 primary → 退化 deepseek
+	}
+
+	// fallbacks
+	var fallbacks []Provider
+	for _, name := range transCfg.Fallbacks {
+		if p, ok := providers[name]; ok && name != transCfg.Primary {
+			fallbacks = append(fallbacks, p)
+		}
+	}
+
+	retries := transCfg.Retries
+	if retries <= 0 {
+		retries = 2
+	}
+	return NewRouter(primary, fallbacks, retries)
+}
+
+// detectOllamaModel 探测本地 Ollama 已安装的翻译模型（优先 qwen/llama 系列）。
+// 未指定模型时自动挑选；探测失败返回空（由 Provider 用默认值）。
+func detectOllamaModel(baseURL string) string {
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(baseURL + "/api/tags")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return ""
+	}
+	// 优先选择 qwen2.5，其次任意 qwen/llama
+	preferred := []string{"qwen2.5", "qwen", "llama3", "llama"}
+	for _, p := range preferred {
+		for _, m := range result.Models {
+			if strings.Contains(m.Name, p) {
+				return m.Name
+			}
+		}
+	}
+	if len(result.Models) > 0 {
+		return result.Models[0].Name
+	}
+	return ""
+}
+
+// ValidateSRTFile 校验 SRT 字幕文件内容是否为目标语言（防御"假翻译"）。
+// 读取文件、提取文本行、做语言启发式校验；文件不存在或解析失败返回 false。
+func ValidateSRTFile(path, targetLang string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	texts := extractSRTLines(string(data))
+	if len(texts) == 0 {
+		return false
+	}
+	return looksLikeTargetLanguage(texts, targetLang)
+}
+
+// extractSRTLines 从 SRT 内容中提取字幕文本行（跳过序号/时间轴/空行）。
+func extractSRTLines(content string) []string {
+	var lines []string
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if isSRTIndex(line) || isSRTTimestamp(line) {
+			continue
+		}
+		lines = append(lines, line)
+		if len(lines) >= 200 { // 抽样足够即可
+			break
+		}
+	}
+	return lines
+}
+
+// isSRTIndex 判断是否为纯数字的 SRT 序号行。
+func isSRTIndex(line string) bool {
+	for _, r := range line {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return line != ""
+}
+
+// isSRTTimestamp 判断是否为 SRT 时间轴行（含 -->）。
+func isSRTTimestamp(line string) bool {
+	return strings.Contains(line, "-->")
 }
 
 // TranslatedSRTPath returns a stable output path without appending the target

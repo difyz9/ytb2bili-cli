@@ -250,38 +250,91 @@ func (s *TaskStore) List() []*Task {
 
 // ─── Credential ──────────────────────────────────────────────────────────────
 
+// CredentialStore 管理 B站登录凭证。
+// 兼容两种存储方式：
+//   - 旧版：<dir>/bilibili.json（单账号，默认账号）
+//   - 新版：<dir>/accounts/<name>.json（多账号，按名称存取）
 type CredentialStore struct {
-	path string
+	dir    string // cookies 根目录
+	acctDir string // accounts 子目录
 }
 
 func NewCredentialStore(dir string) *CredentialStore {
 	os.MkdirAll(dir, 0755)
-	return &CredentialStore{path: filepath.Join(dir, "bilibili.json")}
+	acctDir := filepath.Join(dir, "accounts")
+	os.MkdirAll(acctDir, 0755)
+	return &CredentialStore{dir: dir, acctDir: acctDir}
 }
 
-func (c *CredentialStore) Save(cred interface{}) error {
+// path 返回指定账号的凭证文件路径；name 为空时返回旧版默认路径（bilibili.json）
+func (c *CredentialStore) path(name string) string {
+	if name == "" {
+		return filepath.Join(c.dir, "bilibili.json")
+	}
+	// 账号名中的路径分隔符替换为下划线，防目录穿越
+	safe := strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(name)
+	return filepath.Join(c.acctDir, safe+".json")
+}
+
+// Save 保存凭证；name 为空保存为默认账号（兼容旧版路径）
+func (c *CredentialStore) Save(cred interface{}, name ...string) error {
+	acct := ""
+	if len(name) > 0 {
+		acct = name[0]
+	}
 	data, err := json.MarshalIndent(cred, "", "  ")
 	if err != nil {
 		return fmt.Errorf("CredentialStore.Save marshal: %w", err)
 	}
-	return atomicWriteFile(c.path, data, 0600)
+	return atomicWriteFile(c.path(acct), data, 0600)
 }
 
-func (c *CredentialStore) Load(v interface{}) error {
-	data, err := os.ReadFile(c.path)
+// Load 加载凭证；name 为空加载默认账号
+func (c *CredentialStore) Load(v interface{}, name ...string) error {
+	acct := ""
+	if len(name) > 0 {
+		acct = name[0]
+	}
+	data, err := os.ReadFile(c.path(acct))
 	if err != nil {
 		return err
 	}
 	return json.Unmarshal(data, v)
 }
 
-func (c *CredentialStore) Exists() bool {
-	_, err := os.Stat(c.path)
+// Exists 检查指定账号凭证是否存在
+func (c *CredentialStore) Exists(name ...string) bool {
+	acct := ""
+	if len(name) > 0 {
+		acct = name[0]
+	}
+	_, err := os.Stat(c.path(acct))
 	return err == nil
 }
 
-func (c *CredentialStore) Delete() {
-	os.Remove(c.path)
+// Delete 删除指定账号凭证
+func (c *CredentialStore) Delete(name ...string) {
+	acct := ""
+	if len(name) > 0 {
+		acct = name[0]
+	}
+	os.Remove(c.path(acct))
+}
+
+// ListAccounts 列出所有已登录账号（从 accounts 目录扫描）
+func (c *CredentialStore) ListAccounts() []string {
+	entries, err := os.ReadDir(c.acctDir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			names = append(names, strings.TrimSuffix(e.Name(), ".json"))
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // ─── Subtitle Track ──────────────────────────────────────────────────────────

@@ -1,6 +1,8 @@
 package channel
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -22,9 +25,56 @@ import (
 type Subscription struct {
 	ChannelID    string `json:"channel_id"`
 	ChannelTitle string `json:"channel_title"`
+	Type         string `json:"type,omitempty"` // channel / playlist
 	AddedAt      string `json:"added_at"`
 	LastSyncAt   string `json:"last_sync_at,omitempty"`
 	Status       string `json:"status"` // active / inactive
+}
+
+// DetectType 根据 ID 前缀判断订阅类型。
+// 频道 ID 固定以 UC 开头；其余（PL/UU/FL 等）视为播放列表。
+func DetectType(id string) string {
+	if strings.HasPrefix(id, "UC") {
+		return "channel"
+	}
+	return "playlist"
+}
+
+// feedURL 返回该订阅对应的 YouTube RSS feed 地址
+func (s Subscription) feedURL() string {
+	if s.Type == "playlist" {
+		return fmt.Sprintf("https://www.youtube.com/feeds/videos.xml?playlist_id=%s", s.ChannelID)
+	}
+	return fmt.Sprintf("https://www.youtube.com/feeds/videos.xml?channel_id=%s", s.ChannelID)
+}
+
+// ChannelURL 返回该订阅的频道主页 URL（供 yt-dlp 抓取）。
+func (s Subscription) ChannelURL() string {
+	if s.Type == "playlist" {
+		return fmt.Sprintf("https://www.youtube.com/playlist?list=%s", s.ChannelID)
+	}
+	return fmt.Sprintf("https://www.youtube.com/channel/%s", s.ChannelID)
+}
+
+// ResolveHandle 将 @handle 解析为 channel_id（用 yt-dlp 查询）。
+func ResolveHandle(ctx context.Context, handle string) (string, error) {
+	handle = strings.TrimPrefix(handle, "@")
+	url := "https://www.youtube.com/@" + handle
+	cmd := exec.CommandContext(ctx, "yt-dlp",
+		"--skip-download", "--no-warnings",
+		"--print", "%(channel_id)s",
+		url)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &bytes.Buffer{}
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("yt-dlp 解析 @%s 失败: %w", handle, err)
+	}
+	id := strings.TrimSpace(out.String())
+	if id == "" || !strings.HasPrefix(id, "UC") {
+		return "", fmt.Errorf("无法从 @%s 解析出有效频道 ID", handle)
+	}
+	return id, nil
 }
 
 // DiscoveredVideo 表示通过 RSS 发现的视频
@@ -35,12 +85,14 @@ type DiscoveredVideo struct {
 	URL          string `json:"url"`
 	PublishedAt  string `json:"published_at"`
 	DiscoveredAt string `json:"discovered_at"`
-	Status       string `json:"status"` // new / queued / submitted / skipped
+	Views        int    `json:"views,omitempty"` // 发现时播放量（来自 RSS media:statistics）
+	Status       string `json:"status"`          // new / queued / submitted / skipped
 }
 
 // YouTubeFeed RSS feed 结构
 type YouTubeFeed struct {
 	XMLName xml.Name       `xml:"feed"`
+	Title   string         `xml:"title"`
 	Entries []YouTubeEntry `xml:"entry"`
 }
 
@@ -53,6 +105,14 @@ type YouTubeEntry struct {
 	Updated   string  `xml:"updated"`
 	VideoID   YTID    `xml:"videoId"`
 	ChannelID YTID    `xml:"channelId"`
+	// Views 来自 <media:group><media:community><media:statistics views="N"/>（RSS 自带播放量）
+	MediaGroup struct {
+		Community struct {
+			Statistics struct {
+				Views int `xml:"views,attr"`
+			} `xml:"statistics"`
+		} `xml:"community"`
+	} `xml:"group"`
 }
 
 type YTLink struct {
@@ -69,6 +129,7 @@ type YTID struct {
 type Monitor struct {
 	subDir    string
 	videoDir  string
+	obsDir    string
 	subPath   string
 	videoPath string
 	mu        sync.Mutex
@@ -77,12 +138,15 @@ type Monitor struct {
 func NewMonitor(dataDir string) *Monitor {
 	subDir := filepath.Join(dataDir, "subscriptions")
 	videoDir := filepath.Join(dataDir, "monitored_videos")
+	obsDir := filepath.Join(dataDir, "observations")
 	os.MkdirAll(subDir, 0755)
 	os.MkdirAll(videoDir, 0755)
+	os.MkdirAll(obsDir, 0755)
 
 	return &Monitor{
 		subDir:    subDir,
 		videoDir:  videoDir,
+		obsDir:    obsDir,
 		subPath:   filepath.Join(subDir, "subscriptions.json"),
 		videoPath: filepath.Join(videoDir, "videos.json"),
 	}
@@ -131,6 +195,7 @@ func (m *Monitor) AddSubscription(channelID, channelTitle string) (*Subscription
 	for i, s := range subs {
 		if s.ChannelID == channelID && s.Status == "inactive" {
 			subs[i].Status = "active"
+			subs[i].Type = DetectType(channelID)
 			subs[i].AddedAt = time.Now().Format(time.RFC3339)
 			m.saveSubscriptions(subs)
 			return &subs[i], nil
@@ -140,6 +205,7 @@ func (m *Monitor) AddSubscription(channelID, channelTitle string) (*Subscription
 	sub := Subscription{
 		ChannelID:    channelID,
 		ChannelTitle: channelTitle,
+		Type:         DetectType(channelID),
 		AddedAt:      time.Now().Format(time.RFC3339),
 		Status:       "active",
 	}
@@ -232,6 +298,36 @@ func (m *Monitor) PendingVideos() []DiscoveredVideo {
 
 // ─── RSS Feed Sync ────────────────────────────────────────────────────────────
 
+// FetchTitle 通过 YouTube RSS feed 获取频道/播放列表名称
+// 失败时返回空字符串，调用方应回退到 ID 本身
+func FetchTitle(id string) string {
+	sub := Subscription{ChannelID: id, Type: DetectType(id)}
+	feedURL := sub.feedURL()
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(feedURL)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+
+	var feed YouTubeFeed
+	if err := xml.Unmarshal(body, &feed); err != nil {
+		return ""
+	}
+
+	return strings.TrimSpace(feed.Title)
+}
+
 // SyncAll 同步所有活跃频道的 RSS feed
 // lookbackDays: 仅处理 lookbackDays 天内发布的视频（0 = 不限制）
 // callback: 可选回调函数，每发现一个新视频时调用（可用于自动提交）
@@ -264,8 +360,14 @@ func (m *Monitor) SyncAll(lookbackDays int, callback func(video *DiscoveredVideo
 	return totalNew, nil
 }
 
+// SyncSubscription 同步单个订阅，返回时间范围内发现的新视频数
+// 与 SyncAll 类似，但只处理指定订阅（例如刚添加的频道）
+func (m *Monitor) SyncSubscription(sub Subscription, lookbackDays int, callback func(video *DiscoveredVideo) error) (int, error) {
+	return m.syncChannel(sub, lookbackDays, callback)
+}
+
 func (m *Monitor) syncChannel(sub Subscription, lookbackDays int, callback func(video *DiscoveredVideo) error) (int, error) {
-	feedURL := fmt.Sprintf("https://www.youtube.com/feeds/videos.xml?channel_id=%s", sub.ChannelID)
+	feedURL := sub.feedURL()
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(feedURL)
@@ -286,6 +388,23 @@ func (m *Monitor) syncChannel(sub Subscription, lookbackDays int, callback func(
 	var feed YouTubeFeed
 	if err := xml.Unmarshal(body, &feed); err != nil {
 		return 0, fmt.Errorf("解析 RSS XML 失败: %w", err)
+	}
+
+	// 观测快照：记录本次 RSS 里所有视频的播放量（point-in-time，供 velocity 计算）
+	var obs []Observation
+	for _, e := range feed.Entries {
+		if id := m.extractVideoID(e); id != "" {
+			obs = append(obs, Observation{
+				VideoID:    id,
+				ChannelID:  sub.ChannelID,
+				Title:      e.Title,
+				Views:      e.MediaGroup.Community.Statistics.Views,
+				ObservedAt: time.Now(),
+			})
+		}
+	}
+	if err := m.RecordObservation(obs); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠ 记录观测快照失败: %v\n", err)
 	}
 
 	cutoff := time.Now()
@@ -330,6 +449,7 @@ func (m *Monitor) syncChannel(sub Subscription, lookbackDays int, callback func(
 			URL:          fmt.Sprintf("https://www.youtube.com/watch?v=%s", videoID),
 			PublishedAt:  publishedAt.Format(time.RFC3339),
 			DiscoveredAt: time.Now().Format(time.RFC3339),
+			Views:        entry.MediaGroup.Community.Statistics.Views,
 			Status:       "new",
 		}
 
