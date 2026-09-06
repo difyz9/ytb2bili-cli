@@ -151,74 +151,68 @@ func (s *TaskStore) save(task *Task) error {
 	return atomicWriteFile(s.path(task.ID), data, 0644)
 }
 
-func (s *TaskStore) UpdateStep(id, stepName, status string, errMsg ...string) {
-	t, err := s.Get(id)
-	if err != nil {
-		return
+// Update 在同一临界区完成 读→改→写，避免并发更新用旧快照互相覆盖。
+// fn 返回错误则中止且不写盘。
+func (s *TaskStore) Update(id string, fn func(*Task) error) error {
+	if !validTaskID(id) {
+		return fmt.Errorf("invalid task id")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	step := t.Steps[stepName]
-	now := time.Now().Format(time.RFC3339)
-	step.Status = status
-	if status == "running" && step.StartedAt == "" {
-		step.StartedAt = now
+	data, err := os.ReadFile(s.path(id))
+	if err != nil {
+		return err
 	}
-	if status == "completed" || status == "failed" {
-		step.CompletedAt = now
+	var t Task
+	if err := json.Unmarshal(data, &t); err != nil {
+		return fmt.Errorf("解析任务 %s 失败: %w", id, err)
 	}
-	if len(errMsg) > 0 {
-		step.Error = errMsg[0]
+	if err := fn(&t); err != nil {
+		return err
 	}
-	t.Steps[stepName] = step
-	if status == "running" {
-		t.Status = "running"
-	} else if status == "failed" {
-		t.Status = "failed"
-	}
-	t.UpdatedAt = now
-	if err := s.save(t); err != nil {
-		log.Printf("warning: UpdateStep save failed for %s/%s: %v", id, stepName, err)
-	}
+	return s.save(&t)
+}
+
+// UpdateStep 更新单个步骤状态（持锁原子读写）。
+func (s *TaskStore) UpdateStep(id, stepName, status string, errMsg ...string) error {
+	return s.Update(id, func(t *Task) error {
+		step := t.Steps[stepName]
+		now := time.Now().Format(time.RFC3339)
+		step.Status = status
+		if status == "running" && step.StartedAt == "" {
+			step.StartedAt = now
+		}
+		if status == "completed" || status == "failed" {
+			step.CompletedAt = now
+		}
+		if len(errMsg) > 0 {
+			step.Error = errMsg[0]
+		}
+		t.Steps[stepName] = step
+		if status == "running" {
+			t.Status = "running"
+		} else if status == "failed" {
+			t.Status = "failed"
+		}
+		return nil
+	})
 }
 
 // SetBVID 设置任务的 BVID
-func (s *TaskStore) SetBVID(id, bvid string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	data, err := os.ReadFile(s.path(id))
-	if err != nil {
-		return
-	}
-	var t Task
-	if json.Unmarshal(data, &t) != nil {
-		return
-	}
-	t.BVID = bvid
-	t.UpdatedAt = time.Now().Format(time.RFC3339)
-	if err := s.save(&t); err != nil {
-		log.Printf("warning: SetBVID save failed for %s: %v", id, err)
-	}
+func (s *TaskStore) SetBVID(id, bvid string) error {
+	return s.Update(id, func(t *Task) error {
+		t.BVID = bvid
+		return nil
+	})
 }
 
 // SetCompleted 标记任务完成
-func (s *TaskStore) SetCompleted(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	data, err := os.ReadFile(s.path(id))
-	if err != nil {
-		return
-	}
-	var t Task
-	if json.Unmarshal(data, &t) != nil {
-		return
-	}
-	t.Status = "completed"
-	t.UpdatedAt = time.Now().Format(time.RFC3339)
-	if err := s.save(&t); err != nil {
-		log.Printf("warning: SetCompleted save failed for %s: %v", id, err)
-	}
+func (s *TaskStore) SetCompleted(id string) error {
+	return s.Update(id, func(t *Task) error {
+		t.Status = "completed"
+		return nil
+	})
 }
 
 func (s *TaskStore) List() []*Task {

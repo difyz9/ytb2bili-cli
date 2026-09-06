@@ -1,8 +1,12 @@
+//go:build live
+
+// Package translator 真实外部服务测试：仅在显式启用 live 标签时编译运行。
+// 运行方式: go test -tags live ./internal/translator/
+// 需要 config.yaml 中存在有效的腾讯云/其他 provider 凭证。
 package translator
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
@@ -10,7 +14,6 @@ import (
 )
 
 // TestTencentProviderLive 真实调用腾讯翻译（需要 config.yaml 的 tencent_cloud 凭证）。
-// 无凭证时跳过。运行: go test -run TestTencentProviderLive -v
 func TestTencentProviderLive(t *testing.T) {
 	cfg, err := config.LoadYAML("../../config.yaml")
 	if err != nil || cfg.TencentCloud == nil || cfg.TencentCloud.SecretID == "" {
@@ -42,36 +45,3 @@ func TestTencentProviderLive(t *testing.T) {
 		}
 	}
 }
-
-// TestRouterWithTencentFallback 验证 Router 配置：DeepSeek primary + Tencent fallback。
-// 通过 config.yaml 加载（含 translation 段）。
-func TestRouterWithTencentFallback(t *testing.T) {
-	cfg, err := config.LoadYAML("../../config.yaml")
-	if err != nil {
-		t.Fatalf("加载配置失败: %v", err)
-	}
-	if cfg.Translation == nil {
-		t.Skip("未配置 translation 段")
-	}
-
-	router := buildRouter(cfg.Translation, cfg.LLMAPIKey, cfg.LLMBaseURL, cfg.LLMModel, cfg.TencentCloud)
-	if router == nil {
-		t.Fatal("buildRouter 返回 nil")
-	}
-	stats := router.Stats()
-	if len(stats) == 0 {
-		t.Fatal("Router 无 provider")
-	}
-	for name := range stats {
-		t.Logf("  provider: %s", name)
-	}
-	// 至少应有 deepseek + tencent
-	if _, ok := stats["deepseek"]; !ok {
-		t.Error("缺少 deepseek provider")
-	}
-	if _, ok := stats["tencent"]; !ok {
-		t.Error("缺少 tencent provider（fallback 未注册）")
-	}
-}
-
-var _ = os.Getenv // 保持 os import

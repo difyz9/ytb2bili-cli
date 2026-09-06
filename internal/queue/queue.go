@@ -14,6 +14,7 @@
 package queue
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/rand"
@@ -37,7 +38,7 @@ const (
 	StatusSkipped    = "skipped"    // 手动跳过
 
 	DefaultMaxRetries = 3
-	ClaimTimeout      = 30 * time.Minute // claimed 超时自动回退
+	ClaimTimeout      = 30 * time.Minute // claimed 超时自动回退（daemon 每 30s 续租，活任务不会被误回收）
 )
 
 // ─── 数据结构 ──────────────────────────────────────────────────────────────────
@@ -67,9 +68,16 @@ type QueueData struct {
 }
 
 // Queue 队列管理器
+//
+// 锁与数据分离：flock 锁定独立的 queue.lock（inode 稳定），
+// 数据文件 queue.json 仍用临时文件 + rename 原子替换，
+// 避免"锁在即将被替换的旧 inode 上导致第二个进程对新 inode 加锁成功"的跨进程竞态。
 type Queue struct {
-	path string // queue.json 的完整路径
-	mu   sync.Mutex
+	path         string // queue.json 的完整路径（数据，可被 rename 替换）
+	lockPath     string // queue.lock（flock 目标，inode 永不更换）
+	claimTimeout time.Duration // claimed 无续租多久视为死锁（默认 ClaimTimeout）
+	audit        *AuditStore // 审计事件（best-effort，nil 则不发）
+	mu           sync.Mutex
 }
 
 // ─── 构造 ──────────────────────────────────────────────────────────────────────
@@ -79,17 +87,29 @@ func New(dir string) *Queue {
 	qDir := filepath.Join(dir, "queue")
 	os.MkdirAll(qDir, 0755)
 	return &Queue{
-		path: filepath.Join(qDir, "queue.json"),
+		path:         filepath.Join(qDir, "queue.json"),
+		lockPath:     filepath.Join(qDir, "queue.lock"),
+		claimTimeout: ClaimTimeout,
+		audit:        OpenAudit(dir),
 	}
+}
+
+// emit 记录一条审计事件（绝不阻塞/影响业务）。
+func (q *Queue) emit(ev AuditEvent) {
+	if q == nil || q.audit == nil {
+		return
+	}
+	q.audit.emit(ev)
 }
 
 // ─── 锁定 ──────────────────────────────────────────────────────────────────────
 
-// lock 获取文件级独占锁（flock LOCK_EX），返回文件句柄
+// lock 获取文件级独占锁（flock LOCK_EX），返回锁文件句柄。
+// 锁目标为独立 queue.lock，不随 queue.json 的 rename 更换 inode。
 func (q *Queue) lock() (*os.File, error) {
-	f, err := os.OpenFile(q.path, os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(q.lockPath, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
-		return nil, fmt.Errorf("打开队列文件失败: %w", err)
+		return nil, fmt.Errorf("打开队列锁文件失败: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		f.Close()
@@ -106,26 +126,51 @@ func unlock(f *os.File) {
 
 // ─── 读写（原子操作） ───────────────────────────────────────────────────────────
 
-// readAll 读取完整队列数据（调用方需持有锁）
-func (q *Queue) readAll(f *os.File) (*QueueData, error) {
-	f.Seek(0, 0)
-	var data QueueData
-	if err := json.NewDecoder(f).Decode(&data); err != nil {
-		// 空文件或损坏 → 返回默认
-		data.Version = 1
-		data.Videos = nil
+// readAll 读取完整队列数据（调用方需持有锁）。
+// 文件不存在或为空 → 返回空队列；非空但解析失败 → 返回错误（拒绝静默覆盖损坏数据）。
+func (q *Queue) readAll() (*QueueData, error) {
+	data, err := os.ReadFile(q.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &QueueData{Version: 1, Videos: []Video{}}, nil
+		}
+		return nil, fmt.Errorf("读取队列文件失败: %w", err)
 	}
-	if data.Version == 0 {
-		data.Version = 1
+	if len(bytes.TrimSpace(data)) == 0 {
+		return &QueueData{Version: 1, Videos: []Video{}}, nil
 	}
-	if data.Videos == nil {
-		data.Videos = []Video{}
+
+	var qd QueueData
+	if err := json.Unmarshal(data, &qd); err != nil {
+		return nil, fmt.Errorf("队列文件损坏（%v）。已停止消费以防覆盖，恢复路径: %s.bak 或人工修复 %s", err, q.path, q.path)
 	}
-	return &data, nil
+	if qd.Version != 0 && qd.Version != 1 {
+		return nil, fmt.Errorf("未知队列版本 %d（%s），请使用兼容版本的工具修复", qd.Version, q.path)
+	}
+	if qd.Version == 0 {
+		qd.Version = 1
+	}
+	if qd.Videos == nil {
+		qd.Videos = []Video{}
+	}
+	return &qd, nil
 }
 
-// writeAll 原子写入队列数据（临时文件 + rename）
+// backup 将当前 queue.json 复制为 queue.json.bak（写入前的崩溃保险，best-effort）。
+func (q *Queue) backup() {
+	data, err := os.ReadFile(q.path)
+	if err != nil {
+		return // 首次写入尚无数据文件，无需备份
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return
+	}
+	os.WriteFile(q.path+".bak", data, 0644)
+}
+
+// writeAll 原子写入队列数据（临时文件 + rename），写入前保留 queue.json.bak
 func (q *Queue) writeAll(data *QueueData) error {
+	q.backup()
 	dir := filepath.Dir(q.path)
 	tmpPath := filepath.Join(dir, fmt.Sprintf(".queue.%d.tmp", rand.Int63()))
 	tmp, err := os.Create(tmpPath)
@@ -149,10 +194,16 @@ func (q *Queue) writeAll(data *QueueData) error {
 
 // ─── 核心操作 ──────────────────────────────────────────────────────────────────
 
-// Add 添加视频到队列（幂等：同一 video_id 已存在或已提交则忽略）
+// Add 添加视频到队列（幂等：同一 video_id 已存在或已提交则忽略），重试上限用默认值。
 // url 格式：https://www.youtube.com/watch?v=VIDEO_ID
 // source 标识来源（channel-sync, ghibli, manual）
 func (q *Queue) Add(videoID, url, title, channelID, source string) (bool, error) {
+	return q.AddWithRetries(videoID, url, title, channelID, source, DefaultMaxRetries)
+}
+
+// AddWithRetries 同 Add，但可指定该任务的最大重试次数（入队时写入任务快照）。
+// maxRetries <= 0 时回退默认值。
+func (q *Queue) AddWithRetries(videoID, url, title, channelID, source string, maxRetries int) (bool, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -162,7 +213,7 @@ func (q *Queue) Add(videoID, url, title, channelID, source string) (bool, error)
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return false, err
 	}
@@ -179,23 +230,27 @@ func (q *Queue) Add(videoID, url, title, channelID, source string) (bool, error)
 		return false, nil
 	}
 
+	if maxRetries <= 0 {
+		maxRetries = DefaultMaxRetries
+	}
 	now := time.Now().Format(time.RFC3339)
 	video := Video{
-		VideoID:     videoID,
-		URL:         url,
-		Title:       title,
-		ChannelID:   channelID,
-		Source:      source,
-		Status:      StatusQueued,
-		MaxRetries:  DefaultMaxRetries,
+		VideoID:      videoID,
+		URL:          url,
+		Title:        title,
+		ChannelID:    channelID,
+		Source:       source,
+		Status:       StatusQueued,
+		MaxRetries:   maxRetries,
 		DiscoveredAt: now,
-		UpdatedAt:   now,
+		UpdatedAt:    now,
 	}
 	data.Videos = append(data.Videos, video)
 
 	if err := q.writeAll(data); err != nil {
 		return false, err
 	}
+	q.emit(AuditEvent{Type: "queued", VideoID: videoID, Source: source, MaxRetries: maxRetries})
 	return true, nil
 }
 
@@ -212,7 +267,7 @@ func (q *Queue) Next(workerID string) (*Video, error) {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +284,7 @@ func (q *Queue) Next(workerID string) (*Video, error) {
 		if err != nil {
 			continue
 		}
-		if now.Sub(claimedAt) > ClaimTimeout {
+		if now.Sub(claimedAt) > q.claimTimeout {
 			data.Videos[i].Status = StatusQueued
 			data.Videos[i].ClaimedBy = ""
 			data.Videos[i].ClaimedAt = ""
@@ -245,12 +300,13 @@ func (q *Queue) Next(workerID string) (*Video, error) {
 		}
 		data.Videos[i].Status = StatusClaimed
 		data.Videos[i].ClaimedBy = workerID
-		data.Videos[i].ClaimedAt = now.Format(time.RFC3339)
+		data.Videos[i].ClaimedAt = time.Now().Format(time.RFC3339Nano) // 纳秒精度：同秒内续租也能延长租约
 		data.Videos[i].UpdatedAt = now.Format(time.RFC3339)
 
 		if err := q.writeAll(data); err != nil {
 			return nil, err
 		}
+		q.emit(AuditEvent{Type: "claimed", VideoID: data.Videos[i].VideoID, Source: data.Videos[i].Source, Worker: workerID})
 		return &data.Videos[i], nil
 	}
 
@@ -263,7 +319,8 @@ func (q *Queue) Next(workerID string) (*Video, error) {
 
 // Complete 标记视频处理成功（claimed → completed）
 func (q *Queue) Complete(videoID, bvid string) error {
-	return q.transition(videoID, func(v *Video) (bool, string) {
+	pre, _ := q.GetByID(videoID) // 预读用于审计（失败忽略，transition 会报准确错误）
+	err := q.transition(videoID, func(v *Video) (bool, string) {
 		if v.Status != StatusClaimed {
 			return false, fmt.Sprintf("状态不是 claimed (当前: %s)", v.Status)
 		}
@@ -271,12 +328,17 @@ func (q *Queue) Complete(videoID, bvid string) error {
 		v.BVID = bvid
 		return true, ""
 	})
+	if err == nil && pre != nil {
+		q.emit(AuditEvent{Type: "completed", VideoID: videoID, Source: pre.Source, Worker: pre.ClaimedBy, BVID: bvid, DurationMS: durationSince(pre.ClaimedAt)})
+	}
+	return err
 }
 
 // Fail 标记视频处理失败（claimed → failed 或 queued 重试）
 // 自动重试逻辑：retry_count < max_retries → 回到 queued，否则 failed
 func (q *Queue) Fail(videoID, errMsg string) error {
-	return q.transition(videoID, func(v *Video) (bool, string) {
+	pre, _ := q.GetByID(videoID) // 预读用于审计
+	err := q.transition(videoID, func(v *Video) (bool, string) {
 		if v.Status != StatusClaimed {
 			return false, fmt.Sprintf("状态不是 claimed (当前: %s)", v.Status)
 		}
@@ -291,11 +353,77 @@ func (q *Queue) Fail(videoID, errMsg string) error {
 		}
 		return true, ""
 	})
+	if err == nil && pre != nil {
+		retry := pre.RetryCount + 1
+		evType := "retry"
+		if retry >= pre.MaxRetries {
+			evType = "failed"
+		}
+		q.emit(AuditEvent{
+			Type: evType, VideoID: videoID, Source: pre.Source, Worker: pre.ClaimedBy,
+			Error: errMsg, ErrorClass: ClassifyError(errMsg),
+			RetryCount: retry, MaxRetries: pre.MaxRetries, DurationMS: durationSince(pre.ClaimedAt),
+		})
+	}
+	return err
+}
+
+// durationSince 计算 claimed 时刻到现在的毫秒数（用于步骤耗时统计）。
+func durationSince(claimedAt string) int64 {
+	if claimedAt == "" {
+		return 0
+	}
+	parsed, err := time.Parse(time.RFC3339, claimedAt)
+	if err != nil {
+		return 0
+	}
+	d := time.Since(parsed)
+	if d < 0 {
+		return 0
+	}
+	return d.Milliseconds()
+}
+
+// RenewClaim 续租认领：仅当任务仍处于 claimed 且属于该 worker 时刷新 ClaimedAt。
+// 长任务（TTS/上传/网络重试可能超过 ClaimTimeout）由处理方周期性调用，
+// 避免被其它 worker 的"死锁回收"误判后重复认领。返回错误表示已不属于该 worker。
+func (q *Queue) RenewClaim(videoID, workerID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	f, err := q.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(f)
+
+	data, err := q.readAll()
+	if err != nil {
+		return err
+	}
+	for i := range data.Videos {
+		v := &data.Videos[i]
+		if v.VideoID != videoID {
+			continue
+		}
+		if v.Status != StatusClaimed {
+			return fmt.Errorf("任务 %s 不在 claimed 状态（当前 %s）", videoID, v.Status)
+		}
+		if v.ClaimedBy != workerID {
+			return fmt.Errorf("任务 %s 属于 worker %s，worker %s 无权续租", videoID, v.ClaimedBy, workerID)
+		}
+		now := time.Now().Format(time.RFC3339Nano) // 纳秒精度，保证续租真正刷新租约
+		v.ClaimedAt = now
+		v.UpdatedAt = now
+		return q.writeAll(data)
+	}
+	return fmt.Errorf("视频 %s 不在队列中", videoID)
 }
 
 // Reset 手动将视频重置为 queued（用于人工介入修复后）
 func (q *Queue) Reset(videoID string) error {
-	return q.transition(videoID, func(v *Video) (bool, string) {
+	pre, _ := q.GetByID(videoID)
+	err := q.transition(videoID, func(v *Video) (bool, string) {
 		if v.Status != StatusFailed && v.Status != StatusSkipped {
 			return false, fmt.Sprintf("只能重置 failed/skipped (当前: %s)", v.Status)
 		}
@@ -306,11 +434,24 @@ func (q *Queue) Reset(videoID string) error {
 		v.Error = ""
 		return true, ""
 	})
+	if err == nil && pre != nil {
+		q.emit(AuditEvent{Type: "reset", VideoID: videoID, Source: pre.Source, Worker: pre.ClaimedBy, Error: "manual reset"})
+	}
+	return err
 }
 
-// RequeueClaimed 将所有 claimed 任务重置回 queued（daemon 崩溃恢复用）。
-// 单 worker 场景下 claimed 只可能是"上一次运行遗留"，重启后需要续跑。
-// 返回被重置的任务数。
+// DaemonWorkerPrefix 标识 daemon 消费者的认领：崩溃恢复只回收本类遗留任务。
+const DaemonWorkerPrefix = "daemon:"
+
+// DaemonWorkerID 返回 daemon 专用 worker 标识（区别于 queue work / CLI 等手动消费者）。
+func DaemonWorkerID() string {
+	return DaemonWorkerPrefix + WorkerID()
+}
+
+// RequeueClaimed 崩溃恢复：只回收 daemon 遗留的 claimed（claimed_by 以 "daemon:" 开头）。
+// 单实例锁保证同一时刻至多一个 daemon，因此此类认领只可能来自已退出的实例，可安全续跑。
+// 其它消费者（如 queue work）的活跃认领不受影响，避免"重启后抢走正在处理的任务"导致重复下载/投稿；
+// 它们意外退出后的遗留认领由 Next() 的 claim 超时回收兜底。
 func (q *Queue) RequeueClaimed() (int, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -321,25 +462,30 @@ func (q *Queue) RequeueClaimed() (int, error) {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return 0, err
 	}
 
 	now := time.Now().Format(time.RFC3339)
 	reset := 0
+	var resetIDs []string
 	for i := range data.Videos {
-		if data.Videos[i].Status == StatusClaimed {
+		if data.Videos[i].Status == StatusClaimed && strings.HasPrefix(data.Videos[i].ClaimedBy, DaemonWorkerPrefix) {
 			data.Videos[i].Status = StatusQueued
 			data.Videos[i].ClaimedBy = ""
 			data.Videos[i].ClaimedAt = ""
 			data.Videos[i].UpdatedAt = now
 			reset++
+			resetIDs = append(resetIDs, data.Videos[i].VideoID)
 		}
 	}
 	if reset > 0 {
 		if err := q.writeAll(data); err != nil {
 			return reset, err
+		}
+		for _, id := range resetIDs {
+			q.emit(AuditEvent{Type: "requeued", VideoID: id})
 		}
 	}
 	return reset, nil
@@ -367,7 +513,7 @@ func (q *Queue) Remove(videoID string) error {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return err
 	}
@@ -393,7 +539,7 @@ func (q *Queue) Clear() error {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return err
 	}
@@ -412,7 +558,7 @@ func (q *Queue) transition(videoID string, fn func(v *Video) (bool, string)) err
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return err
 	}
@@ -445,7 +591,7 @@ func (q *Queue) Status() (*QueueData, error) {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return nil, err
 	}
@@ -469,7 +615,7 @@ func (q *Queue) GetByID(videoID string) (*Video, error) {
 	}
 	defer unlock(f)
 
-	data, err := q.readAll(f)
+	data, err := q.readAll()
 	if err != nil {
 		return nil, err
 	}

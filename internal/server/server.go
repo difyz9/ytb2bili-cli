@@ -40,6 +40,7 @@ type Server struct {
 	server   *http.Server
 	Feishu   *FeishuBot
 	taskChan chan *VideoTask
+	jobs     *jobStore // 任务持久化（重启回放，Phase 4 M2）
 	mu       sync.Mutex
 }
 
@@ -131,12 +132,46 @@ func New(cfg *config.Config) *Server {
 		cfg:      cfg,
 		history:  h,
 		taskChan: make(chan *VideoTask, 100),
+		jobs:     newJobStore(cfg.DataDir),
 	}
 
 	// 启动任务处理器
 	go s.processTasks()
+	// 重启回放：恢复上次服务中断时未完成的任务
+	go s.replayPendingJobs()
 
 	return s
+}
+
+// persistTask 把任务状态落盘（best-effort，失败仅告警，不中断处理）。
+func (s *Server) persistTask(t *VideoTask) {
+	if s == nil || s.jobs == nil || t == nil {
+		return
+	}
+	if err := s.jobs.save(t); err != nil {
+		log.Printf("⚠ 任务持久化失败 %s: %v", t.ID, err)
+	}
+}
+
+// replayPendingJobs 启动时把上次未完成（非 completed/failed）的任务重新入队。
+// 重复投稿已由 pipeline 顶部 history 守卫 + pending.jsonl 兜底，安全重跑。
+func (s *Server) replayPendingJobs() {
+	if s == nil || s.jobs == nil {
+		return
+	}
+	pending, err := s.jobs.replayPending()
+	if err != nil {
+		log.Printf("⚠ 恢复未完成任务失败: %v", err)
+		return
+	}
+	if len(pending) == 0 {
+		return
+	}
+	log.Printf("♻️ 恢复 %d 个未完成任务（上次服务中断）", len(pending))
+	for _, t := range pending {
+		log.Printf("♻️ 重新入队: %s - %s", t.ID, t.URL)
+		s.taskChan <- t
+	}
 }
 
 // Start 启动服务器
@@ -292,6 +327,13 @@ func (s *Server) handleVideoSubmitFromExtension(msg *FeishuMessage, data *VideoS
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 
+	// 先持久化再入队：服务中途重启不丢任务
+	if err := s.jobs.save(task); err != nil {
+		s.Feishu.ReplyMessage(context.Background(), msg, "❌ 任务持久化失败，请稍后重试")
+		log.Printf("❌ 任务持久化失败: %v", err)
+		return
+	}
+
 	// 发送到任务队列
 	select {
 	case s.taskChan <- task:
@@ -332,6 +374,13 @@ func (s *Server) handleYouTubeSubmission(msg *FeishuMessage, youtubeURL string, 
 		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 
+	// 先持久化再入队：服务中途重启不丢任务
+	if err := s.jobs.save(task); err != nil {
+		s.Feishu.ReplyMessage(context.Background(), msg, "❌ 任务持久化失败，请稍后重试")
+		log.Printf("❌ 任务持久化失败: %v", err)
+		return
+	}
+
 	// 发送到任务队列
 	select {
 	case s.taskChan <- task:
@@ -351,6 +400,7 @@ func (s *Server) processTasks() {
 // processVideoTask runs every HTTP/Feishu task through the shared application pipeline.
 func (s *Server) processVideoTask(task *VideoTask) {
 	log.Printf("🎬 开始处理任务: %s - %s", task.ID, task.URL)
+	s.persistTask(task)
 	cookiesPath := ""
 	if task.Cookies != "" {
 		if path, err := download.SaveCookiesFromMeta(task.Cookies, s.cfg.DataDir); err == nil {
@@ -370,6 +420,7 @@ func (s *Server) processVideoTask(task *VideoTask) {
 		} else {
 			log.Printf("✅ %s", event.Step)
 		}
+		s.persistTask(task)
 	}}
 	result, err := processor.Process(context.Background(), pipeline.Request{
 		URL: task.URL, SourceLang: task.SourceLang, TargetLang: task.TargetLang, Tid: s.cfg.BiliTid,
@@ -382,14 +433,26 @@ func (s *Server) processVideoTask(task *VideoTask) {
 	})
 	if err != nil {
 		task.Status, task.Error = "failed", err.Error()
+		// 补偿：回放时若该视频其实已投稿成功（history 守卫拦下的重跑），按已完成为准，避免误标失败
+		if strings.Contains(err.Error(), "已提交过") {
+			if videoID := extractVideoID(task.URL); videoID != "" {
+				if sub := s.history.GetSubmitted(videoID); sub != nil {
+					task.Status, task.BVID, task.Error = "completed", sub.BVID, ""
+				}
+			}
+		}
+		s.persistTask(task)
 		store := storage.NewTaskStore(filepath.Join(s.cfg.DataDir, "tasks"))
 		if persisted, getErr := store.Get(task.ID); getErr == nil && persisted.Status != "failed" {
-			store.UpdateStep(task.ID, "planning", "failed", err.Error())
+			if uerr := store.UpdateStep(task.ID, "planning", "failed", err.Error()); uerr != nil {
+				log.Printf("⚠ UpdateStep(%s, planning, failed): %v", task.ID, uerr)
+			}
 		}
 		log.Printf("❌ 任务失败: %s: %v", task.ID, err)
 		return
 	}
 	task.Status, task.BVID = "completed", result.BVID
+	s.persistTask(task)
 	if result.BVID == "" {
 		return
 	}
@@ -512,6 +575,12 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt:               time.Now().Format(time.RFC3339),
 	}
 
+	// 先持久化再入队：服务中途重启不丢任务（与下方 tasks 台账分开）
+	if err := s.jobs.save(task); err != nil {
+		s.jsonError(w, "任务持久化失败", http.StatusInternalServerError)
+		return
+	}
+
 	// 发送到任务队列
 	taskStore := storage.NewTaskStore(filepath.Join(s.cfg.DataDir, "tasks"))
 	if err := taskStore.Persist(taskStore.Prepare(task.ID, task.URL), nil); err != nil {
@@ -528,6 +597,9 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	default:
 		if err := taskStore.Delete(task.ID); err != nil {
 			log.Printf("warning: failed to clean up task %s: %v", task.ID, err)
+		}
+		if err := s.jobs.remove(task.ID); err != nil {
+			log.Printf("warning: failed to clean up job %s: %v", task.ID, err)
 		}
 		s.jsonError(w, "任务队列已满", http.StatusServiceUnavailable)
 	}
@@ -712,10 +784,16 @@ func isLoopbackAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// requestTimeoutMiddleware wraps handlers with a per-request timeout.
-// If a request handler exceeds the timeout, the context is cancelled and
-// a 503 Service Unavailable is returned.
+// requestTimeoutMiddleware bounds slow handlers with a per-request timeout.
+// handler 在独立 goroutine 执行；超时后向响应写入 503。
+// 通过 singleWriter 保证"业务响应"与"超时 503"之间只有一个写入者生效：
+// 一旦任一方已开始写（或已发 503），另一方迟到的写入被丢弃，避免双写竞态。
+// 注意：context 取消无法强制终止不配合的 handler，长业务应自行检查 r.Context()。
 func requestTimeoutMiddleware(next http.Handler) http.Handler {
+	return requestTimeoutMiddlewareWith(next, 5*time.Minute)
+}
+
+func requestTimeoutMiddlewareWith(next http.Handler, timeout time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Skip timeout for health checks and long-lived endpoints
 		if r.URL.Path == "/health" {
@@ -723,15 +801,15 @@ func requestTimeoutMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
-
 		r = r.WithContext(ctx)
 
-		done := make(chan bool, 1)
+		tw := &singleWriter{ResponseWriter: w}
+		done := make(chan struct{})
 		go func() {
-			next.ServeHTTP(w, r)
-			done <- true
+			defer close(done)
+			next.ServeHTTP(tw, r)
 		}()
 
 		select {
@@ -740,8 +818,49 @@ func requestTimeoutMiddleware(next http.Handler) http.Handler {
 		case <-ctx.Done():
 			if ctx.Err() == context.DeadlineExceeded {
 				log.Printf("⏰ 请求超时: %s %s", r.Method, r.URL.Path)
-				http.Error(w, `{"error":"请求超时"}`, http.StatusServiceUnavailable)
+				tw.timeout503()
 			}
 		}
 	})
+}
+
+// singleWriter 包装 ResponseWriter：业务响应与超时 503 之间只有一次生效。
+// stopped=true 表示超时路径已写 503，随后 handler 的迟到写入被丢弃；
+// started=true 表示 handler 已开始提交响应，超时路径不得再写 503。
+type singleWriter struct {
+	http.ResponseWriter
+	mu      sync.Mutex
+	started bool // handler 已开始响应
+	stopped bool // 超时 503 已占用
+}
+
+func (w *singleWriter) WriteHeader(code int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return // 503 已发出：丢弃迟到的业务响应头
+	}
+	w.started = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *singleWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.stopped {
+		return len(b), nil // 503 已发出：丢弃迟到业务正文，假装成功避免 handler 误判
+	}
+	w.started = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *singleWriter) timeout503() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.started {
+		return // handler 已在写响应，无法再改状态码
+	}
+	w.stopped = true
+	w.ResponseWriter.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = w.ResponseWriter.Write([]byte(`{"error":"请求超时"}`))
 }

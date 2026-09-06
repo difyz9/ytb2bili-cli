@@ -176,18 +176,18 @@ func TestExecutorNoTimeoutByDefault(t *testing.T) {
 	}
 }
 
-// ─── queue RequeueClaimed ──────────────────────────────────────────────
+// ─── queue RequeueClaimed（只回收 daemon 遗留认领） ───────────────────────
 
 func TestRequeueClaimed(t *testing.T) {
 	dir := t.TempDir()
 	q := queue.New(dir)
 
 	q.Add("v1", "https://www.youtube.com/watch?v=11111111111", "t1", "", "auto")
-	item, err := q.Next("worker1")
+	// daemon（带前缀）认领后崩溃：任务保持 claimed
+	item, err := q.Next(queue.DaemonWorkerID() + ":oldpid")
 	if err != nil || item == nil {
 		t.Fatalf("claim failed: %v %v", item, err)
 	}
-	// 模拟崩溃：任务保持 claimed
 
 	n, err := q.RequeueClaimed()
 	if err != nil {
@@ -198,15 +198,15 @@ func TestRequeueClaimed(t *testing.T) {
 	}
 
 	// 现在应该能再次认领
-	item2, err := q.Next("worker2")
+	item2, err := q.Next("worker2") // 非 daemon 消费者
 	if err != nil || item2 == nil {
 		t.Fatalf("re-claim failed: %v %v", item2, err)
 	}
 	if item2.VideoID != "v1" {
 		t.Fatalf("got %s", item2.VideoID)
 	}
-	// worker2 认领后再次 RequeueClaimed 应重置它
-	if n, _ := q.RequeueClaimed(); n != 1 {
-		t.Fatalf("expected 1 again, got %d", n)
+	// worker2 不是 daemon：活跃认领不应被 RequeueClaimed 抢走
+	if n, _ := q.RequeueClaimed(); n != 0 {
+		t.Fatalf("非 daemon 活跃认领不应被回收, got %d", n)
 	}
 }

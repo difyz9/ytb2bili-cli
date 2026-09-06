@@ -3,6 +3,7 @@ package download
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -86,11 +87,16 @@ func TestSwapCookiesToBrowser(t *testing.T) {
 	t.Setenv("YOUTUBE_COOKIES_FROM_BROWSER", "")
 	base := []string{"--cookies", "/tmp/c.txt", "--dump-json"}
 
-	// darwin（测试运行平台为 macOS）：默认 chrome
-	got := swapCookiesToBrowser(base)
-	want := []string{"--dump-json", "--cookies-from-browser", "chrome"}
-	if strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("swapCookiesToBrowser = %v, want %v", got, want)
+	// 平台相关默认浏览器：darwin 默认 chrome；其它平台（无头 Linux 服务器）默认 nil，
+	// 除非显式设置 YOUTUBE_COOKIES_FROM_BROWSER。
+	if runtime.GOOS == "darwin" {
+		got := swapCookiesToBrowser(base)
+		want := []string{"--dump-json", "--cookies-from-browser", "chrome"}
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Fatalf("swapCookiesToBrowser = %v, want %v", got, want)
+		}
+	} else if got := swapCookiesToBrowser(base); got != nil {
+		t.Fatalf("no explicit browser on %s: want nil, got %v", runtime.GOOS, got)
 	}
 
 	// 显式禁用 → nil
@@ -107,8 +113,8 @@ func TestSwapCookiesToBrowser(t *testing.T) {
 
 	// 显式指定浏览器
 	t.Setenv("YOUTUBE_COOKIES_FROM_BROWSER", "firefox:profile1")
-	got = swapCookiesToBrowser(base)
-	want = []string{"--dump-json", "--cookies-from-browser", "firefox:profile1"}
+	got := swapCookiesToBrowser(base)
+	want := []string{"--dump-json", "--cookies-from-browser", "firefox:profile1"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("explicit browser: swapCookiesToBrowser = %v, want %v", got, want)
 	}

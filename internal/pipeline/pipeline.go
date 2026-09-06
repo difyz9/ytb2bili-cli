@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -100,9 +101,19 @@ func (p *Processor) Process(ctx context.Context, req Request) (*Result, error) {
 	// 裸 videoId（如直接传 11 位 ID）归一化为完整 watch URL
 	req.URL = normalizeURL(req.URL, videoID)
 	history := storage.NewHistoryStore(filepath.Join(p.Config.DataDir, "history"))
+	// 先补录上一轮"投稿成功但历史写入失败"的补偿记录，再执行防重检查
+	if n, rerr := history.ReconcilePending(); rerr == nil && n > 0 {
+		fmt.Printf("  \u267b\ufe0f 已补录 %d 条待确认投稿记录（pending → history）\n", n)
+	}
 	if videoID != "" && history.IsSubmitted(videoID) {
 		submitted := history.GetSubmitted(videoID)
 		return nil, fmt.Errorf("该视频已提交过: https://www.bilibili.com/video/%s", submitted.BVID)
+	}
+	// pending 补偿记录尚未补录成功时，同样拒绝再次投稿（防重复上传）
+	if videoID != "" {
+		if pv := history.GetPendingBVID(videoID); pv != "" {
+			return nil, fmt.Errorf("该视频已投稿(bvid=%s)但历史待补录，拒绝重复处理", pv)
+		}
 	}
 
 	tasks := storage.NewTaskStore(filepath.Join(p.Config.DataDir, "tasks"))
@@ -139,7 +150,9 @@ func (p *Processor) Process(ctx context.Context, req Request) (*Result, error) {
 	if err = executor.Run(ctx, result.Plan, workflow.NewState()); err != nil {
 		return result, err
 	}
-	tasks.SetCompleted(task.ID)
+	if err := tasks.SetCompleted(task.ID); err != nil {
+		log.Printf("warning: SetCompleted(%s): %v", task.ID, err)
+	}
 	result.Duration = time.Since(started)
 	return result, nil
 }
@@ -184,7 +197,9 @@ type taskObserver struct {
 }
 
 func (o *taskObserver) StepStarted(name string, position, total int) {
-	o.tasks.UpdateStep(o.taskID, name, "running")
+	if err := o.tasks.UpdateStep(o.taskID, name, "running"); err != nil {
+		log.Printf("warning: task %s UpdateStep(%s,running): %v", o.taskID, name, err)
+	}
 	if o.report != nil {
 		o.report(Event{Step: name, Position: position, Total: total, Status: "running"})
 	}
@@ -193,9 +208,13 @@ func (o *taskObserver) StepFinished(name string, err error) {
 	status := "completed"
 	if err != nil {
 		status = "failed"
-		o.tasks.UpdateStep(o.taskID, name, status, err.Error())
+		if uerr := o.tasks.UpdateStep(o.taskID, name, status, err.Error()); uerr != nil {
+			log.Printf("warning: task %s UpdateStep(%s,failed): %v", o.taskID, name, uerr)
+		}
 	} else {
-		o.tasks.UpdateStep(o.taskID, name, status)
+		if uerr := o.tasks.UpdateStep(o.taskID, name, status); uerr != nil {
+			log.Printf("warning: task %s UpdateStep(%s,completed): %v", o.taskID, name, uerr)
+		}
 	}
 	if o.report != nil {
 		o.report(Event{Step: name, Status: status, Err: err})

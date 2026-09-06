@@ -211,7 +211,34 @@ func newQueueCmd() *cobra.Command {
 		},
 	}
 
-	queueCmd.AddCommand(addCmd, statusCmd, workCmd, listCmd, removeCmd, clearCmd, retryFailedCmd)
+	auditCmd := &cobra.Command{
+		Use:   "audit",
+		Short: "审计事件与失败分类统计（来自 data/audit/events.jsonl）",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg := loadConfig()
+			a := queue.OpenAudit(cfg.DataDir)
+			recent, _ := cmd.Flags().GetInt("recent")
+			sum, err := a.SummarizeFailures(recent)
+			if err != nil {
+				return err
+			}
+			fmt.Print(sum.String())
+			if recent > 0 && len(sum.RecentErrors) > 0 {
+				fmt.Printf("最近 %d 条失败:\n", len(sum.RecentErrors))
+				for _, ev := range sum.RecentErrors {
+					errText := ev.Error
+					if len(errText) > 160 {
+						errText = errText[:160] + "..."
+					}
+					fmt.Printf("  ❌ [%s] %s %s: %s\n", ev.ErrorClass, ev.VideoID, ev.Ts, errText)
+				}
+			}
+			return nil
+		},
+	}
+	auditCmd.Flags().Int("recent", 10, "额外打印最近 N 条失败详情(0=不打印)")
+
+	queueCmd.AddCommand(addCmd, statusCmd, workCmd, listCmd, removeCmd, clearCmd, retryFailedCmd, auditCmd)
 	return queueCmd
 }
 
