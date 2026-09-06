@@ -46,6 +46,34 @@ func chromePortFile(dataDir string) string {
 	return filepath.Join(dataDir, "chrome.port")
 }
 
+// refreshYouTubeCookiesFromDebugChrome 刷新 YouTube cookies 到当前生效路径：
+// 连接调试 Chrome（不在则自动拉起）→ CDP 提取 cookies → 写文件并验证。
+// daemon 定期刷新与 ytb cookies refresh 共用此入口。
+func refreshYouTubeCookiesFromDebugChrome(cfg *config.Config) error {
+	// 确保调试 Chrome 在跑（daemon 无 server 时自拉起；已运行则复用）
+	if _, err := startChromeDebug(cfg); err != nil {
+		return fmt.Errorf("启动调试 Chrome 失败: %w", err)
+	}
+
+	cookiesFile := cfg.EffectiveCookiesPath()
+	if err := os.MkdirAll(filepath.Dir(cookiesFile), 0o755); err != nil {
+		return err
+	}
+
+	port := readChromePort(cfg)
+	cm := cdp.NewChromeManager(cdp.WithPort(port))
+	ctx, cancel, err := cm.ConnectExisting(port)
+	if err != nil {
+		return fmt.Errorf("连接 Chrome 失败: %w", err)
+	}
+	defer cancel()
+
+	if _, err := cdp.RefreshYouTubeCookies(ctx, cookiesFile); err != nil {
+		return fmt.Errorf("刷新 cookies 失败: %w", err)
+	}
+	return nil
+}
+
 // readChromePort 读取上次启动记录的 Chrome 调试端口，无记录则用配置起始端口。
 func readChromePort(cfg *config.Config) int {
 	dataDir := cfg.DataDir
@@ -82,6 +110,7 @@ func startChromeDebug(cfg *config.Config) (started bool, err error) {
 	profileDir, _ := filepath.Abs(filepath.Join(dataDir, "chrome-profile"))
 	cmd := exec.Command(chromeBin,
 		"--remote-debugging-port="+fmt.Sprint(port),
+		"--remote-allow-origins=*", // Chrome 111+ 默认拒绖非 localhost Origin 的 CDP WS 连接
 		"--user-data-dir="+profileDir,
 		"--no-first-run", "--no-default-browser-check")
 	if err := cmd.Start(); err != nil {

@@ -81,10 +81,10 @@ YouTube → Bilibili 视频搬运工具。Go 编写的 CLI（`ytb`），覆盖 *
 | 依赖 | 用途 | 说明 |
 |------|------|------|
 | Go ≥ 1.26 | 编译 | https://go.dev |
-| yt-dlp | 视频下载 | `ytb init --update` 可自动更新 |
+| yt-dlp | 视频下载 | 缺失时自动安装到 `~/.local/bin`（无需 sudo）；`ytb init --update` 可更新 |
 | ffmpeg | 音视频处理 | `brew install ffmpeg` / `apt install ffmpeg` |
 | deno | yt-dlp JS 运行时 | `brew install deno`（可选） |
-| whisper.cpp | 本地转录（可选） | `transcriber.provider: whisper` 时必需，`ytb init` 检查 |
+| whisper.cpp | 本地转录（可选） | `transcriber.provider: whisper` 时必需，`ytb init` 检查；否则走 Bcut 云端 |
 | Python 3 + venv | 配音/音画同步脚本 | `ytb init --venv` 一键创建 |
 | IndexTTS2 服务 | 中文配音（可选） | `tts.provider: index` 时需另部署，见 `skills/audio-video-sync/SKILL.md` |
 
@@ -493,9 +493,11 @@ ytb2bili-go/
 |------|------|
 | `INSTALL_AGENT.md` | 面向 AI Agent 的安装/依赖/配置完整指南 |
 | `AGENTS.md` | 命令约定、模块 API、Agent 工作流与运维速查 |
+| `LOCAL_DEPLOY.md` | 本地部署细节 |
 | `docs/API_DOCS.md` | HTTP API 端点参考 |
 | `docs/FEISHU_INTEGRATION.md` | 飞书告警集成 |
 | `.claude/skills/` | Claude Code 项目技能（pipeline 驱动、调试、契约等） |
+| `docs/` | 设计文档与历史归档 |
 
 ## 许可证
 
