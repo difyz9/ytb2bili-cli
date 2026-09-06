@@ -297,11 +297,11 @@ func (m *ChromeManager) ConnectExisting(port int) (context.Context, context.Canc
 	opts := []chromedp.ContextOption{}
 	ctx, _ := chromedp.NewContext(allocCtx, opts...)
 
-	// 测试连接
-	ctx, cancelTimeout := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelTimeout()
+	// 测试连接（用独立的超时子 ctx，避免把返回给调用方的 ctx 提前取消）
+	probeCtx, cancelProbe := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelProbe()
 
-	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+	if err := chromedp.Run(probeCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return nil
 	})); err != nil {
 		cancel()
