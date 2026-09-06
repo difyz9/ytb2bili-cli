@@ -2,8 +2,6 @@
 
 YouTube → Bilibili 视频搬运工具。Go 编写的 CLI（`ytb`），覆盖 **搜索 → 下载 → 转录 → 翻译 → 配音 → 音画同步 → 投稿 → 字幕上传** 全流水线，并提供作业队列、频道监控、自主调度守护进程（daemon）、HTTP API 等自动化能力。
 
-- 仓库：https://github.com/zolagz/ytb2bili-go （备选镜像：https://gitee.com/difyz/ytb2bili-go ）
-- 许可证：MIT
 
 ## 目录
 

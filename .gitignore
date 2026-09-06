@@ -30,3 +30,17 @@ www.youtube.com_cookies.txt
 # 本地环境变量（含密钥），不入库
 .env.local
 *.env.local
+
+# 支付证书/私钥/凭证（历史已清理，禁止再次入库）
+*.pem
+*.crt
+*.key
+*.p12
+*.pfx
+privateKey.txt
+client_secret_*
+.apiclient_key*
+
+# 支付 demo skill 的证书目录（若再次引入需以占位符重建）
+.claude/skills/*/etc/certs/
+.claude/skills/*/etc/skillhub/
