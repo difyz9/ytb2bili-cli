@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/chromedp/chromedp"
 	"github.com/chromedp/cdproto/network"
+	"github.com/chromedp/chromedp"
 )
 
 // ─── 类型定义 ──────────────────────────────────────────────────────────────
@@ -295,20 +295,29 @@ func (m *ChromeManager) ConnectExisting(port int) (context.Context, context.Canc
 	m.cancel = cancel
 
 	opts := []chromedp.ContextOption{}
-	ctx, _ := chromedp.NewContext(allocCtx, opts...)
+	sessCtx, _ := chromedp.NewContext(allocCtx, opts...)
 
-	// 测试连接（用独立的超时子 ctx，避免把返回给调用方的 ctx 提前取消）
-	probeCtx, cancelProbe := context.WithTimeout(ctx, 10*time.Second)
-	defer cancelProbe()
-
-	if err := chromedp.Run(probeCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return nil
-	})); err != nil {
+	// 建立会话：chromedp 的会话生命周期绑定到首次 Run 的 ctx，
+	// 绝不能用带超时的子 ctx（函数返回超时即触发，会话立刻死掉 → 调用方拿到手就 context canceled）。
+	// 防挂起用看门狗 goroutine：超时则杀 allocator 中断 Run。
+	done := make(chan error, 1)
+	go func() {
+		done <- chromedp.Run(sessCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return nil
+		}))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			cancel()
+			return nil, nil, fmt.Errorf("连接 Chrome 失败: %w", err)
+		}
+	case <-time.After(10 * time.Second):
 		cancel()
-		return nil, nil, fmt.Errorf("连接 Chrome 失败: %w", err)
+		return nil, nil, fmt.Errorf("连接 Chrome 超时（10s 未建立会话）")
 	}
 
-	return ctx, cancel, nil
+	return sessCtx, cancel, nil
 }
 
 // ─── 浏览器操作 ───────────────────────────────────────────────────────────
@@ -428,8 +437,10 @@ func RefreshYouTubeCookies(ctx context.Context, outputPath string) (int, error) 
 	ctx, cancel := chromedp.NewContext(ctx)
 	defer cancel()
 
-	// 打开 YouTube 首页以触发 cookie 同步
-	if err := chromedp.Run(ctx,
+	// YouTube 首页加载（首次 CDP 会话建立 + 导航）给足时间，避免大页慢加载误报「可能需要登录」
+	navCtx, navCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer navCancel()
+	if err := chromedp.Run(navCtx,
 		chromedp.Navigate("https://www.youtube.com"),
 		chromedp.WaitReady("body"),
 	); err != nil {

@@ -93,6 +93,9 @@ export TRANSLATION_RETRIES="2"                 # 主服务重试次数
 export OLLAMA_BASE_URL="http://localhost:11434"
 export OLLAMA_MODEL="qwen2.5:7b"
 
+# 可选：禁用 yt-dlp 缺失时的自动安装（默认开启，装到 ~/.local/bin 无需 sudo）
+# export YTB2BILI_NO_AUTO_INSTALL=1
+
 # 可选：配置文件路径（默认 ./config.yaml）
 export YTB2BILI_CONFIG="/path/to/config.yaml"
 
@@ -111,7 +114,7 @@ export YTB2BILI_AUDIO_SYNC_SCRIPT="/path/to/script"  # 指定音画同步脚本�
 - **二进制**: `ytb`（`make build` 或 `go build -o ytb ./cmd/ytb` 生成）
 - **配置**: `./config.yaml`（不入库，模板见 `configs/config.example.yaml`）或 `--config` 指定
 - **数据目录**: `./data/`（`config.yaml` 的 `data_dir` 字段可改）
-- **凭证**: `cookies.txt` / `client_tv.json` / `client_web.apps.googleusercontent.com.json`（不入库，本地维护）
+- **凭证**: `data/cookies/`（YouTube cookies；默认自动选目录下最新有效 `*.txt`，显式 `youtube_cookies:` 配置优先）/ `client_tv.json` / `client_web.apps.googleusercontent.com.json`（不入库，本地维护）
 - **部署脚本**: `scripts/`（deploy.sh / install-dpms-guard.sh / refresh_youtube_cookies.sh）
 - **仓库**: https://github.com/zolagz/ytb2bili-go （备选 Gitee: https://gitee.com/difyz/ytb2bili-go ）
 
@@ -321,8 +324,8 @@ ytb channel videos
 ```bash
 ytb login         # 扫码登录（终端打印二维码）
 ytb whoami        # 查看当前账号
-ytb cookies test  # 测试 YouTube cookies 是否有效
-ytb cookies refresh  # 从 Chrome 刷新 YouTube cookies
+ytb cookies test  # 测试 YouTube cookies 是否有效（自动选 data/cookies/ 最新文件，先剔除已轮换的 PSIDTS 令牌）
+ytb cookies refresh  # 从 Chrome 刷新 YouTube cookies（Chrome 不在运行则自动拉起；daemon 也每 6h 自动刷，配置 daemon.cookies_refresh_hours）
 ```
 
 ### HTTP 服务
@@ -617,6 +620,8 @@ go test ./internal/cli/ -v
 
 ## 依赖工具
 
-- `yt-dlp` - YouTube 视频下载
+- `yt-dlp` - YouTube 视频下载（download/info 步骤发现未安装时会**自动安装**到 `~/.local/bin`，无需 sudo；
+  依次尝试 curl 官方二进制 → `pip install --user yt-dlp[default,curl-cffi]` → `brew install yt-dlp`，
+  失败后 10 分钟内冷却不再重试；设 `YTB2BILI_NO_AUTO_INSTALL=1` 可禁用退回直接报错）
 - `ffmpeg` - 音视频处理
-- `deno` - JavaScript 运行时 (yt-dlp 需要)
+- `deno` - JavaScript 运行时 (yt-dlp 需要；缺失时 YouTube JS challenge 无法解，部分格式缺失/被拦。macOS: `brew install deno`)

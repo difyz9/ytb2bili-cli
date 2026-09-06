@@ -4,11 +4,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/zolagz/ytb2bili-go/internal/download"
 	"github.com/zolagz/ytb2bili-go/internal/queue"
 )
 
@@ -143,6 +146,17 @@ type DaemonConfig struct {
 	AlertWebhook string `yaml:"alert_webhook,omitempty"`
 	// AlertFailed 失败任务达上限后是否飞书告警（默认 true）
 	AlertFailed *bool `yaml:"alert_failed,omitempty"`
+	// CookiesRefreshHours YouTube cookies 定期刷新周期（小时，默认 6；0=禁用）。
+	// 刷新走调试 Chrome（CDP 提取登录态），Chrome 不在时自动拉起。
+	CookiesRefreshHours *int `yaml:"cookies_refresh_hours,omitempty"`
+}
+
+// EffectiveCookiesRefreshHours 返回 cookies 定期刷新周期（小时；默认 6，0=禁用）。
+func (d *DaemonConfig) EffectiveCookiesRefreshHours() int {
+	if d == nil || d.CookiesRefreshHours == nil {
+		return 6
+	}
+	return *d.CookiesRefreshHours
 }
 
 // EffectiveConsumePerBatch 返回每批消费上限（默认 2）
@@ -545,13 +559,64 @@ func (c *Config) Init() {
 	}
 }
 
-// EffectiveDownloadDir 返回视频下载根目录：显式配置 download_dir 优先，
-// 否则回退到 <data_dir>/downloads。
-// DefaultCookiesFile 统一的 YouTube cookies 文件名（写入与读取都用它）。
+// DefaultCookiesFile 默认 YouTube cookies 文件名（固定名兼容旧路径，写入方优先用最新文件名）。
 const DefaultCookiesFile = "youtube_cookies_from_meta.txt"
 
-// EffectiveCookiesPath 返回 YouTube cookies 文件路径：
-// 显式配置 youtube_cookies 优先（支持 ~/ 展开），否则 <data_dir>/cookies/youtube_cookies_from_meta.txt。
+// EffectiveCookiesPath 返回 YouTube cookies 文件路径（优先级从高到低）：
+//  1. 显式配置 youtube_cookies（支持 ~/ 展开）；
+//  2. <data_dir>/cookies/ 下最新的有效 cookies 文件（*.txt 按修改时间，跳过无效文件）；
+//     —— 刷新脚本/人工导入的新 cookie 文件无需改配置即可自动生效；
+//  3. <data_dir>/cookies/ + DefaultCookiesFile（固定名，兼容旧行为）。
+func (c *Config) EffectiveCookiesPath() string {
+	if c != nil {
+		if p := strings.TrimSpace(c.YouTubeCookies); p != "" {
+			return ExpandHome(p)
+		}
+		if dir := strings.TrimSpace(c.DataDir); dir != "" {
+			if newest := newestCookiesFile(filepath.Join(dir, "cookies")); newest != "" {
+				return newest
+			}
+			return filepath.Join(dir, "cookies", DefaultCookiesFile)
+		}
+	}
+	if newest := newestCookiesFile(filepath.Join("data", "cookies")); newest != "" {
+		return newest
+	}
+	return filepath.Join("data", "cookies", DefaultCookiesFile)
+}
+
+// newestCookiesFile 返回 dir 下最新的有效 cookies 文件（*.txt，按 mtime 降序取第一个
+// 含有效条目的）。无候选或全部无效时返回空字符串，调用方回退到固定默认文件名。
+func newestCookiesFile(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	type candidate struct {
+		path  string
+		mtime time.Time
+	}
+	var files []candidate
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || strings.HasPrefix(name, ".") || !strings.HasSuffix(strings.ToLower(name), ".txt") {
+			continue
+		}
+		info, ierr := e.Info()
+		if ierr != nil {
+			continue
+		}
+		files = append(files, candidate{filepath.Join(dir, name), info.ModTime()})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mtime.After(files[j].mtime) })
+	for _, f := range files {
+		if download.HasValidCookies(f.path) {
+			return f.path
+		}
+	}
+	return ""
+}
+
 // EffectiveChromeDebugPort 返回 Chrome 远程调试起始端口（默认 9222）。
 func (c *Config) EffectiveChromeDebugPort() int {
 	if c != nil && c.ChromeDebugPort > 0 {
@@ -560,18 +625,8 @@ func (c *Config) EffectiveChromeDebugPort() int {
 	return 9222
 }
 
-func (c *Config) EffectiveCookiesPath() string {
-	if c != nil {
-		if p := strings.TrimSpace(c.YouTubeCookies); p != "" {
-			return ExpandHome(p)
-		}
-		if dir := strings.TrimSpace(c.DataDir); dir != "" {
-			return filepath.Join(dir, "cookies", DefaultCookiesFile)
-		}
-	}
-	return filepath.Join("data", "cookies", DefaultCookiesFile)
-}
-
+// EffectiveDownloadDir 返回视频下载根目录：显式配置 download_dir 优先，
+// 否则回退到 <data_dir>/downloads。
 func (c *Config) EffectiveDownloadDir() string {
 	if c != nil {
 		if dir := strings.TrimSpace(c.DownloadDir); dir != "" {

@@ -133,3 +133,4 @@ daemon:
   heartbeat_file: "daemon/heartbeat.json"   # 心跳文件（相对 data_dir）
   alert_webhook: ""                  # 飞书自定义机器人 webhook（任务失败/心跳过期告警），留空=不告警
   alert_failed: true                 # 任务重试达上限后是否飞书告警
+  cookies_refresh_hours: 6           # YouTube cookies 定期刷新周期（小时，默认 6；0=禁用）。刷新走调试 Chrome（CDP 提取登录态），不在运行则自动拉起

@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/zolagz/ytb2bili-go/internal/download"
 	"github.com/zolagz/ytb2bili-go/internal/resource"
 )
 
@@ -46,11 +47,11 @@ func newInitCmd() *cobra.Command {
 				fmt.Println("   💡 安装: brew install ffmpeg")
 			}
 
-			// 2. yt-dlp
+			// 2. yt-dlp（PATH + ~/.local/bin 自动安装位置）
 			fmt.Print("[2/6] yt-dlp... ")
-			ytdlpPath, _ := exec.LookPath("yt-dlp")
+			ytdlpPath := download.YTDLPPath()
 			if ytdlpPath != "" {
-				out, _ := exec.Command("yt-dlp", "--version").Output()
+				out, _ := exec.Command(ytdlpPath, "--version").Output()
 				fmt.Printf("✅ %s (%s)", ytdlpPath, strings.TrimSpace(string(out)))
 				if updateFlag {
 					fmt.Print(" → 更新中... ")
@@ -63,7 +64,7 @@ func newInitCmd() *cobra.Command {
 				fmt.Println()
 			} else {
 				fmt.Println("❌ 未安装")
-				fmt.Println("   💡 安装: brew install yt-dlp")
+				fmt.Println("   💡 下载/投稿步骤会自动安装到 ~/.local/bin（无需 sudo）；或手动: brew install yt-dlp")
 			}
 
 			// 3. Python impersonation

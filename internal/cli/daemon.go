@@ -255,6 +255,11 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 	fmt.Printf("   ⏱ 批间休息 %ds | 每批消费排队 ≤%d | 重试上限 %d\n",
 		opts.intervalSec, opts.consumePerBatch, d.EffectiveMaxRetries())
 
+	// cookies 定期刷新（默认 6h，0=禁用）：YouTube 会话令牌持续轮换，
+	// 周期性从调试 Chrome 重新导出登录态，避免长跑进程几小时后集体下载 403。
+	cookiesDone := make(chan struct{})
+	go daemonCookiesRefresher(ctx, cfg, d, cookiesDone)
+
 	// 失败告警去重（每个任务只告警一次）
 	alerted := make(map[string]bool)
 
@@ -306,10 +311,40 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 	}
 
 	writeDaemonHeartbeat(cfg, hb.get().withStatus("stopped"))
-	stop() // 主动取消 ctx → 心跳 goroutine 退出并 close(heartbeatDone)（SIGTERM 已到时幂等）
+	stop() // 主动取消 ctx → 心跳/cookies 刷新 goroutine 退出（SIGTERM 已到时幂等）
 	<-heartbeatDone
+	<-cookiesDone
 	fmt.Println("👋 daemon 已退出")
 	return nil
+}
+
+// daemonCookiesRefresher 后台定期刷新 YouTube cookies（daemon 主循环内运行）。
+// 每轮刷新失败仅记日志不退出（下一周期重试）；浏览器上下文带超时防挂死。
+func daemonCookiesRefresher(ctx context.Context, cfg *config.Config, d *config.DaemonConfig, done chan<- struct{}) {
+	defer close(done)
+	hours := d.EffectiveCookiesRefreshHours()
+	if hours <= 0 {
+		return
+	}
+	interval := time.Duration(hours) * time.Hour
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if ctx.Err() != nil {
+				return
+			}
+			fmt.Printf("🍪 [cookies] 定期刷新（周期 %dh）...\n", hours)
+			if err := refreshYouTubeCookiesFromDebugChrome(cfg); err != nil {
+				fmt.Printf("⚠ [cookies] 刷新失败（下周期重试）: %v\n", err)
+			} else {
+				fmt.Printf("✅ [cookies] 已刷新 → %s\n", cfg.EffectiveCookiesPath())
+			}
+		}
+	}
 }
 
 // daemonConsumeQueued 消费已排队的任务（queued → claimed → 处理 → completed/failed）
