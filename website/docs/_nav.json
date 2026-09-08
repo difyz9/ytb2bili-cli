@@ -1,0 +1,12 @@
+[
+  {
+    "text": "首页",
+    "link": "/",
+    "activeMatch": "^/$"
+  },
+  {
+    "text": "使用指南",
+    "link": "/guide/introduction",
+    "activeMatch": "^/guide/"
+  }
+]
