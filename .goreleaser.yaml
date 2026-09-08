@@ -1,0 +1,54 @@
+# GoReleaser v2 配置
+# 文档: https://goreleaser.com
+# 本地验证: goreleaser check
+# 本地试构建: goreleaser release --snapshot --clean
+
+version: 2
+
+project_name: ytb
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: ytb
+    main: ./cmd/ytb
+    binary: ytb
+    env:
+      - CGO_ENABLED=0 # 纯静态编译，跨平台无系统依赖
+    goos:
+      - linux
+      - darwin # 注：不支持 windows，代码依赖 syscall.Flock/Getpgid 等 POSIX-only API
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w # 去掉符号表/调试信息，减小体积
+      - -X main.Version={{ .Version }} # 注入版本号（cmd/ytb/main.go 的 var Version）
+
+archives:
+  - id: ytb
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    formats: [tar.gz]
+    files:
+      - README.md
+      - configs/config.example.yaml
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: github # 用 PR 标题生成 changelog（CI 中由 GITHUB_TOKEN 驱动）
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
