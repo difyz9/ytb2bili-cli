@@ -65,19 +65,54 @@ async function getAllCookies(details: GetAllDetails): Promise<Cookie[]> {
   return [...cookies, ...cookiesWithPartitionKey];
 }
 
+function dedupeCookies(cookies: Cookie[]): Cookie[] {
+  const seen = new Set<string>();
+  const unique: Cookie[] = [];
+
+  for (const cookie of cookies) {
+    const key = [
+      cookie.storeId || '',
+      cookie.domain || '',
+      cookie.path || '',
+      cookie.name,
+    ].join('\t');
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    unique.push(cookie);
+  }
+
+  return unique;
+}
+
+function isYouTubeUrl(url: URL): boolean {
+  return /(^|\.)youtube\.com$/i.test(url.hostname) || /^youtu\.be$/i.test(url.hostname);
+}
+
 /**
  * 获取指定URL的cookies
  */
 export async function getCookiesForUrl(url: string): Promise<Cookie[]> {
   try {
     const urlObj = new URL(url);
-    const details: GetAllDetails = {
-      url: urlObj.href,
-      // @ts-ignore - partitionKey 可能不存在于某些版本
-      partitionKey: { topLevelSite: urlObj.origin },
-    };
-    
-    const cookies = await getAllCookies(details);
+    let cookies: Cookie[];
+
+    if (isYouTubeUrl(urlObj)) {
+      const domains = ['youtube.com', '.youtube.com', 'google.com', '.google.com'];
+      const cookieGroups = await Promise.all(domains.map((domain) => getAllCookies({ domain })));
+      cookies = dedupeCookies(cookieGroups.flat());
+    } else {
+      const details: GetAllDetails = {
+        url: urlObj.href,
+        // @ts-ignore - partitionKey 可能不存在于某些版本
+        partitionKey: { topLevelSite: urlObj.origin },
+      };
+      cookies = dedupeCookies(await getAllCookies(details));
+    }
+
     console.log(`[Cookies] 获取到 ${cookies.length} 个 cookies for ${urlObj.hostname}`);
     return cookies;
   } catch (error) {

@@ -32,6 +32,12 @@ func YTDLPPath() string {
 	return findYTDLP()
 }
 
+// EnsureYTDLP returns a usable yt-dlp binary, installing it into a user-writable
+// location when it is missing and auto-install is enabled.
+func EnsureYTDLP(ctx context.Context) (string, error) {
+	return ytdlpBinary(ctx)
+}
+
 // ytdlpBinary 返回 yt-dlp 路径；未安装时尝试自动安装（无需 sudo）。
 // 安装策略按顺序尝试，任一成功并通过 --version 校验即返回：
 //  1. curl 下载官方 standalone 二进制到 ~/.local/bin/yt-dlp（走 YOUTUBE_PROXY）

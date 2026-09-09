@@ -33,7 +33,7 @@
                                                           自动上传中文字幕
 ```
 
-每个视频的处理产物集中在 `data/downloads/<videoId>/`：
+每个视频的处理产物默认集中在 `~/Downloads/ytb2bili/<videoId>/`：
 
 | 产物 | 说明 |
 |------|------|

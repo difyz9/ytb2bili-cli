@@ -7,7 +7,15 @@ import (
 )
 
 func TestResolveConfigPath(t *testing.T) {
+	setHome := func(t *testing.T) string {
+		t.Helper()
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		return home
+	}
+
 	t.Run("flag takes precedence", func(t *testing.T) {
+		setHome(t)
 		t.Setenv("YTB2BILI_CONFIG", "/env/config.yaml")
 		t.Chdir(t.TempDir())
 		os.WriteFile("config.yaml", []byte("data_dir: ./data\n"), 0644)
@@ -17,6 +25,7 @@ func TestResolveConfigPath(t *testing.T) {
 	})
 
 	t.Run("env beats cwd config", func(t *testing.T) {
+		setHome(t)
 		t.Setenv("YTB2BILI_CONFIG", "/env/config.yaml")
 		t.Chdir(t.TempDir())
 		os.WriteFile("config.yaml", []byte("data_dir: ./data\n"), 0644)
@@ -25,7 +34,20 @@ func TestResolveConfigPath(t *testing.T) {
 		}
 	})
 
+	t.Run("user config beats cwd config", func(t *testing.T) {
+		home := setHome(t)
+		t.Chdir(t.TempDir())
+		os.WriteFile("config.yaml", []byte("data_dir: ./data\n"), 0644)
+		userConfig := filepath.Join(home, ".ytb", "config.yaml")
+		os.MkdirAll(filepath.Dir(userConfig), 0o755)
+		os.WriteFile(userConfig, []byte("data_dir: ~/.ytb/data\n"), 0o600)
+		if got := resolveConfigPath(""); got != userConfig {
+			t.Fatalf("got %q, want %q", got, userConfig)
+		}
+	})
+
 	t.Run("cwd config.yaml when present", func(t *testing.T) {
+		setHome(t)
 		t.Chdir(t.TempDir())
 		os.WriteFile("config.yaml", []byte("data_dir: ./data\n"), 0644)
 		if got := resolveConfigPath(""); got != "config.yaml" {
@@ -34,6 +56,7 @@ func TestResolveConfigPath(t *testing.T) {
 	})
 
 	t.Run("empty when nothing found", func(t *testing.T) {
+		setHome(t)
 		t.Setenv("YTB2BILI_CONFIG", "")
 		t.Chdir(t.TempDir())
 		if got := resolveConfigPath(""); got != "" {

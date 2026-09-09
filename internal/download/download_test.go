@@ -19,6 +19,34 @@ func TestCookieArgsMacDefaultsToChrome(t *testing.T) {
 	}
 }
 
+func TestCookieArgsMacFallsBackWhenCookieFileLacksAuthSession(t *testing.T) {
+	dir := t.TempDir()
+	cookies := filepath.Join(dir, "cookies.txt")
+	if err := os.WriteFile(cookies, []byte(".youtube.com\tTRUE\t/\tTRUE\t1728000000\t__Secure-3PSID\tvalue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := cookieArgs(cookies, "", "darwin")
+	want := []string{"--cookies-from-browser", "chrome"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cookieArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestCookieArgsUsesIncompleteCookieFileWhenBrowserFallbackDisabled(t *testing.T) {
+	dir := t.TempDir()
+	cookies := filepath.Join(dir, "cookies.txt")
+	if err := os.WriteFile(cookies, []byte(".youtube.com\tTRUE\t/\tTRUE\t1728000000\t__Secure-3PSID\tvalue\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := cookieArgs(cookies, "off", "darwin")
+	want := []string{"--cookies", cookies}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cookieArgs() = %v, want %v", got, want)
+	}
+}
+
 func TestCookieArgsCanDisableBrowserCookies(t *testing.T) {
 	if got := cookieArgs("", "off", "darwin"); got != nil {
 		t.Fatalf("cookieArgs() = %v, want nil", got)

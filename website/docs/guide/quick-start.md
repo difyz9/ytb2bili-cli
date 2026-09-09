@@ -35,10 +35,11 @@ ytb check --json       # 机器可读输出（stdout 仅 JSON）；退出码 0=�
 ## 3. 配置
 
 ```bash
-cp configs/config.example.yaml ./config.yaml   # 复制模板，填入真实值
+mkdir -p ~/.ytb
+cp configs/config.example.yaml ~/.ytb/config.yaml   # 复制模板，填入真实值
 ```
 
-配置查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `./config.yaml`，找不到时使用内置默认配置。模板内逐项有注释；必填的环境变量与配置段见[环境变量与配置](/guide/configuration)。
+配置查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → `~/.ytb/config.yaml` → 当前目录 `./config.yaml`，找不到时使用内置默认配置。模板内逐项有注释；必填的环境变量与配置段见[环境变量与配置](/guide/configuration)。
 
 ```bash
 # 必需的环境变量

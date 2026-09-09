@@ -142,6 +142,13 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	log.Printf("  开始批量翻译 (batch=%d, workers=%d)...", t.config.BatchSize, t.config.MaxWorkers)
 	result, err := t.TranslateTexts(ctx, plan.units)
 	if err != nil {
+		if result != nil && len(result.TranslatedTexts) == len(plan.units) {
+			partialPath, partialErr := t.writePartialSRT(outputPath, entries, plan, result.TranslatedTexts)
+			if partialErr != nil {
+				return fmt.Errorf("翻译失败: %w（部分结果保存失败: %v）", err, partialErr)
+			}
+			return fmt.Errorf("翻译失败: %w（已保存部分翻译: %s）", err, partialPath)
+		}
 		return fmt.Errorf("翻译失败: %w", err)
 	}
 	log.Printf("  翻译完成: %d/%d 个语义单元, 耗时 %v", len(result.TranslatedTexts), len(plan.units), result.Duration)
@@ -172,6 +179,28 @@ func (t *Translator) TranslateSRTFile(ctx context.Context, inputPath, outputPath
 	log.Printf("  保存到: %s", outputPath)
 
 	return nil
+}
+
+func (t *Translator) writePartialSRT(outputPath string, entries []SRTEntry, plan *translationPlan, translatedUnits []string) (string, error) {
+	projected, translatedCount := plan.projectPartial(translatedUnits)
+	if translatedCount == 0 {
+		return "", fmt.Errorf("没有可保存的已翻译单元")
+	}
+	partialPath := partialOutputPath(outputPath)
+	content := GenerateSRT(entries, projected)
+	if err := writeFileAtomic(partialPath, []byte(content)); err != nil {
+		return "", err
+	}
+	log.Printf("  保存部分翻译: %s (%d/%d 个语义单元)", partialPath, translatedCount, len(plan.units))
+	return partialPath, nil
+}
+
+func partialOutputPath(outputPath string) string {
+	ext := filepath.Ext(outputPath)
+	if ext == "" {
+		return outputPath + ".partial"
+	}
+	return strings.TrimSuffix(outputPath, ext) + ".partial" + ext
 }
 
 func buildTranslationPlan(entries []SRTEntry) (*translationPlan, error) {
@@ -219,6 +248,30 @@ func (p *translationPlan) project(translatedUnits []string) ([]string, error) {
 		projected[entryIndex] = strings.Join(lines, "\n")
 	}
 	return projected, nil
+}
+
+func (p *translationPlan) projectPartial(translatedUnits []string) ([]string, int) {
+	projected := make([]string, len(p.entryUnits))
+	translatedCount := 0
+	for entryIndex, unitIndexes := range p.entryUnits {
+		lines := make([]string, 0, len(unitIndexes))
+		for _, unitIndex := range unitIndexes {
+			translation := ""
+			if unitIndex >= 0 && unitIndex < len(translatedUnits) {
+				translation = strings.TrimSpace(translatedUnits[unitIndex])
+			}
+			if translation != "" {
+				translatedCount++
+				lines = append(lines, translation)
+				continue
+			}
+			if unitIndex >= 0 && unitIndex < len(p.units) {
+				lines = append(lines, "[未翻译] "+p.units[unitIndex])
+			}
+		}
+		projected[entryIndex] = strings.Join(lines, "\n")
+	}
+	return projected, translatedCount
 }
 
 func writeFileAtomic(path string, content []byte) error {
@@ -352,7 +405,19 @@ func (t *Translator) TranslateTexts(ctx context.Context, texts []string) (*Resul
 		return nil, err
 	}
 	if len(translationErrors) > 0 {
-		return nil, fmt.Errorf("%d 个翻译组失败，首个错误: %w", len(translationErrors), translationErrors[0])
+		partialTranslated := make([]string, len(texts))
+		for groupIndex, groupResult := range results {
+			start := groupIndex * t.config.BatchSize
+			copy(partialTranslated[start:], groupResult)
+		}
+		return &Result{
+			OriginalTexts:      texts,
+			TranslatedTexts:    partialTranslated,
+			Duration:           time.Since(startTime),
+			Errors:             translationErrors,
+			DetectedLanguage:   detectedLanguage,
+			SkippedTranslation: false,
+		}, fmt.Errorf("%d 个翻译组失败，首个错误: %w", len(translationErrors), translationErrors[0])
 	}
 
 	// 合并结果
@@ -403,6 +468,22 @@ func (t *Translator) translateGroupWithRetry(ctx context.Context, texts []string
 			return result, nil
 		}
 		lastErr = err
+	}
+
+	if len(texts) > 1 {
+		mid := len(texts) / 2
+		log.Printf("  ⚠ 批次翻译失败，拆分为 %d + %d 条重试: %v", mid, len(texts)-mid, lastErr)
+		leftNext := append(append([]string(nil), texts[mid:]...), nextContext...)
+		left, leftErr := t.translateGroupWithRetry(ctx, texts[:mid], prevContext, leftNext)
+		if leftErr != nil {
+			return nil, leftErr
+		}
+		rightPrev := append(append([]string(nil), prevContext...), texts[:mid]...)
+		right, rightErr := t.translateGroupWithRetry(ctx, texts[mid:], rightPrev, nextContext)
+		if rightErr != nil {
+			return nil, rightErr
+		}
+		return append(left, right...), nil
 	}
 
 	return nil, fmt.Errorf("翻译失败 (重试 %d 次): %w", t.config.RetryCount, lastErr)
@@ -604,7 +685,7 @@ func (t *Translator) callLLM(ctx context.Context, systemPrompt, userContent stri
 		"temperature": 0.3,
 		// 同 DeepSeekProvider：关闭推理 + 加大 max_tokens，避免推理模型把预算烧在
 		// reasoning 上导致 content 为空（finish=length）而翻译数量不匹配。
-		"max_tokens":  8192,
+		"max_tokens": 8192,
 	}
 	if targetsDeepSeek(t.config.BaseURL) {
 		payload["thinking"] = map[string]interface{}{"type": "disabled"}

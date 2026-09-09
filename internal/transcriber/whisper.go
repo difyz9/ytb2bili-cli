@@ -32,7 +32,7 @@ func WhisperContext(ctx context.Context, wcfg *config.WhisperConfig, videoPath, 
 		binary = "whisper-cli"
 	}
 	if model == "" {
-		model = "models/ggml-base.bin"
+		model = config.DefaultWhisperModelPath()
 	}
 	if threads <= 0 {
 		threads = 4

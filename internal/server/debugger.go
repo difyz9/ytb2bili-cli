@@ -250,7 +250,7 @@ func (d *Debugger) handleVideoSubmitJSON(ctx context.Context, msg *FeishuMessage
 	d.feishu.ReplyMarkdown(ctx, msg, fmt.Sprintf("📥 收到视频提交，开始处理...\n\n**标题:** %s\n**链接:** %s", submitData.Data.Title, submitData.Data.URL))
 
 	// 保存 cookies 到文件
-	outputDir := d.cfg.DataDir + "/downloads/" + submitData.Data.VideoID
+	outputDir := filepath.Join(d.cfg.EffectiveDownloadDir(), submitData.Data.VideoID)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		fmt.Printf("   ❌ 创建目录失败: %v\n", err)
 		return
@@ -319,7 +319,7 @@ func (d *Debugger) processVideo(url, videoID, title, cookiesPath string, msg *Fe
 	fmt.Printf("🎬 开始处理视频: %s\n", title)
 	fmt.Println(strings.Repeat("━", 60))
 
-	outputDir := d.cfg.DataDir + "/downloads/" + videoID
+	outputDir := filepath.Join(d.cfg.EffectiveDownloadDir(), videoID)
 
 	// Step 1: 下载视频
 	fmt.Println("\n📥 Step 1: 下载视频...")

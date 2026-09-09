@@ -239,3 +239,38 @@ func TestEffectiveCookiesPathFallsBackToDefaultName(t *testing.T) {
 		t.Fatalf("EffectiveCookiesPath() = %q, want %q", got, want)
 	}
 }
+
+func TestEffectiveDownloadDirDefaultsToUserDownloads(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := Default()
+
+	want := filepath.Join(home, "Downloads", "ytb2bili")
+	if got := cfg.EffectiveDownloadDir(); got != want {
+		t.Fatalf("EffectiveDownloadDir() = %q, want %q", got, want)
+	}
+}
+
+func TestEffectiveDownloadDirExpandsConfiguredHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := Default()
+	cfg.DownloadDir = "~/Videos/ytb"
+	cfg.Init()
+
+	want := filepath.Join(home, "Videos", "ytb")
+	if got := cfg.EffectiveDownloadDir(); got != want {
+		t.Fatalf("EffectiveDownloadDir() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultWhisperModelPathUsesUserConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cfg := Default()
+
+	want := filepath.Join(home, ".ytb", "models", "ggml-base.bin")
+	if got := cfg.Transcriber.Whisper.Model; got != want {
+		t.Fatalf("default whisper model = %q, want %q", got, want)
+	}
+}

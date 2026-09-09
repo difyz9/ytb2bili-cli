@@ -67,4 +67,4 @@ ytb metadata --json <videoId|srt路径>           # 生成标题/简介/标签 J
 ytb publish --json video.mp4 --title "..."      # 本地视频直接投稿（别名 upload）
 ```
 
-> **产物落位约定**：`transcribe/translate/tts/audio-sync` 都默认在 `data/downloads/<videoId>/` 读写（按字幕序号 `1.mp3, 2.mp3 ...`），保证各单步可互相衔接。`audio-sync` 输出 `<videoId>.synced.mp4`，随后 `submit <videoId>` 续跑即可收尾投稿。
+> **产物落位约定**：`transcribe/translate/tts/audio-sync` 都默认在 `~/Downloads/ytb2bili/<videoId>/` 读写（按字幕序号 `1.mp3, 2.mp3 ...`），保证各单步可互相衔接。`audio-sync` 输出 `<videoId>.synced.mp4`，随后 `submit <videoId>` 续跑即可收尾投稿。

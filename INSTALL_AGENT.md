@@ -201,16 +201,17 @@ ls -lh ytb
 ## 步骤 4：创建数据目录
 
 ```bash
-mkdir -p data/downloads
-mkdir -p data/history
-mkdir -p data/cookies
+mkdir -p ~/.ytb/data/history
+mkdir -p ~/.ytb/data/cookies
+mkdir -p ~/Downloads/ytb2bili
 
 # 验证
-ls -la data/
-# 期望看到: downloads/  history/  cookies/
+ls -la ~/.ytb/data/
+ls -la ~/Downloads/ytb2bili/
+# 期望 ~/.ytb/data 下看到: history/  cookies/
 ```
 
-> 数据目录默认是当前目录下的 `./data`，可通过 `config.yaml` 的 `data_dir` 字段或 `--config` 指定配置文件来修改。
+> 数据目录默认是用户目录下的 `~/.ytb/data`；视频下载产物默认放在 `~/Downloads/ytb2bili`。可通过 `config.yaml` 的 `data_dir` / `download_dir` 字段或 `--config` 指定配置文件来修改。
 
 ---
 
@@ -218,11 +219,12 @@ ls -la data/
 
 ### 5.1 配置文件（推荐）
 
-配置文件默认查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `config.yaml`。找不到时使用默认值。
+配置文件默认查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → `~/.ytb/config.yaml` → 当前目录 `config.yaml`。找不到时使用默认值。
 
 > ⚠️ `config.yaml` 含密钥不入库。首次使用请复制示例：
 > ```bash
-> cp configs/config.example.yaml ./config.yaml
+> mkdir -p ~/.ytb
+> cp configs/config.example.yaml ~/.ytb/config.yaml
 > # 然后填入 llm_api_key / tencent_cloud / youtube_oauth 等真实值
 > ```
 > 同理，`cookies.txt`、`client_tv.json`、`client_web.apps.googleusercontent.com.json` 等凭证文件均已从仓库移除跟踪（见 .gitignore），请在部署机本地维护。
@@ -238,7 +240,7 @@ export YTB2BILI_CONFIG="/path/to/config.yaml"
 `config.yaml` 支持字段（均可被环境变量覆盖）：
 
 ```yaml
-data_dir: "./data"                  # 数据目录
+data_dir: "~/.ytb/data"             # 数据目录
 llm_api_key: "sk-..."               # 或 DEEPSEEK_API_KEY
 llm_base_url: "https://api.deepseek.com"   # 或 LLM_BASE_URL
 llm_model: "deepseek-v4-flash"      # 或 LLM_MODEL
@@ -452,7 +454,7 @@ go build -o ytb ./cmd/ytb
 | 1.4 | Deno 已安装 + 在 PATH | `deno --version` |
 | 2 | 项目已克隆 | `ls ytb2bili-go/main.go` |
 | 3 | 编译成功 | `ls -lh ytb` (~30-35MB) |
-| 4 | 数据目录已创建 | `ls data/downloads/` |
+| 4 | 数据和下载目录已创建 | `ls ~/.ytb/data/ ~/Downloads/ytb2bili/` |
 | 5 | DEEPSEEK_API_KEY 已设置 | `echo $DEEPSEEK_API_KEY` |
 | 6.1 | 帮助正常 | `./ytb --help` (20+ cmds) |
 | 6.2 | 环境检查正常 | `./ytb init` |

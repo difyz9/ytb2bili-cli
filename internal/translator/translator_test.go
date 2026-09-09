@@ -2,6 +2,7 @@ package translator
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -84,6 +85,77 @@ func TestTranslateSRTFileDeduplicatesConsecutiveDuplicates(t *testing.T) {
 	if entries[1].Index != 2 || entries[1].TimeCode != "00:00:02,000 --> 00:00:03,000" || entries[1].Text != "下一条字幕" {
 		t.Fatalf("second entry changed: %#v", entries[1])
 	}
+}
+
+func TestTranslateSRTFileWritesPartialOnGroupFailure(t *testing.T) {
+	directory := t.TempDir()
+	inputPath := filepath.Join(directory, "video.en.srt")
+	outputPath := filepath.Join(directory, "video.zh-Hans.srt")
+	input := `1
+00:00:00,000 --> 00:00:01,000
+good one
+
+2
+00:00:01,000 --> 00:00:02,000
+good two
+
+3
+00:00:02,000 --> 00:00:03,000
+bad three
+
+4
+00:00:03,000 --> 00:00:04,000
+good four
+
+`
+	if err := os.WriteFile(inputPath, []byte(input), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := failingTextProvider{failOn: "bad"}
+	engine := New(Config{
+		SourceLang: "en", TargetLang: "zh-Hans",
+		BatchSize: 2, MaxWorkers: 1, RetryCount: 0,
+		Router: NewRouter(provider, nil, 0),
+	})
+	engine.client = newLLMTestClient(`{"needs_translation":true,"detected_language":"en","reason":"test"}`)
+
+	err := engine.TranslateSRTFile(context.Background(), inputPath, outputPath)
+	if err == nil || !strings.Contains(err.Error(), "已保存部分翻译") {
+		t.Fatalf("expected partial-save error, got %v", err)
+	}
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+		t.Fatalf("final output should not be written on failure, stat err=%v", statErr)
+	}
+	partialPath := filepath.Join(directory, "video.zh-Hans.partial.srt")
+	written, readErr := os.ReadFile(partialPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	content := string(written)
+	if !strings.Contains(content, "zh:good one") || !strings.Contains(content, "zh:good two") {
+		t.Fatalf("partial output lost successful translations:\n%s", content)
+	}
+	if !strings.Contains(content, "[未翻译] bad three") || !strings.Contains(content, "[未翻译] good four") {
+		t.Fatalf("partial output did not mark untranslated entries:\n%s", content)
+	}
+}
+
+type failingTextProvider struct{ failOn string }
+
+func (f failingTextProvider) Name() string { return "test-provider" }
+
+func (f failingTextProvider) TranslateBatch(_ context.Context, texts []string, _, _ string) ([]string, error) {
+	for _, text := range texts {
+		if strings.Contains(text, f.failOn) {
+			return nil, fmt.Errorf("forced failure for %q", text)
+		}
+	}
+	out := make([]string, len(texts))
+	for i, text := range texts {
+		out[i] = "zh:" + text
+	}
+	return out, nil
 }
 
 func TestTranslationPlanProjectsRollingLinesBackToEveryCue(t *testing.T) {

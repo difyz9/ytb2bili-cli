@@ -18,6 +18,36 @@ import (
 // envPlaceholderPattern 匹配 ${VAR} 形式的环境变量占位符（仅这种形式，避免误伤 $ 符号）。
 var envPlaceholderPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+const DefaultAppDirName = ".ytb"
+
+func UserConfigDir() string {
+	home, err := os.UserHomeDir()
+	if err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, DefaultAppDirName)
+	}
+	return DefaultAppDirName
+}
+
+func DefaultConfigPath() string {
+	return filepath.Join(UserConfigDir(), "config.yaml")
+}
+
+func DefaultDataDir() string {
+	return filepath.Join(UserConfigDir(), "data")
+}
+
+func DefaultDownloadDir() string {
+	home, err := os.UserHomeDir()
+	if err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, "Downloads", "ytb2bili")
+	}
+	return filepath.Join("Downloads", "ytb2bili")
+}
+
+func DefaultWhisperModelPath() string {
+	return filepath.Join(UserConfigDir(), "models", "ggml-base.bin")
+}
+
 // expandEnvPlaceholders 展开配置值中的 ${ENV_VAR} 占位符。
 // 未定义的环境变量替换为空字符串（调用方会 fallback 到默认值）。
 // 例如: api_key: "${DEEPSEEK_API_KEY}" → api_key: "sk-xxx..."（或空）
@@ -51,7 +81,7 @@ func ExpandHome(path string) string {
 // Config 配置
 type Config struct {
 	DataDir               string   `yaml:"data_dir"`
-	DownloadDir           string   `yaml:"download_dir"` // 视频下载根目录（默认 <data_dir>/downloads）
+	DownloadDir           string   `yaml:"download_dir"` // 视频下载根目录（默认 ~/Downloads/ytb2bili）
 	SkillsDir             string   `yaml:"skills_dir"`   // 技能资源目录（默认自动探测项目根下 skills/，可指定绝对/相对路径）
 	LLMAPIKey             string   `yaml:"llm_api_key"`
 	LLMBaseURL            string   `yaml:"llm_base_url"`
@@ -348,7 +378,7 @@ type ConcurrentConfig struct {
 
 func Default() *Config {
 	return &Config{
-		DataDir:               "./data",
+		DataDir:               DefaultDataDir(),
 		LLMBaseURL:            "https://api.deepseek.com",
 		LLMModel:              "deepseek-v4-flash",
 		TranslationTargetLang: "zh-Hans",
@@ -372,7 +402,7 @@ func Default() *Config {
 			Provider: "whisper",
 			Whisper: &WhisperConfig{
 				Binary:  "whisper-cli",
-				Model:   "models/ggml-base.bin",
+				Model:   DefaultWhisperModelPath(),
 				Threads: 4,
 			},
 		},
@@ -396,6 +426,12 @@ func Default() *Config {
 }
 
 func (c *Config) Init() {
+	if strings.TrimSpace(c.DataDir) != "" {
+		c.DataDir = ExpandHome(c.DataDir)
+	}
+	if strings.TrimSpace(c.DownloadDir) != "" {
+		c.DownloadDir = ExpandHome(c.DownloadDir)
+	}
 	if c.LLMAPIKey == "" {
 		c.LLMAPIKey = os.Getenv("DEEPSEEK_API_KEY")
 	}
@@ -501,13 +537,13 @@ func (c *Config) Init() {
 		c.Transcriber = &TranscriberConfig{Provider: "whisper"}
 	}
 	if c.Transcriber.Whisper == nil {
-		c.Transcriber.Whisper = &WhisperConfig{Binary: "whisper-cli", Model: "models/ggml-base.bin", Threads: 4}
+		c.Transcriber.Whisper = &WhisperConfig{Binary: "whisper-cli", Model: DefaultWhisperModelPath(), Threads: 4}
 	}
 	if c.Transcriber.Whisper.Binary == "" {
 		c.Transcriber.Whisper.Binary = "whisper-cli"
 	}
 	if c.Transcriber.Whisper.Model == "" {
-		c.Transcriber.Whisper.Model = "models/ggml-base.bin"
+		c.Transcriber.Whisper.Model = DefaultWhisperModelPath()
 	}
 	if c.Transcriber.Whisper.Threads <= 0 {
 		c.Transcriber.Whisper.Threads = 4
@@ -626,17 +662,14 @@ func (c *Config) EffectiveChromeDebugPort() int {
 }
 
 // EffectiveDownloadDir 返回视频下载根目录：显式配置 download_dir 优先，
-// 否则回退到 <data_dir>/downloads。
+// 否则回退到用户下载目录下的 ytb2bili 子目录。
 func (c *Config) EffectiveDownloadDir() string {
 	if c != nil {
 		if dir := strings.TrimSpace(c.DownloadDir); dir != "" {
 			return ExpandHome(dir)
 		}
-		if dir := strings.TrimSpace(c.DataDir); dir != "" {
-			return filepath.Join(dir, "downloads")
-		}
 	}
-	return "data/downloads"
+	return DefaultDownloadDir()
 }
 
 func (c *Config) EffectiveTranscriberProvider() string {

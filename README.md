@@ -59,7 +59,7 @@ YouTube → Bilibili 视频搬运工具。Go 编写的 CLI（`ytb`），覆盖 *
                                                           自动上传中文字幕
 ```
 
-每个视频的处理产物集中在 `data/downloads/<videoId>/`：
+每个视频的处理产物默认集中在 `~/Downloads/ytb2bili/<videoId>/`：
 
 | 产物 | 说明 |
 |------|------|
@@ -105,10 +105,11 @@ ytb check --json       # 机器可读输出（stdout 仅 JSON）；退出码 0=�
 ### 2. 配置
 
 ```bash
-cp configs/config.example.yaml ./config.yaml   # 复制模板，填入真实值
+mkdir -p ~/.ytb
+cp configs/config.example.yaml ~/.ytb/config.yaml   # 复制模板，填入真实值
 ```
 
-查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `./config.yaml`，找不到时用内置默认配置。模板内逐项有注释，必填项见[配置文件](#配置文件)一节。
+查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → `~/.ytb/config.yaml` → 当前目录 `./config.yaml`，找不到时用内置默认配置。内置默认 `data_dir` 为 `~/.ytb/data`，插件提交的 cookies 默认保存到 `~/.ytb/data/cookies/youtube_cookies_from_meta.txt`。模板内逐项有注释，必填项见[配置文件](#配置文件)一节。
 
 ### 3. 登录并搬运第一条视频
 
@@ -122,7 +123,7 @@ ytb submit "https://www.youtube.com/watch?v=VIDEO_ID"
 | 变量 | 用途 |
 |------|------|
 | `DEEPSEEK_API_KEY` | DeepSeek API Key（LLM 翻译/元数据），配置文件留空时必填 |
-| `YTB2BILI_CONFIG` | 配置文件路径（默认 `./config.yaml`） |
+| `YTB2BILI_CONFIG` | 配置文件路径（默认 `~/.ytb/config.yaml`，其次当前目录 `./config.yaml`） |
 | `YOUTUBE_COOKIES` | YouTube cookies 文件路径（防下载频率限制），也可用 `ytb cookies refresh` |
 | `YOUTUBE_PROXY` | YouTube 下载专用代理：`socks5://user:pass@host:port` 或 `http://...`，只走 yt-dlp（不影响 B站投稿/翻译）；也可配 config 的 `youtube_proxy`（环境变量优先） |
 | `LLM_MODEL` / `LLM_BASE_URL` | 覆盖默认 LLM 模型与接入点（默认 deepseek-v4-flash） |
@@ -242,7 +243,7 @@ ytb metadata --json <videoId|srt路径>           # 生成标题/简介/标签 J
 ytb publish --json video.mp4 --title "..."      # 本地视频直接投稿（别名 upload）
 ```
 
-> 产物落位约定：`transcribe/translate/tts/audio-sync` 都默认在 `data/downloads/<videoId>/` 读写（按字幕序号 `1.mp3, 2.mp3 ...`），保证各单步可互相衔接。
+> 产物落位约定：`transcribe/translate/tts/audio-sync` 都默认在 `~/Downloads/ytb2bili/<videoId>/` 读写（按字幕序号 `1.mp3, 2.mp3 ...`），保证各单步可互相衔接。
 
 ### 自主批量搬运 auto
 
@@ -409,7 +410,7 @@ ytb server status                # 运行状态与日志位置（data/server.log
 ytb server restart / stop
 ```
 
-本地回环访问无需鉴权；对外监听必须设 `YTB2BILI_SERVER_TOKEN`（Bearer 鉴权），浏览器扩展需配 `YTB2BILI_ALLOWED_ORIGINS`。扩展源码见 `extension/`（WXT/TypeScript，独立构建）。
+本地回环访问无需鉴权；对外监听必须设 `YTB2BILI_SERVER_TOKEN`（Bearer 鉴权），浏览器扩展需配 `YTB2BILI_ALLOWED_ORIGINS`。接口提交的 cookies 会写入当前配置的 `<data_dir>/cookies/youtube_cookies_from_meta.txt`，默认即 `~/.ytb/data/cookies/youtube_cookies_from_meta.txt`。扩展源码见 `extension/`（WXT/TypeScript，独立构建）。
 
 ```bash
 curl -H "Authorization: Bearer $YTB2BILI_SERVER_TOKEN" \
@@ -420,7 +421,7 @@ curl -H "Authorization: Bearer $YTB2BILI_SERVER_TOKEN" \
 
 | 路径 | 内容 |
 |------|------|
-| `data/downloads/<videoId>/` | 每视频全部产物（见[流水线全景](#流水线全景)） |
+| `~/Downloads/ytb2bili/<videoId>/` | 每视频全部产物（见[流水线全景](#流水线全景)，可用 `download_dir` 覆盖） |
 | `data/tasks/*.json` | 任务状态（步骤进度/错误） |
 | `data/queue/queue.json` | 作业队列状态 |
 | `data/history/history.json` | 提交历史（去重依据） |

@@ -1,6 +1,6 @@
 # 环境变量与配置
 
-`config.yaml` 及各类凭证（cookies / OAuth client）均**不入库**；首次配置从 `configs/config.example.yaml` 复制脱敏模板。配置查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `./config.yaml`，找不到时使用内置默认配置。
+`config.yaml` 及各类凭证（cookies / OAuth client）均**不入库**；首次配置从 `configs/config.example.yaml` 复制脱敏模板，推荐保存为 `~/.ytb/config.yaml`。配置查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → `~/.ytb/config.yaml` → 当前目录 `./config.yaml`，找不到时使用内置默认配置。内置默认 `data_dir` 为 `~/.ytb/data`，插件提交的 cookies 默认保存在 `~/.ytb/data/cookies/youtube_cookies_from_meta.txt`；视频下载产物默认保存在 `~/Downloads/ytb2bili/<videoId>/`。
 
 ## 配置文件段
 
@@ -30,7 +30,7 @@
 | 变量 | 用途 |
 |------|------|
 | `DEEPSEEK_API_KEY` | DeepSeek API Key（LLM 翻译/元数据），配置文件留空时必填 |
-| `YTB2BILI_CONFIG` | 配置文件路径（默认 `./config.yaml`） |
+| `YTB2BILI_CONFIG` | 配置文件路径（默认 `~/.ytb/config.yaml`，其次当前目录 `./config.yaml`） |
 | `YOUTUBE_COOKIES` | YouTube cookies 文件路径（防下载频率限制），也可用 `ytb cookies refresh` |
 | `YOUTUBE_PROXY` | YouTube 下载专用代理：`socks5://user:pass@host:port` 或 `http://...`，只走 yt-dlp（不影响 B站投稿/翻译）；也可配 config 的 `youtube_proxy`（环境变量优先） |
 | `LLM_MODEL` / `LLM_BASE_URL` | 覆盖默认 LLM 模型与接入点（默认 deepseek-v4-flash） |

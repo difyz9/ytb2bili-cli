@@ -49,7 +49,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 	}
 
-	root.PersistentFlags().String("config", "", "配置文件路径（默认 ./config.yaml 或 $YTB2BILI_CONFIG）")
+	root.PersistentFlags().String("config", "", "配置文件路径（默认 $YTB2BILI_CONFIG、~/.ytb/config.yaml 或 ./config.yaml）")
 
 	// 命令分组（--help 按逻辑分区展示，不改命令可调用性）
 	root.AddGroup(
@@ -111,7 +111,7 @@ func group(c *cobra.Command, id string) *cobra.Command {
 }
 
 // resolveConfigPath 按优先级解析配置文件路径：
-// 1. --config flag  2. $YTB2BILI_CONFIG  3. 当前目录的 config.yaml
+// 1. --config flag  2. $YTB2BILI_CONFIG  3. ~/.ytb/config.yaml  4. 当前目录的 config.yaml
 // 全部不存在时返回空字符串（调用方回退到默认配置）。
 func resolveConfigPath(flagVal string) string {
 	if flagVal != "" {
@@ -119,6 +119,11 @@ func resolveConfigPath(flagVal string) string {
 	}
 	if env := os.Getenv("YTB2BILI_CONFIG"); env != "" {
 		return env
+	}
+	if userConfig := config.DefaultConfigPath(); userConfig != "" {
+		if _, err := os.Stat(userConfig); err == nil {
+			return userConfig
+		}
 	}
 	if _, err := os.Stat("config.yaml"); err == nil {
 		return "config.yaml"

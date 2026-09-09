@@ -4,7 +4,7 @@
 
 | 路径 | 内容 |
 |------|------|
-| `data/downloads/<videoId>/` | 每视频全部产物（见[项目简介](/guide/introduction)） |
+| `~/Downloads/ytb2bili/<videoId>/` | 每视频全部产物（见[项目简介](/guide/introduction)，可用 `download_dir` 覆盖） |
 | `data/tasks/*.json` | 任务状态（步骤进度/错误） |
 | `data/queue/queue.json` | 作业队列状态 |
 | `data/history/history.json` | 提交历史（去重依据） |
@@ -15,11 +15,11 @@
 | `data/server.log` | HTTP 服务日志 |
 | `data/cookies/`、`data/chrome-profile/` | YouTube cookies / Chrome 调试配置 |
 
-数据根目录可在 `config.yaml` 的 `data_dir` 字段修改；`data/` 默认不入库（见仓库 `.gitignore`）。
+数据根目录可在 `config.yaml` 的 `data_dir` 字段修改，默认 `~/.ytb/data`；下载产物根目录可用 `download_dir` 修改，默认 `~/Downloads/ytb2bili`。
 
 ## 产物与幂等续跑
 
-每个视频的处理产物集中在 `data/downloads/<videoId>/`：
+每个视频的处理产物默认集中在 `~/Downloads/ytb2bili/<videoId>/`：
 
 | 产物 | 说明 |
 |------|------|

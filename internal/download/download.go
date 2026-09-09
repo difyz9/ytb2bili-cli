@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -65,28 +66,32 @@ func VideoContext(ctx context.Context, url, outputDir, lang string, cookiesPath 
 
 	cmd := exec.CommandContext(ctx, ytdlpBin, args...)
 	cmd.Stdout = log.Writer()
-	cmd.Stderr = log.Writer()
+	var downloadStderr bytes.Buffer
+	cmd.Stderr = io.MultiWriter(log.Writer(), &downloadStderr)
 	cmd.Env = env
 	if err := cmd.Run(); err != nil {
+		errMsg := extractYTDLPError(err, strings.TrimSpace(downloadStderr.String()))
 		// cookies 会话失效（PSIDTS 轮换等）：换浏览器 cookies 重试一次
 		retried := false
-		if isStaleCookieError(err.Error()) {
+		if isStaleCookieError(errMsg) {
 			if retryArgs := swapCookiesToBrowser(args); retryArgs != nil {
-				log.Printf("  ⚠ %s，改用浏览器 cookies 重试...\n", cookieFallbackReason(err))
+				log.Printf("  ⚠ cookies 会话失效（%s），改用浏览器 cookies 重试...\n", errMsg)
 				retry := exec.CommandContext(ctx, ytdlpBin, retryArgs...)
 				retry.Stdout = log.Writer()
-				retry.Stderr = log.Writer()
+				var retryStderr bytes.Buffer
+				retry.Stderr = io.MultiWriter(log.Writer(), &retryStderr)
 				retry.Env = env
 				if rerr := retry.Run(); rerr != nil {
-					return nil, fmt.Errorf("下载失败: %w（已尝试浏览器 cookies 重试: %v）", err, rerr)
+					retryMsg := extractYTDLPError(rerr, strings.TrimSpace(retryStderr.String()))
+					return nil, fmt.Errorf("下载失败: %s（已尝试浏览器 cookies 重试: %s）", errMsg, retryMsg)
 				}
 				retried = true
 			} else {
-				log.Printf("  ⚠ %s，且无法回退浏览器 cookies（非 macOS 或已禁用）\n", cookieFallbackReason(err))
+				log.Printf("  ⚠ cookies 会话失效（%s），且无法回退浏览器 cookies（非 macOS 或已禁用）\n", errMsg)
 			}
 		}
 		if !retried {
-			return nil, fmt.Errorf("下载失败: %w", err)
+			return nil, fmt.Errorf("下载失败: %s", errMsg)
 		}
 	}
 
@@ -289,10 +294,17 @@ func cookieArgs(cookiesFile, browser, goos string) []string {
 		// 显式配置的文件缺 SID 时大声告警，避免静默失败。
 		if !hasAuthSession(cookiesFile) {
 			log.Printf("⚠ WARNING: cookies %s 缺少 SID/SSID（非完整登录态），YouTube 下载大概率 403/bot 拦截。\n   请从已登录 YouTube 的浏览器重新导出完整 cookie（应包含 SID、__Secure-3PSID、SSID、APISID 等 ≥20 行）", cookiesFile)
+			if args := browserCookieArgs(browser, goos); args != nil {
+				log.Printf("  🍪 改用浏览器 cookies: %s", args[1])
+				return args
+			}
 		}
 		return []string{"--cookies", cookiesFile}
 	}
+	return browserCookieArgs(browser, goos)
+}
 
+func browserCookieArgs(browser, goos string) []string {
 	browser = strings.TrimSpace(browser)
 	if strings.EqualFold(browser, "off") || strings.EqualFold(browser, "none") {
 		return nil

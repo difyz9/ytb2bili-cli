@@ -96,7 +96,7 @@ export OLLAMA_MODEL="qwen2.5:7b"
 # 可选：禁用 yt-dlp 缺失时的自动安装（默认开启，装到 ~/.local/bin 无需 sudo）
 # export YTB2BILI_NO_AUTO_INSTALL=1
 
-# 可选：配置文件路径（默认 ./config.yaml）
+# 可选：配置文件路径（默认 ~/.ytb/config.yaml，其次当前目录 ./config.yaml）
 export YTB2BILI_CONFIG="/path/to/config.yaml"
 
 # 可选：运行时资源定位（skills/、.venv/，非项目根目录运行时用）
@@ -105,7 +105,7 @@ export YTB2BILI_PYTHON="/path/to/python3"            # 指定 .venv 解释器
 export YTB2BILI_AUDIO_SYNC_SCRIPT="/path/to/script"  # 指定音画同步脚本（最细粒度）
 ```
 
-配置文件查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → 当前目录 `config.yaml`。找不到时使用默认配置。
+配置文件查找顺序：`--config <path>` → `$YTB2BILI_CONFIG` → `~/.ytb/config.yaml` → 当前目录 `config.yaml`。找不到时使用默认配置（内置 `data_dir=~/.ytb/data`）。
 
 > ⚠️ `config.yaml` 及各类凭证（cookies/ OAuth client）均不入库；首次配置从 `configs/config.example.yaml` 复制脱敏模板。
 
