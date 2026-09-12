@@ -210,3 +210,53 @@ func TestRequeueClaimed(t *testing.T) {
 		t.Fatalf("非 daemon 活跃认领不应被回收, got %d", n)
 	}
 }
+
+// ─── keywordWindow / rotateKeywordsN（每批关键词窗口）───────────────────
+
+func TestKeywordWindow(t *testing.T) {
+	kws := []string{"a", "b", "c", "d"}
+	if got := keywordWindow(kws, 2); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("窗口取前 2 个，得到 %v", got)
+	}
+	if got := keywordWindow(kws, 0); len(got) != 4 {
+		t.Errorf("0 = 全部关键词，得到 %v", got)
+	}
+	if got := keywordWindow(kws, 99); len(got) != 4 {
+		t.Errorf("窗口大于总数应返回全部，得到 %v", got)
+	}
+}
+
+func TestRotateKeywordsN(t *testing.T) {
+	kws := []string{"a", "b", "c", "d"}
+	got := rotateKeywordsN(kws, 2)
+	want := []string{"c", "d", "a", "b"}
+	if len(got) != len(want) {
+		t.Fatalf("长度不一致: %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("rotateKeywordsN(%v, 2) = %v，期望 %v", kws, got, want)
+		}
+	}
+	if got := rotateKeywordsN(kws, 0); len(got) != 4 || got[0] != "a" {
+		t.Errorf("n<=0 应原样返回，得到 %v", got)
+	}
+	if got := rotateKeywordsN(kws, 4); got[0] != "a" {
+		t.Errorf("n>=len 应原样返回，得到 %v", got)
+	}
+	if got := rotateKeywordsN([]string{"x"}, 1); got[0] != "x" {
+		t.Errorf("单元素应原样返回，得到 %v", got)
+	}
+	// 窗口轮换应覆盖全部关键词（4 个关键词、窗口 2 → 两批一轮回）
+	seen := map[string]bool{}
+	cur := kws
+	for i := 0; i < 2; i++ {
+		for _, k := range keywordWindow(cur, 2) {
+			seen[k] = true
+		}
+		cur = rotateKeywordsN(cur, 2)
+	}
+	if len(seen) != 4 {
+		t.Errorf("两批（每批 2 个）应覆盖全部 4 个关键词，实际覆盖 %d", len(seen))
+	}
+}

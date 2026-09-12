@@ -96,6 +96,7 @@ func newRootCmd() *cobra.Command {
 		// 系统与工具
 		group(newInitCmd(), "system"),
 		group(newCheckCmd(), "system"),
+		group(newCleanCmd(), "system"),
 		group(newServerCmd(), "system"),
 		group(newChainCmd(), "system"),
 		group(newDebugCmd(), "system"),

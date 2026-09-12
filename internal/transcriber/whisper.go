@@ -39,6 +39,10 @@ func WhisperContext(ctx context.Context, wcfg *config.WhisperConfig, videoPath, 
 	}
 	// 支持 ~/ 开头的主目录路径（config 或 --model flag 均可写 ~/...）
 	model = config.ExpandHome(model)
+	// 模型路径兜底：配置/默认值是相对路径（models/ggml-base.bin）但当前工作目录下没有时，
+	// 依次尝试常见安装位置，避免因 cwd 不同而整批转录失败（历史故障：daemon 从项目根启动时
+	// 找不到 models/ggml-base.bin → 数百条任务报 "whisper 模型不存在"）。
+	model = resolveWhisperModel(model)
 	if videoID == "" {
 		videoID = "subtitle"
 	}
@@ -140,4 +144,38 @@ func timestampToSeconds(h, m, s, ms string) float64 {
 	ss, _ := strconv.Atoi(s)
 	mmm, _ := strconv.Atoi(ms)
 	return float64(hh*3600+mm*60+ss) + float64(mmm)/1000.0
+}
+
+// whisperModelFallbacks 常见模型安装位置（相对路径模型文件不存在时依次尝试）。
+// 顺序：先用户目录下的 biliup whisper 目录，再 ~/models。
+var whisperModelFallbacks = []string{
+	"~/.biliup/models",
+	"~/models",
+	"~/.cache/whisper.cpp",
+}
+
+// resolveWhisperModel 解析 whisper 模型路径：
+//  1. 路径存在 → 直接返回
+//  2. 绝对路径 → 原样返回（由调用方报错，便于用户定位）
+//  3. 相对路径 → 在常见安装目录（见 whisperModelFallbacks）里按同名文件查找，命中即返回
+//
+// 这样即使 config.yaml 缺失、cwd 与模型目录不一致（daemon 的典型情形），也能自动找到模型。
+func resolveWhisperModel(model string) string {
+	if model == "" {
+		return model
+	}
+	if _, err := os.Stat(model); err == nil {
+		return model
+	}
+	if filepath.IsAbs(model) || strings.HasPrefix(model, "~") {
+		return model
+	}
+	base := filepath.Base(model)
+	for _, dir := range whisperModelFallbacks {
+		candidate := filepath.Join(config.ExpandHome(dir), base)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return model
 }

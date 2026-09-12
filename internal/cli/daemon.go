@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/zolagz/ytb2bili-go/internal/config"
+	"github.com/zolagz/ytb2bili-go/internal/diskspace"
 	"github.com/zolagz/ytb2bili-go/internal/pipeline"
 	"github.com/zolagz/ytb2bili-go/internal/queue"
 	"github.com/zolagz/ytb2bili-go/internal/search"
@@ -263,6 +264,13 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 	// 失败告警去重（每个任务只告警一次）
 	alerted := make(map[string]bool)
 
+	// 每批搜索的关键词数量（窗口）：关键词池很大时避免单批刷爆搜索接口 → 被 YouTube 限流/超时。
+	kwWindow := len(keywords)
+	if perBatch := d.EffectiveKeywordsPerBatch(); perBatch > 0 && perBatch < len(keywords) {
+		kwWindow = perBatch
+	}
+	consecutiveSearchFails := 0
+
 	batch := 0
 	for {
 		if ctx.Err() != nil {
@@ -280,20 +288,69 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 		// 1. 消费排队任务（queued → 串行处理，每批最多 consumePerBatch 个）
 		consumed := daemonConsumeQueued(ctx, cfg, q, workerID, opts, hb, alerted)
 
-		// 2. 搜索+评分+去重+入队+直接处理（--submit 直处理模式）
-		enqueued := daemonRunAutoBatch(ctx, cfg, q, workerID, keywords, scorer, uploadDate, maxDuration, maxVideos, minViews, opts, hb, alerted)
+		// 2. 磁盘水位保护：可用空间低于阈值 → 本批只消费排队任务，不拉新（避免把盘写满）
+		skipAuto := false
+		if minFree := d.EffectiveMinFreeGB(); minFree > 0 {
+			if freeGB, ferr := diskspace.FreeGB(cfg.DataDir); ferr == nil {
+				if freeGB < float64(minFree) {
+					fmt.Printf("⚠ 磁盘可用空间偏低: %.1f GB < 水位 %d GB → 本批不拉新视频（仅消费排队任务）\n", freeGB, minFree)
+					skipAuto = true
+					if !alerted[diskAlertKey] {
+						alerted[diskAlertKey] = true
+						sendDiskAlert(cfg, freeGB, minFree)
+					}
+				} else {
+					delete(alerted, diskAlertKey)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "  ⚠ 磁盘空间查询失败: %v\n", ferr)
+			}
+		}
 
-		// 3. 队列统计 + 心跳
+		// 3. 搜索+评分+去重+入队+直接处理（本批关键词窗口，逐批轮换）
+		enqueued, searched, searchFailed := 0, 0, 0
+		if !skipAuto {
+			enqueued, searched, searchFailed = daemonRunAutoBatch(ctx, cfg, q, workerID,
+				keywordWindow(keywords, kwWindow), scorer, uploadDate, maxDuration, maxVideos, minViews, opts, hb, alerted)
+		}
+
+		// 4. 队列统计 + 心跳
 		stats := q.Stats()
 		hb.update(func(h daemonHeartbeat) daemonHeartbeat { return h.withQueue(stats).withStatus("running") })
 		writeDaemonHeartbeat(cfg, hb.get())
 		fmt.Printf("📊 队列: 待处理=%d 处理中=%d 已完成=%d 失败=%d\n",
 			stats["queued"], stats["claimed"], stats["completed"], stats["failed"])
 
-		// 4. 无新入队且无待处理 → 轮换关键词（避免空转）
+		// 5. 无新入队且无待处理 → 轮换关键词窗口（避免空转）
 		if enqueued == 0 && consumed == 0 && stats["queued"] == 0 && stats["claimed"] == 0 {
-			keywords = rotateKeywords(keywords)
-			fmt.Printf("🔁 本批无新视频，轮换关键词 → 下一批: %s\n", keywords[0])
+			keywords = rotateKeywordsN(keywords, kwWindow)
+			if len(keywords) > 0 {
+				fmt.Printf("🔁 本批无新视频，轮换关键词 → 下一批: %s\n", keywords[0])
+			}
+		}
+
+		// 6. 搜索退避：一批里关键词全部搜索失败 → 疑似限流/网络异常，指数退避（上限 search_fail_backoff_max_sec）
+		sleepSec := opts.intervalSec
+		if searched > 0 && searchFailed >= searched {
+			consecutiveSearchFails++
+			if maxBackoff := d.EffectiveSearchFailBackoffMaxSec(); maxBackoff > 0 {
+				sleepSec = opts.intervalSec
+				for i := 1; i < consecutiveSearchFails && sleepSec < maxBackoff; i++ {
+					sleepSec *= 2
+				}
+				if sleepSec > maxBackoff {
+					sleepSec = maxBackoff
+				}
+			}
+			fmt.Printf("⚠ 本批 %d 个关键词全部搜索失败（疑似限流/网络异常）→ 连续 %d 批，退避 %ds 后重试\n",
+				searched, consecutiveSearchFails, sleepSec)
+			if consecutiveSearchFails == 3 && !alerted[searchAlertKey] {
+				alerted[searchAlertKey] = true
+				sendSearchAlert(cfg, searched)
+			}
+		} else if searched > 0 {
+			consecutiveSearchFails = 0
+			delete(alerted, searchAlertKey)
 		}
 
 		if opts.maxBatches > 0 && batch >= opts.maxBatches {
@@ -303,10 +360,10 @@ func runDaemon(cfg *config.Config, opts daemonOptions) error {
 			break
 		}
 
-		fmt.Printf("========== 第 %d 批结束，休息 %ds ==========\n", batch, opts.intervalSec)
+		fmt.Printf("========== 第 %d 批结束，休息 %ds ==========\n", batch, sleepSec)
 		select {
 		case <-ctx.Done():
-		case <-time.After(time.Duration(opts.intervalSec) * time.Second):
+		case <-time.After(time.Duration(sleepSec) * time.Second):
 		}
 	}
 
@@ -374,19 +431,19 @@ func daemonConsumeQueued(ctx context.Context, cfg *config.Config, q *queue.Queue
 // daemonRunAutoBatch 一批：搜索所有关键词 → 评分 → 去重 → 入队 → 直接处理
 func daemonRunAutoBatch(ctx context.Context, cfg *config.Config, q *queue.Queue, workerID string,
 	keywords []string, scorer, uploadDate string, maxDuration, maxVideos, minViews int,
-	opts daemonOptions, hb *heartbeatState, alerted map[string]bool) int {
+	opts daemonOptions, hb *heartbeatState, alerted map[string]bool) (enqueued, searched, searchFailed int) {
 
-	scored, err := searchAndScore(cfg, keywords, scorer, uploadDate, maxDuration, minViews, opts.dryRun)
+	scored, searched, searchFailed, err := searchAndScore(cfg, keywords, scorer, uploadDate, maxDuration, minViews, opts.dryRun)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  ⚠ 搜索失败: %v\n", err)
-		return 0
+		return 0, searched, searchFailed
 	}
 	if len(scored) == 0 {
 		fmt.Println("📭 没有找到符合条件的视频")
-		return 0
+		return 0, searched, searchFailed
 	}
 	if opts.dryRun {
-		return 0
+		return 0, searched, searchFailed
 	}
 
 	// 入队（最多 maxVideos 个，去重由 q.Add 保证）；重试上限跟随 daemon.max_retries 配置
@@ -394,7 +451,7 @@ func daemonRunAutoBatch(ctx context.Context, cfg *config.Config, q *queue.Queue,
 	if cfg.Daemon != nil {
 		maxRetries = cfg.Daemon.EffectiveMaxRetries()
 	}
-	enqueued := 0
+	enqueued = 0
 	for _, sv := range scored {
 		if enqueued >= maxVideos {
 			break
@@ -412,7 +469,7 @@ func daemonRunAutoBatch(ctx context.Context, cfg *config.Config, q *queue.Queue,
 		}
 	}
 	if enqueued == 0 {
-		return 0
+		return 0, searched, searchFailed
 	}
 
 	// 直接处理（--submit 模式，串行）
@@ -437,7 +494,7 @@ func daemonRunAutoBatch(ctx context.Context, cfg *config.Config, q *queue.Queue,
 		daemonProcessOne(ctx, cfg, q, item, opts, alerted)
 		hb.update(func(h daemonHeartbeat) daemonHeartbeat { return h.withTask("") })
 	}
-	return enqueued
+	return enqueued, searched, searchFailed
 }
 
 // daemonProcessOne 处理单个队列任务并更新状态（claimed → completed/failed）。
@@ -476,9 +533,10 @@ func daemonProcessOne(ctx context.Context, cfg *config.Config, q *queue.Queue, i
 
 // ─── 搜索评分（auto / daemon 共用）────────────────────────────────────
 
-// searchAndScore 搜索所有关键词 → 跨关键词去重 → 安全过滤 → 多维评分。
-// dryRun 时仅打印评分表。返回按分数降序的候选列表。
-func searchAndScore(cfg *config.Config, keywords []string, scorer, uploadDate string, maxDuration, minViews int, dryRun bool) ([]search.ScoredVideo, error) {
+// searchAndScore 搜索给定关键词 → 跨关键词去重 → 安全过滤 → 多维评分。
+// dryRun 时仅打印评分表，返回按分数降序的候选列表。
+// searched/failed 供调用方判断是否被限流/网络异常（整批失败 → 退避）。
+func searchAndScore(cfg *config.Config, keywords []string, scorer, uploadDate string, maxDuration, minViews int, dryRun bool) (scored []search.ScoredVideo, searched, failed int, err error) {
 	scorerType := search.ScorerType(scorer)
 	if scorerType == "" {
 		scorerType = search.ScorerPopular
@@ -487,7 +545,7 @@ func searchAndScore(cfg *config.Config, keywords []string, scorer, uploadDate st
 	seen := make(map[string]bool)
 	var allVideos []search.Video
 
-	fmt.Printf("🤖 自主模式启动（评分策略: %s）\n", scorerType)
+	fmt.Printf("🤖 自主模式启动（评分策略: %s，关键词 %d 个）\n", scorerType, len(keywords))
 
 	for _, kw := range keywords {
 		expandedKW := search.ExpandKeyword(kw)
@@ -504,9 +562,11 @@ func searchAndScore(cfg *config.Config, keywords []string, scorer, uploadDate st
 			opts = append(opts, search.WithUploadDate(uploadDate))
 		}
 
-		result, err := searcher.SearchWithOptions(expandedKW, opts...)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  ⚠ 搜索失败: %v\n", err)
+		searched++
+		result, serr := searcher.SearchWithOptions(expandedKW, opts...)
+		if serr != nil {
+			failed++
+			fmt.Fprintf(os.Stderr, "  ⚠ 搜索失败: %v\n", serr)
 			continue
 		}
 
@@ -526,11 +586,10 @@ func searchAndScore(cfg *config.Config, keywords []string, scorer, uploadDate st
 
 	if len(allVideos) == 0 {
 		fmt.Println("📭 没有找到符合条件的视频")
-		return nil, nil
+		return nil, searched, failed, nil
 	}
 
 	fmt.Printf("\n📊 评分中... (共 %d 个候选视频)\n", len(allVideos))
-	var scored []search.ScoredVideo
 	if scorerType == search.ScorerNowcast {
 		baselines := loadChannelBaselines(cfg.DataDir)
 		scored = search.ScoreVideosNowcastFull(allVideos, baselines)
@@ -544,7 +603,7 @@ func searchAndScore(cfg *config.Config, keywords []string, scorer, uploadDate st
 		fmt.Printf("\n🔍 预览模式，共 %d 个视频\n", len(scored))
 		fmt.Println("   移除 --dry-run 入队，或加 --submit 直接提交处理")
 	}
-	return scored, nil
+	return scored, searched, failed, nil
 }
 
 // printScoredTable 打印评分结果表（auto / daemon 共用）
@@ -582,6 +641,28 @@ func rotateKeywords(kws []string) []string {
 		return kws
 	}
 	return append(append([]string{}, kws[1:]...), kws[0])
+}
+
+// rotateKeywordsN 一次轮换 n 个关键词（与每批搜索窗口大小一致）。
+func rotateKeywordsN(kws []string, n int) []string {
+	if len(kws) <= 1 || n <= 0 {
+		return kws
+	}
+	if n >= len(kws) {
+		return kws // 每批都搜全部关键词时无需轮换
+	}
+	out := make([]string, 0, len(kws))
+	out = append(out, kws[n:]...)
+	out = append(out, kws[:n]...)
+	return out
+}
+
+// keywordWindow 取本批要搜索的关键词窗口（n<=0 或超过总数时返回全部）。
+func keywordWindow(kws []string, n int) []string {
+	if n <= 0 || n >= len(kws) {
+		return kws
+	}
+	return kws[:n]
 }
 
 // processSingleContext 处理单个视频的完整流水线（支持超时 context）
@@ -746,6 +827,49 @@ func truncateString(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// 告警去重键（alerted map 用）
+const (
+	diskAlertKey   = "__disk_low__"
+	searchAlertKey = "__search_all_failed__"
+)
+
+// sendDiskAlert 磁盘水位告警（飞书 webhook 未配置时仅打印日志）。
+func sendDiskAlert(cfg *config.Config, freeGB float64, minFreeGB int) {
+	msg := fmt.Sprintf("⚠️ ytb2bili 磁盘水位告警\n数据目录可用空间仅 %.1f GB（水位 %d GB），已暂停拉取新视频。\n建议: ytb clean（清理已投稿视频产物）或清理磁盘后自动恢复。\n数据目录: %s",
+		freeGB, minFreeGB, cfg.DataDir)
+	webhook := ""
+	if cfg.Daemon != nil {
+		webhook = cfg.Daemon.AlertWebhook
+	}
+	if webhook == "" {
+		fmt.Println("  📣 磁盘水位告警（未配置 alert_webhook，仅本地日志）")
+		return
+	}
+	if err := sendFeishuAlert(webhook, msg); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠ 飞书告警失败: %v\n", err)
+	} else {
+		fmt.Println("  📣 已发送飞书告警（磁盘水位）")
+	}
+}
+
+// sendSearchAlert 搜索连续失败的告警（疑似限流/网络异常）。
+func sendSearchAlert(cfg *config.Config, keywords int) {
+	msg := fmt.Sprintf("⚠️ ytb2bili 搜索连续异常\n连续 3 批、每批 %d 个关键词全部搜索失败（疑似 YouTube 限流或网络/代理异常）。\ndaemon 已按退避策略降速重试；请检查网络与代理（ytb search 手动验证）。", keywords)
+	webhook := ""
+	if cfg.Daemon != nil {
+		webhook = cfg.Daemon.AlertWebhook
+	}
+	if webhook == "" {
+		fmt.Println("  📣 搜索异常告警（未配置 alert_webhook，仅本地日志）")
+		return
+	}
+	if err := sendFeishuAlert(webhook, msg); err != nil {
+		fmt.Fprintf(os.Stderr, "  ⚠ 飞书告警失败: %v\n", err)
+	} else {
+		fmt.Println("  📣 已发送飞书告警（搜索异常）")
+	}
 }
 
 // ─── daemon status / check-heartbeat（供 cron 监控）──────────────────

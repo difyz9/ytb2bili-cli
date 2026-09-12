@@ -471,6 +471,19 @@ func (s *uploadStep) Run(ctx context.Context, state *PipelineState) error {
 			bili.WatchAndUploadSubtitle(bvid, r.ArtifactID(), r.DownloadDir, &credCopy, s.config.DataDir, pipelineSubtitleLogger{})
 		}()
 	}
+	// 清理本地产物：投稿成功后删除视频/配音等大文件（保留字幕/封面，字幕审核通过后还要异步上传）。
+	// 默认开启（daemon.cleanup_after_upload，可用配置关闭）；失败不影响投稿结果。
+	if s.config.Daemon == nil || s.config.Daemon.EffectiveCleanupAfterUpload() {
+		keepSmall := true
+		if s.config.Daemon != nil {
+			keepSmall = s.config.Daemon.EffectiveCleanupKeepSubtitles()
+		}
+		if cres, cerr := CleanupArtifacts(s.config, r.ArtifactID(), keepSmall, false); cerr != nil {
+			log.Printf("⚠ 清理本地产物失败(%s): %v（不影响投稿，可事后用 ytb clean 重试）", r.ArtifactID(), cerr)
+		} else if cres.DeletedFiles > 0 {
+			fmt.Printf("  %s\n", CleanupLogLine(cres))
+		}
+	}
 	return nil
 }
 

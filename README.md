@@ -160,7 +160,7 @@ ytb submit "https://www.youtube.com/watch?v=VIDEO_ID"
 | `transcriber` | 转录后端：`provider` = `whisper`（默认，本地 whisper.cpp）/ `bcut`（云 ASR）；whisper 模型路径/线程数 |
 | `accounts` | 多账号路由列表：`name` + `type_rule`（稿件标题/标签关键词）+ `is_default`（兜底账号） |
 | `search` | **自主调度关键词单一来源**（auto/daemon 共用）：`keywords`、`scorer`、`upload_date`、`max_duration`、`max_videos`、`min_views` |
-| `daemon` | 守护进程参数：批间隔/最大批数/每批消费上限/重试上限/步骤超时/心跳文件/飞书告警 webhook |
+| `daemon` | 守护进程参数：批间隔/最大批数/每批消费上限/重试上限/步骤超时/心跳文件/飞书告警 webhook/产物清理/磁盘水位/每批关键词数 |
 
 > **改关键词/调度 = 改 `config.yaml` 的 `search:`/`daemon:` 段后重启服务**，不要再改任何脚本。
 
@@ -288,7 +288,24 @@ ytb daemon check-heartbeat     # 心跳新鲜度检查（>15min 未更新则告�
 - 步骤级超时自动 kill 重试（默认 download/transcribe/translate/audio-sync 30min、tts 60min 等，可配 `daemon.step_timeout_sec`）；
 - 心跳文件 `data/daemon/heartbeat.json` 每 30s 刷新，供外部监控；
 - 任务重试达上限或心跳过期 → 飞书告警（`daemon.alert_webhook`）；
-- 收到 SIGTERM/SIGINT 等当前任务完成再退出（优雅重启）。
+- 收到 SIGTERM/SIGINT 等当前任务完成再退出（优雅重启）；
+- **产物自动清理**：投稿成功后删除该视频的大产物（视频、`voice/` 配音），保留字幕与封面
+  （`daemon.cleanup_after_upload`，默认 true；字幕审核通过后仍需上传，故保留）；
+- **磁盘水位保护**：`data_dir` 可用空间低于 `daemon.min_free_gb`（默认 20GB）时停止拉取新视频并告警，
+  只消费已排队任务，等清理/腾空后自动恢复；
+- **搜索降载与退避**：每批只搜 `daemon.keywords_per_batch`（默认 5）个关键词并逐批轮换；
+  一批关键词全部搜索失败（疑似限流/网络异常）时按 `daemon.search_fail_backoff_max_sec`（默认 1800s）指数退避。
+
+**产物体积与清理**：每个视频工作目录 `<download_dir>/<videoId>/` 含原视频、`<id>.synced.mp4`、
+`voice/*.wav`（TTS 分段）等，单个视频可达数百 MB ~ 1GB+。长期搬运务必开启自动清理，
+或定期手动执行：
+
+```bash
+ytb clean                 # 清理所有视频的大产物（保留字幕/封面）
+ytb clean --dry-run       # 只看能释放多少
+ytb clean <videoId>       # 只清理某个视频
+ytb clean --include-subtitles   # 连字幕/封面一起删（彻底释放）
+```
 
 **systemd 部署**（示例，本仓库配套 `scripts/deploy.sh`）：
 

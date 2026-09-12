@@ -134,3 +134,9 @@ daemon:
   alert_webhook: ""                  # 飞书自定义机器人 webhook（任务失败/心跳过期告警），留空=不告警
   alert_failed: true                 # 任务重试达上限后是否飞书告警
   cookies_refresh_hours: 6           # YouTube cookies 定期刷新周期（小时，默认 6；0=禁用）。刷新走调试 Chrome（CDP 提取登录态），不在运行则自动拉起
+  # ── 磁盘保护与产物清理（防止下载产物把磁盘写满）─────────────────────
+  cleanup_after_upload: true         # 投稿成功后自动清理该视频的大产物（视频/配音），保留字幕+封面
+  cleanup_keep_subtitles: true       # 清理时保留字幕(.srt/.zh-Hans.srt)/封面(cover.jpg)（字幕审核通过后需上传）
+  min_free_gb: 20                    # 磁盘水位（GB）：data_dir 可用空间低于此值时停止拉新视频并告警（0=禁用）
+  keywords_per_batch: 5              # 每批搜索的关键词数量（0=每批搜全部）。池子大时避免单批刷爆搜索接口
+  search_fail_backoff_max_sec: 1800  # 一批关键词全部搜索失败时的最大退避秒数（0=固定 interval_sec）

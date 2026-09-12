@@ -179,6 +179,70 @@ type DaemonConfig struct {
 	// CookiesRefreshHours YouTube cookies 定期刷新周期（小时，默认 6；0=禁用）。
 	// 刷新走调试 Chrome（CDP 提取登录态），Chrome 不在时自动拉起。
 	CookiesRefreshHours *int `yaml:"cookies_refresh_hours,omitempty"`
+	// CleanupAfterUpload 投稿成功后是否自动清理该视频的本地大产物（默认 true）。
+	// 清理内容 = 视频/音频媒体文件与 voice/ 配音目录；字幕、封面等小文件保留（见下）。
+	CleanupAfterUpload *bool `yaml:"cleanup_after_upload,omitempty"`
+	// CleanupKeepSubtitles 清理时是否保留字幕(.srt/.zh-Hans.srt)与封面(cover.jpg)等小文件（默认 true）。
+	// 字幕需保留：审核通过后还要异步上传；封面/元数据留档便于复查。
+	CleanupKeepSubtitles *bool `yaml:"cleanup_keep_subtitles,omitempty"`
+	// MinFreeGB 磁盘水位（GB）：data_dir 所在分区可用空间低于此值时，daemon 停止拉取新视频并告警（默认 20；0=禁用）。
+	// 只拦"拉新"，不打断正在处理的任务。
+	MinFreeGB *int `yaml:"min_free_gb,omitempty"`
+	// KeywordsPerBatch 每批搜索的关键词数量（默认 5；0=每批搜全部关键词）。
+	// 关键词池很大时避免单批把搜索接口刷爆（实测 44 个关键词全搜会被 YouTube 限流/超时）。
+	KeywordsPerBatch *int `yaml:"keywords_per_batch,omitempty"`
+	// SearchFailBackoffMaxSec 搜索连续失败时的最大退避秒数（默认 1800）。
+	// 一批里所有关键词都搜索失败 → 视为网络/限流异常，按 interval 指数退避到此上限；0=不退避（固定 interval_sec）。
+	SearchFailBackoffMaxSec *int `yaml:"search_fail_backoff_max_sec,omitempty"`
+}
+
+// EffectiveCleanupAfterUpload 投稿成功后是否自动清理本地大产物（默认 true）。
+func (d *DaemonConfig) EffectiveCleanupAfterUpload() bool {
+	if d == nil || d.CleanupAfterUpload == nil {
+		return true
+	}
+	return *d.CleanupAfterUpload
+}
+
+// EffectiveCleanupKeepSubtitles 清理时是否保留字幕/封面等小文件（默认 true）。
+func (d *DaemonConfig) EffectiveCleanupKeepSubtitles() bool {
+	if d == nil || d.CleanupKeepSubtitles == nil {
+		return true
+	}
+	return *d.CleanupKeepSubtitles
+}
+
+// EffectiveMinFreeGB 返回磁盘水位（GB；默认 20，0=禁用）。
+func (d *DaemonConfig) EffectiveMinFreeGB() int {
+	if d == nil || d.MinFreeGB == nil {
+		return 20
+	}
+	if *d.MinFreeGB < 0 {
+		return 0
+	}
+	return *d.MinFreeGB
+}
+
+// EffectiveKeywordsPerBatch 返回每批搜索的关键词数量（默认 5；0=全部）。
+func (d *DaemonConfig) EffectiveKeywordsPerBatch() int {
+	if d == nil || d.KeywordsPerBatch == nil {
+		return 5
+	}
+	if *d.KeywordsPerBatch < 0 {
+		return 0
+	}
+	return *d.KeywordsPerBatch
+}
+
+// EffectiveSearchFailBackoffMaxSec 返回搜索连续失败的最大退避秒数（默认 1800；0=不退避）。
+func (d *DaemonConfig) EffectiveSearchFailBackoffMaxSec() int {
+	if d == nil || d.SearchFailBackoffMaxSec == nil {
+		return 1800
+	}
+	if *d.SearchFailBackoffMaxSec < 0 {
+		return 0
+	}
+	return *d.SearchFailBackoffMaxSec
 }
 
 // EffectiveCookiesRefreshHours 返回 cookies 定期刷新周期（小时；默认 6，0=禁用）。

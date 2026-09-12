@@ -32,6 +32,8 @@ cd /home/guan/guan/code/ytb2bili-cli
 ./ytb queue status             # 队列统计（排队中/处理中/已完成/失败）
 ./ytb queue list               # 队列明细（含失败原因）
 ./ytb queue retry-failed       # 手动重排队失败任务（确认已修复根因后再用）
+./ytb clean                    # 清理已投稿视频的大产物（保留字幕/封面；--dry-run 先看能释放多少）
+./ytb clean --include-subtitles # 连字幕/封面一起删（彻底释放，谨慎）
 ./ytb task list / task show <id>   # 任务详情（失败步骤定位）
 ./ytb submit <URL>             # 手动提交单个搬运任务
 ./ytb submit <videoId>         # 续跑已有产物（幂等，跳过已完成步骤）
