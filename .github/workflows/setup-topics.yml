@@ -1,0 +1,48 @@
+# 将仓库 Topics 版本化：推送到本文件即自动应用。
+# 也可在 Actions 页面手动 Run workflow。
+# 想改 Topics：编辑下面 JSON 里的 names 数组后提交本文件即可。
+name: Setup Repository Topics
+
+on:
+  push:
+    paths:
+      - '.github/workflows/setup-topics.yml'
+  workflow_dispatch:
+
+jobs:
+  topics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply repository topics
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/topics" \
+            -H "Accept: application/vnd.github+json" \
+            --input - <<'JSON'
+          {
+            "names": [
+              "youtube",
+              "bilibili",
+              "yt-dlp",
+              "golang",
+              "cli",
+              "video-downloader",
+              "whisper",
+              "speech-to-text",
+              "text-to-speech",
+              "tts",
+              "subtitle",
+              "translation",
+              "automation",
+              "pipeline",
+              "video-processing",
+              "ffmpeg",
+              "deepseek",
+              "daemon",
+              "content-creation",
+              "indextts"
+            ]
+          }
+          JSON
+          echo "Topics applied."
