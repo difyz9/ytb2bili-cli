@@ -1,7 +1,24 @@
-# ytb2bili-go
+<div align="center">
 
-YouTube → Bilibili 视频搬运工具。Go 编写的 CLI（`ytb`），覆盖 **搜索 → 下载 → 转录 → 翻译 → 配音 → 音画同步 → 投稿 → 字幕上传** 全流水线，并提供作业队列、频道监控、自主调度守护进程（daemon）、HTTP API 等自动化能力。
+# ytb2bili-cli
 
+**YouTube → Bilibili 视频搬运 CLI（`ytb`）**
+
+一条命令跑通 **搜索 → 下载 → 转录 → 翻译 → 配音 → 音画同步 → 投稿 → 字幕上传**，并提供作业队列、频道监控、自主调度守护进程（daemon）与 HTTP API。
+
+[![Release](https://img.shields.io/github/v/release/difyz9/ytb2bili-cli?color=4c8bf5&label=release&sort=semver)](https://github.com/difyz9/ytb2bili-cli/releases)
+[![CI](https://github.com/difyz9/ytb2bili-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/difyz9/ytb2bili-cli/actions/workflows/ci.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/difyz9/ytb2bili-cli?color=00ADD8&logo=go)](go.mod)
+[![License: MIT](https://img.shields.io/badge/license-MIT-4c8bf5.svg)](#许可证)
+[![Stars](https://img.shields.io/github/stars/difyz9/ytb2bili-cli?color=4c8bf5&logo=github)](https://github.com/difyz9/ytb2bili-cli/stargazers)
+[![Downloads](https://img.shields.io/github/downloads/difyz9/ytb2bili-cli/total?color=4c8bf5)](https://github.com/difyz9/ytb2bili-cli/releases)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20·%20amd64%2Farm64-lightgrey.svg)](#快速开始)
+
+<img src="docs/assets/demo-submit.png" alt="ytb submit 一键搬运全流水线" width="880" />
+
+</div>
+
+> **ytb2bili-cli** 是 ytb2bili 的 Go 命令行版本：单二进制 `ytb`，可脚本化、可接入 AI Agent，也能以 `daemon` 常驻自动搬运。
 
 ## 目录
 
@@ -27,6 +44,7 @@ YouTube → Bilibili 视频搬运工具。Go 编写的 CLI（`ytb`），覆盖 *
 - [运维与排障](#运维与排障)
 - [项目结构](#项目结构)
 - [更多文档](#更多文档)
+- [相关项目](#相关项目)
 
 ## 功能特性
 
@@ -51,12 +69,17 @@ YouTube → Bilibili 视频搬运工具。Go 编写的 CLI（`ytb`），覆盖 *
 
 ## 流水线全景
 
-```
-搜索/频道订阅发现 ──► 入队(queue) ──► [串行处理]
-   download → transcribe → translate → tts → audio-sync → metadata → upload
-                                                                      │
-                                              （B站审核通过后，异步）  ▼
-                                                          自动上传中文字幕
+```mermaid
+flowchart LR
+    A["🔍 搜索 / 频道订阅"] --> Q[("作业队列")]
+    Q --> D["📥 download"]
+    D --> T["🎙 transcribe"]
+    T --> R["🌐 translate"]
+    R --> S["🔊 tts"]
+    S --> AS["🎬 audio-sync"]
+    AS --> M["📝 metadata"]
+    M --> U["📤 upload"]
+    U -. 审核通过（异步） .-> SUB["💬 字幕上传"]
 ```
 
 每个视频的处理产物默认集中在 `~/Downloads/ytb2bili/<videoId>/`：
@@ -87,8 +110,12 @@ YouTube → Bilibili 视频搬运工具。Go 编写的 CLI（`ytb`），覆盖 *
 | IndexTTS2 服务 | 中文配音（可选） | `tts.provider: index` 时需另部署，见 `skills/audio-video-sync/SKILL.md` |
 
 ```bash
-git clone https://github.com/zolagz/ytb2bili-go.git
-cd ytb2bili-go
+# 方式 A：Homebrew（推荐，macOS / Linux）
+brew install difyz9/tap/ytb
+
+# 方式 B：从源码构建
+git clone https://github.com/difyz9/ytb2bili-cli.git
+cd ytb2bili-cli
 
 make build             # 产出 ./ytb（等价 go build -o ytb ./cmd/ytb）
 make install           # 安装到 ~/.local/bin/ytb
@@ -476,7 +503,7 @@ journalctl --user -u ytb-batch-loop -f
 ## 项目结构
 
 ```
-ytb2bili-go/
+ytb2bili-cli/
 ├── cmd/ytb/main.go         # 主入口（唯一二进制 ytb）
 ├── internal/
 │   ├── cli/                # cobra 命令（按命令域拆分：submit/search/auto/daemon/queue/...）
@@ -514,6 +541,17 @@ ytb2bili-go/
 | `docs/FEISHU_INTEGRATION.md` | 飞书告警集成 |
 | `.claude/skills/` | Claude Code 项目技能（pipeline 驱动、调试、契约等） |
 | `docs/` | 设计文档与历史归档 |
+
+## 相关项目
+
+| 项目 | 说明 |
+|------|------|
+| [ytb2bili](https://github.com/difyz9/ytb2bili) | 完整的一站式自动化视频搬运系统（Go + Web 控制台） |
+| **ytb2bili-cli** | 本仓库：Go 命令行版（`ytb`），可脚本化 / Agent 集成 / daemon 常驻 |
+| [ytb2bili-docker](https://github.com/difyz9/ytb2bili-docker) | Docker 一键部署，多架构镜像 |
+| [ytb2bili_extension](https://github.com/difyz9/ytb2bili_extension) | 浏览器扩展，一键把当前视频送入流水线 |
+| [ytb2bili-docs](https://github.com/difyz9/ytb2bili-docs) | 文档站 |
+| [homebrew-tap](https://github.com/difyz9/homebrew-tap) | Homebrew tap：`brew install difyz9/tap/ytb` |
 
 ## 许可证
 
